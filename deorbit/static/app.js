@@ -103,14 +103,10 @@ function isEmpty(value) {
 
 const hasErrors = (robot) => !isEmpty(parsed(robot.errors));
 
-/** The charge as a length for a bar, or null when the robot sent no number. */
-function chargeLevel(robot) {
-  return typeof robot.charge === 'number' ? Math.max(0, Math.min(100, robot.charge)) : null;
-}
-
-function chargeTone(level) {
-  if (level == null) return 'quiet';
-  return level <= 15 ? 'bad' : level <= 40 ? 'warn' : 'good';
+/** The tone a charge is shown in: green, yellow from 40% down and red from 15%, or none when the robot sent no number. */
+function chargeTone(robot) {
+  if (typeof robot.charge !== 'number') return 'quiet';
+  return robot.charge <= 15 ? 'bad' : robot.charge <= 40 ? 'warn' : 'good';
 }
 
 function chargeText(robot) {
@@ -120,6 +116,19 @@ function chargeText(robot) {
 /** The estimate of a quick boost as the robot gave it, which is -1 when it has none. */
 function boostEstimate(robot) {
   return robot.quickboost_estimate === -1 ? none() : plain(robot.quickboost_estimate);
+}
+
+/**
+ * What a battery is doing besides holding its charge, or null for nothing: a
+ * quick boost, which is a charging too, or else charging. The spec has the
+ * estimate of a quick boost as the charge it is to reach, in percent.
+ */
+function charging(robot) {
+  if (isOn(robot.is_quickboost)) {
+    const target = robot.quickboost_estimate;
+    return typeof target === 'number' && target !== -1 ? `Quick boost to ${target}%` : 'Quick boost';
+  }
+  return isOn(robot.is_charging) ? 'Charging' : null;
 }
 
 /** The vendor a robot logged in as, which the server keeps in lowercase, by name where it has one. */
@@ -275,34 +284,33 @@ function actionPill(robot) {
   return robot.action != null && robot.action !== '' && pill('quiet', String(robot.action), 'route');
 }
 
-// ---- The list ----
-
-function battery(robot) {
-  const level = chargeLevel(robot);
-  const bar = h('span', { class: 'meter-fill' });
-  bar.style.width = `${level ?? 0}%`;
-  return h('div', { class: `battery ${chargeTone(level)}` },
-    h('span', { class: 'battery-value' }, chargeText(robot)),
-    h('span', { class: 'meter' }, bar));
+/**
+ * The charge, in the tone of how much it is, and behind a line what the battery
+ * is doing where it is charging. Nothing for a robot that gave neither.
+ */
+function batteryPill(robot) {
+  const doing = charging(robot);
+  if (robot.charge == null && doing === null) return false;
+  return h('span', { class: `pill ${chargeTone(robot)}` },
+    icon('battery'),
+    h('span', null, 'Battery: ', chargeText(robot)),
+    // A space that is not laid out, for whatever reads the two parts as one text.
+    doing !== null && [' ', h('span', { class: 'pill-part' }, icon('bolt'), doing)]);
 }
+
+// ---- The list ----
 
 /** What else a card says of its robot, or nothing when there is nothing to say. */
 function facts(robot) {
-  const fact = (glyph, text, tone) => h('span', { class: `fact ${tone ?? ''}` }, icon(glyph), text);
-  const said = [
-    isOn(robot.is_charging) && fact('bolt', 'Charging'),
-    hasErrors(robot) && fact('alert', 'Reports errors', 'bad'),
-  ].filter(Boolean);
-  return said.length > 0 && h('div', { class: 'facts' }, said);
+  return hasErrors(robot) && h('div', { class: 'facts' }, h('span', { class: 'fact bad' }, icon('alert'), 'Reports errors'));
 }
 
 function card(robot) {
   return h('a', { class: `card robot${robot.session ? ' online' : ''}`, href: hrefOf(robot), 'data-focus': hrefOf(robot) },
     called('strong', robot),
-    battery(robot),
     facts(robot),
     h('div', { class: 'robot-foot' },
-      h('div', { class: 'robot-pills' }, presence(robot), statePill(robot), actionPill(robot)),
+      h('div', { class: 'robot-pills' }, presence(robot), statePill(robot), actionPill(robot), batteryPill(robot)),
       icon('chevron')));
 }
 
@@ -1594,18 +1602,6 @@ const AUTONOMY = [
   ['Docking successful', 'autonomy_docking_successful'],
 ];
 
-function gauge(robot) {
-  const level = chargeLevel(robot);
-  const radius = 42;
-  const around = 2 * Math.PI * radius;
-  const ring = (name, more) => svg('circle', { class: name, cx: 50, cy: 50, r: radius, ...more });
-  return h('div', { class: `gauge ${chargeTone(level)}` },
-    svg('svg', { viewBox: '0 0 100 100', 'aria-hidden': 'true' },
-      ring('gauge-track'),
-      level > 0 && ring('gauge-value', { 'stroke-dasharray': `${(around * level) / 100} ${around}` })),
-    h('div', { class: 'gauge-label' }, h('strong', null, chargeText(robot)), h('span', null, 'Charge')));
-}
-
 /** How a command went, going by the server's answer to it: what the robot said, or why it said nothing. */
 function outcome(label, status, answer) {
   if (status !== 200) return { tone: 'bad', text: `${label}: ${answer?.error ?? 'no answer from the server'}` };
@@ -1857,9 +1853,8 @@ function hero(mine, robot) {
         statePill(robot),
         actionPill(robot),
         isOn(robot.is_docked) && pill('quiet', 'Docked', 'dock'),
-        isOn(robot.is_charging) && pill('quiet', 'Charging', 'bolt')),
-      commands(mine, robot)),
-    gauge(robot));
+        batteryPill(robot)),
+      commands(mine, robot)));
 }
 
 function panel(title, body, { hint, wide, tools } = {}) {
