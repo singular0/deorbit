@@ -281,6 +281,15 @@ class Store:
         sql = f"SELECT {_MAP} FROM maps WHERE vendor = ? AND serial = ? ORDER BY id DESC LIMIT ?"
         return self._select(sql, (robot.vendor, robot.serial, limit))
 
+    def floorplan_maps(self, robot: RobotId, before: int) -> list[dict[str, object]]:
+        """Those of the robot's maps older than the one of the ``id`` ``before`` that a floor plan of its was made of, newest first, each without its two binaries."""
+        where = (robot.vendor, robot.serial)
+        sql = (
+            f"SELECT {_MAP} FROM maps WHERE vendor = ? AND serial = ? AND id < ? "
+            "AND id IN (SELECT map_id FROM floorplans WHERE vendor = ? AND serial = ?) ORDER BY id DESC"
+        )
+        return self._select(sql, (*where, before, *where))
+
     def map(self, robot: RobotId, map_id: int) -> dict[str, object] | None:
         """The robot's map of that ``id``, whole, or ``None`` if it has no such map."""
         sql = "SELECT * FROM maps WHERE id = ? AND vendor = ? AND serial = ?"

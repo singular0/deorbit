@@ -265,14 +265,18 @@ class Web:
             # One more of each than was asked for tells whether there are older ones.
             events = self._store.events(robot, limits["events"] + 1)
             maps = self._store.maps(robot, limits["maps"] + 1)
+            listed, older = maps[: limits["maps"]], len(maps) > limits["maps"]
             answer = {
                 "now": now(),
                 "robot": self._robot(row),
                 "events": events[: limits["events"]],
                 "more": len(events) > limits["events"],
-                "maps": maps[: limits["maps"]],
-                "more_maps": len(maps) > limits["maps"],
+                "maps": listed,
+                "more_maps": older,
                 "floorplans": self._store.floorplans(robot),
+                # The page shows a floor plan as the map it was made of, so such a map comes with the
+                # robot however old it is: here if it is older than the maps that were asked for.
+                "floorplan_maps": self._store.floorplan_maps(robot, listed[-1]["id"]) if older else [],
             }
             return 200, _JSON, _json(answer)
         if path == "/api/map":

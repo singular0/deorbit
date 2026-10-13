@@ -517,6 +517,29 @@ class StoreTests(unittest.TestCase):
         store.close()
         self.assertEqual(len(self.open().floorplans(ROBOT)), 2)
 
+    def test_maps_of_floor_plans_are_read_back_however_old(self) -> None:
+        store = self.open()
+        for robot in (ROBOT, ROBOT, OTHER, ROBOT, ROBOT, ROBOT):
+            store.save_map(robot, MAP)
+        self.assertEqual(store.floorplan_maps(ROBOT, 6), [])
+        # The other robot's floor plans are its own, whichever map one names, and a map that is gone is none to give.
+        for robot, rank_uuid, number in ((ROBOT, "first", 1), (ROBOT, "second", 4), (ROBOT, "third", 5),
+                                         (OTHER, "fourth", 2), (OTHER, "fifth", 3), (ROBOT, "gone", 9)):
+            self.assertTrue(store.save_floorplan(robot, rank_uuid, number))
+        # Those older than the map that is named, newest first, each as a list of maps gives it.
+        listed = store.floorplan_maps(ROBOT, 5)
+        self.assertEqual([row["id"] for row in listed], [4, 1])
+        self.assertEqual(listed, [row for row in store.maps(ROBOT, 10) if row["id"] in (4, 1)])
+        self.assertNotIn("cmFuaw==", listed[0]["map_json"])
+        self.assertEqual([row["id"] for row in store.floorplan_maps(ROBOT, 6)], [5, 4, 1])
+        self.assertEqual([row["id"] for row in store.floorplan_maps(ROBOT, 2**63 - 1)], [5, 4, 1])
+        self.assertEqual(store.floorplan_maps(ROBOT, 1), [])
+        self.assertEqual([row["id"] for row in store.floorplan_maps(OTHER, 6)], [3])
+        self.assertEqual(store.floorplan_maps(RobotId("3", "board1"), 6), [])
+        # A map that is no floor plan any more is no longer among them.
+        store.delete_floorplan(ROBOT, "second")
+        self.assertEqual([row["id"] for row in store.floorplan_maps(ROBOT, 6)], [5, 1])
+
     def test_floor_plan_takes_the_place_of_another_or_is_dropped(self) -> None:
         store = self.open()
         for robot in (ROBOT, OTHER):
@@ -674,7 +697,8 @@ class StoreTests(unittest.TestCase):
             db.execute("DROP TABLE floorplans")
         for table, read in (("robots", store.robots), ("robots", lambda: store.robot(ROBOT)),
                             ("events", lambda: store.events(ROBOT, 10)), ("maps", lambda: store.maps(ROBOT, 10)),
-                            ("maps", lambda: store.map(ROBOT, 1)), ("floorplans", lambda: store.floorplans(ROBOT))):
+                            ("maps", lambda: store.map(ROBOT, 1)), ("maps", lambda: store.floorplan_maps(ROBOT, 9)),
+                            ("floorplans", lambda: store.floorplans(ROBOT))):
             with self.assertRaisesRegex(StoreError, f"^cannot read the database: no such table: {table}$"):
                 read()
 

@@ -626,7 +626,7 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans"})
+        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps"})
         self.assertEqual((answer["events"], answer["more"]), ([], False))
 
     async def test_events_newest_first_as_stored(self) -> None:
@@ -742,6 +742,7 @@ class MapTests(WebTestCase):
         self.upload(2, self.OTHER)
         answer = await self.api(self.BOARD1)
         self.assertEqual((answer["maps"], answer["more_maps"]), ([], False))
+        self.assertEqual(answer["floorplan_maps"], [])
 
     async def test_maps_newest_first_without_their_binaries(self) -> None:
         await self.start()
@@ -793,6 +794,34 @@ class MapTests(WebTestCase):
         self.assertEqual((self.numbers(answer), answer["more_maps"]), ([7, 6, 5, 4, 3, 2], True))
         # How many events come with them is asked for apart, and neither number changes the other.
         self.assertEqual((answer["events"], answer["more"]), ([], False))
+
+    async def test_maps_of_floor_plans_come_however_old(self) -> None:
+        with mock.patch.multiple(web, _MAPS=3, _MAX_MAPS=5):
+            await self.start()
+            self.upload(7)
+            self.upload(2, self.OTHER)
+            store = self.server.store
+            self.assertEqual((await self.api(self.BOARD1))["floorplan_maps"], [])
+            # The page shows a floor plan as the map it was made of, which may be older than the maps it asks for.
+            for robot, rank_uuid, number in ((self.ROBOT, "old", 2), (self.ROBOT, "older", 1), (self.ROBOT, "listed", 6),
+                                             (self.OTHER, "theirs", 3), (self.OTHER, "their own", 8)):
+                store.save_floorplan(robot, rank_uuid, number)
+            answer = await self.api(self.BOARD1)
+            self.assertEqual((self.numbers(answer), answer["more_maps"]), ([7, 6, 5], True))
+            # Only those that are not among the maps already, newest first, each as a map is listed.
+            older, oldest = answer["floorplan_maps"]
+            self.assertEqual(older, {"id": 2, "at": older["at"], "vendor": "n", "serial": "board1", "map_json": older["map_json"]})
+            self.assertEqual(json.loads(older["map_json"]), {**self.LISTED, "rank_uuid": 2})
+            self.assertEqual((oldest["id"], json.loads(oldest["map_json"])), (1, {**self.LISTED, "rank_uuid": 1}))
+            answer = await self.api(self.BOARD1 + "&maps=5")
+            self.assertEqual((self.numbers(answer), [row["id"] for row in answer["floorplan_maps"]]), ([7, 6, 5, 4, 3], [2, 1]))
+            other = await self.api("/api/robot?vendor=n&serial=board0")
+            self.assertEqual(([row["id"] for row in other["maps"]], other["floorplan_maps"]), ([9, 8], []))
+        # The more maps are asked for, the fewer are left to come this way, and none when the robot has no older ones.
+        answer = await self.api(self.BOARD1 + "&maps=6")
+        self.assertEqual((self.numbers(answer), [row["id"] for row in answer["floorplan_maps"]]), ([7, 6, 5, 4, 3, 2], [1]))
+        answer = await self.api(self.BOARD1 + "&maps=7")
+        self.assertEqual((answer["more_maps"], answer["floorplan_maps"]), (False, []))
 
     async def test_as_many_maps_as_the_page_first_asks_for(self) -> None:
         await self.start()

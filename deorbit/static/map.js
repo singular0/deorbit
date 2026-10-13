@@ -152,11 +152,10 @@ function sameGrid(one, other) {
  * screen's. `real` may be null. `places` are positions the map gives, by name.
  *
  * It is `width` by `height` pixels, as `rgba`. `marks` are the places that are
- * on the map, each with where it is in the picture and its heading. `span` is
- * how far what the robot saw reaches and `cell` the side of a cell, both in
- * millimetres and null when the map does not say. `cleaned` is how many cells
- * were, or null when `real` could not be laid over `rank`. `odd` are the
- * values in `real` that nothing here has a meaning for, each with its count.
+ * on the map, each with where it is in the picture and its heading. `cleaned`
+ * is how many cells were, or null when `real` could not be laid over `rank`.
+ * `odd` are the values in `real` that nothing here has a meaning for, each
+ * with its count.
  */
 export function paint(rank, real, places, palette, side, ratio) {
   const { width, height, cells } = rank;
@@ -184,7 +183,6 @@ export function paint(rank, real, places, palette, side, ratio) {
       reach(last, y);
     }
   }
-  const seen = right < 0 ? null : { width: right - left + 1, height: bottom - top + 1 };
 
   // Where each place is, in cells from the left and from the top.
   const spots = [];
@@ -244,8 +242,6 @@ export function paint(rank, real, places, palette, side, ratio) {
     height: down * scale,
     rgba,
     marks: spots.map(({ name, x, y, dir }) => ({ name, x: (x - left) * scale, y: (y - top) * scale, dir })),
-    span: seen && rank.resolution && { width: seen.width * rank.resolution, height: seen.height * rank.resolution },
-    cell: rank.resolution,
     cleaned: over === null ? null : counts[3] + counts[4],
     odd,
   };

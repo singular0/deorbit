@@ -932,54 +932,79 @@ h2 {
   pointer-events: none;
 }
 
-/* ---- The events of one robot, and its maps, which are listed the same way ---- */
+/* ---- The tables of one robot: its events and its maps, which are of one design ---- */
 
-.event {
+/* A column is as wide as its name is told to be below, and those that are told nothing share what is left. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+/* The names of the columns. */
+.table th {
+  padding: 0 16px 10px 0;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.table th.cell-time {
+  width: 9rem;
+}
+
+.table th.cell-kind {
+  width: 10.5rem;
+}
+
+/* Room for the buttons of a row, in a table whose rows have some. */
+.table th.cell-tools {
+  width: 7rem;
+}
+
+/* A row, with what is said under it and what it opens on. */
+.entry {
   border-top: 1px solid var(--line);
 }
 
-.event:first-child {
-  border-top: 0;
-}
-
-.event > summary {
-  display: grid;
-  grid-template-columns: 11.5rem 9.5rem minmax(0, 1fr) auto;
-  grid-template-areas: "time kind what chevron";
-  align-items: center;
-  gap: 6px 16px;
-  padding: 11px 0;
-  border-radius: 8px;
+/* A press anywhere on a row but on a button of it opens it, and so do Enter and the space bar while the keyboard is on it. */
+.entry-row {
   cursor: pointer;
-  list-style: none;
 }
 
-.event > summary::-webkit-details-marker {
-  display: none;
+/* Drawn within the table, whose panel has little room beside it. */
+.entry-row:focus-visible {
+  outline-offset: -2px;
 }
 
-.event:first-child > summary {
-  padding-top: 0;
+.entry-row > td {
+  padding: 10px 16px 10px 0;
+  overflow-wrap: anywhere;
 }
 
-.event:last-child:not([open]) > summary {
-  padding-bottom: 0;
+.table th:last-child,
+.entry-row > td:last-child {
+  padding-right: 0;
 }
 
-.event-time {
-  grid-area: time;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 8px;
+/* When: how long ago, with the day, the date and the time for a pointer that rests on it. */
+td.cell-time {
   font-size: 13.5px;
   font-variant-numeric: tabular-nums;
 }
 
-.event > summary > .pill {
-  grid-area: kind;
-  justify-self: start;
+td.cell-amount {
+  font-variant-numeric: tabular-nums;
 }
 
+td.cell-what {
+  color: var(--muted);
+}
+
+/* What an event of the schedule cleans, in its row. */
 .event-what {
   grid-area: what;
   min-width: 0;
@@ -987,26 +1012,68 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.event > summary > .icon {
-  grid-area: chevron;
-  color: var(--faint);
-  transition: transform 0.16s ease, color 0.16s ease;
+/* The buttons at the end of a row. */
+.entry-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
-.event > summary:hover > .icon {
-  color: var(--accent);
+/* A button with an icon alone on it. */
+.button.tool {
+  padding: 6px;
 }
 
-.event[open] > summary > .icon {
-  transform: rotate(90deg);
+/* Whether a map is kept as a floor plan: a box, ticked when it is. */
+.tick {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 5px;
+  font-size: 11px;
+  vertical-align: middle;
 }
 
-.event-detail {
-  padding-bottom: 16px;
+.tick.on {
+  border-color: color-mix(in srgb, var(--good) 55%, transparent);
+  background: color-mix(in srgb, var(--good) 18%, transparent);
+  color: var(--good);
 }
 
-.event:last-child > .event-detail {
-  padding-bottom: 0;
+.tick > .icon {
+  stroke-width: 2.75;
+}
+
+/* What is asked about a row, or said of how that went, under it. */
+.entry-note > td {
+  padding: 0 0 12px;
+}
+
+.entry-note .command-said {
+  margin: 0;
+}
+
+/* A question and its answers, the buttons after the words. */
+.entry-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 13.5px;
+}
+
+.entry-ask > p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* What a row opens on. */
+.entry-detail > td {
+  padding: 4px 0 16px;
 }
 
 .event-meta {
@@ -1016,8 +1083,13 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.event-detail .code {
+.entry-detail .code {
   max-height: 320px;
+}
+
+/* How it went with a row that is listed no more, under the table. */
+.table + .command-said {
+  margin-top: 14px;
 }
 
 .more {
@@ -1098,55 +1170,9 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-/* What the robot said of the run, and under that what can be asked of the robot with the map. */
+/* What the robot said of the run. */
 .map-facts {
   min-width: 0;
-}
-
-.map-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.map-tools .command-said {
-  flex-basis: 100%;
-  margin: 0;
-}
-
-/* ---- The floor plans of one robot ---- */
-
-/* A floor plan: when the robot accepted it, what the robot knows it by, and what can be done with it. */
-.floor {
-  display: grid;
-  grid-template-columns: minmax(0, 14rem) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px 16px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.floor:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.floor:last-child {
-  padding-bottom: 0;
-}
-
-/* Read from the left here, where beside a label it is set to the right. */
-.floor > .moment {
-  justify-content: flex-start;
-}
-
-.floor-id {
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 13.5px;
-  overflow-wrap: anywhere;
 }
 
 /* ---- The schedule of one robot ---- */
@@ -1534,22 +1560,54 @@ h2 {
     padding: 20px;
   }
 
-  /* What an event was and when share a line; what it said takes the next. */
-  .event > summary {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: "kind time chevron" "what what what";
+  /* A table has no room for its columns here: a row is a line that wraps, with no names over it. */
+  .table,
+  .table tbody,
+  .table tr,
+  .table td {
+    display: block;
   }
 
-  .event-time {
-    justify-content: flex-end;
+  .table thead {
+    display: none;
+  }
+
+  .table .entry-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    padding: 11px 0;
+  }
+
+  .table .entry-row > td {
+    padding: 0;
+  }
+
+  /* The buttons of a row stay at its right. */
+  .table .entry-row > .cell-tools {
+    margin-left: auto;
+  }
+
+  /* What an event said takes a line of its own, under the rest. */
+  .table .entry-row > .cell-what {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  .table .entry-row > .cell-what:empty {
+    display: none;
+  }
+
+  /* The name of a column, before what a row has in it, where that alone would not say what it is. */
+  .table .entry-row > td[data-label]::before {
+    content: attr(data-label);
+    margin-right: 6px;
+    color: var(--faint);
+    font-size: 12px;
   }
 
   .map-detail {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* When a floor plan was accepted, what it is known by and what can be done with it take a line each. */
-  .floor {
     grid-template-columns: minmax(0, 1fr);
   }
 

@@ -162,11 +162,16 @@ function clock(at) {
     : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** A timestamp as "5 s ago", which `tick` keeps current. */
+/** A time in full, with its day of the week: what a pointer that rests on a time is told. */
+function fullTime(at) {
+  return new Date(at).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'medium' });
+}
+
+/** A timestamp as "5 s ago", which `tick` keeps current, with the day, the date and the time it was in its tooltip. */
 function when(stamp) {
   const at = Date.parse(stamp);
   if (Number.isNaN(at)) return plain(stamp);
-  return h('time', { datetime: stamp, title: new Date(at).toLocaleString(), 'data-at': at }, ago(at));
+  return h('time', { datetime: stamp, title: fullTime(at), 'data-at': at }, ago(at));
 }
 
 /** A timestamp both ways: how long ago, and the time on the clock. */
@@ -559,6 +564,98 @@ function drawAdd(mine) {
   if (log) log.scrollTop = log.scrollHeight;
 }
 
+// ---- The tables of one robot ----
+//
+// The robot's events and its maps are each a table, and the two are of one
+// design: the names of the columns, then a row to each, which opens on more.
+// A column is its name, the kind of cell it holds, which is what the
+// stylesheet goes by, and whether its name is set before the cell on a narrow
+// screen, where the rows stand without the names over them.
+
+/**
+ * A row of a table, with what is under it. It gives a cell to each of the
+ * table's `columns` as `cells`; `tools`, the buttons that stand at its end,
+ * where the table is `tooled`, which is to say has a column for them; `note`,
+ * a line of its own under it; and `detail`, which gives what it opens on. The
+ * row itself is what opens it, at a press or from the keyboard, so it is a
+ * stop for the Tab key, which `focus` names to the keyboard's focus. `open` is
+ * the view's set of the rows that are open, by `id`.
+ */
+function entry(columns, open, tooled, { id, focus, cells, tools, note, detail }) {
+  const width = columns.length + (tooled ? 1 : 0);
+  // The detail is laid out when the row is first opened: most rows never are.
+  const under = h('td', { colspan: width });
+  const below = h('tr', { class: 'entry-detail', id: `${focus}-detail`, hidden: !open.has(id) }, under);
+  const toggle = () => {
+    const shown = !open.has(id);
+    if (shown) open.add(id);
+    else open.delete(id);
+    if (shown && !under.hasChildNodes()) under.append(...detail());
+    below.hidden = !shown;
+    row.setAttribute('aria-expanded', String(shown));
+  };
+  const row = h('tr', {
+    class: 'entry-row',
+    tabindex: '0',
+    'aria-expanded': String(open.has(id)),
+    'aria-controls': below.id,
+    'data-focus': focus,
+    onclick: (event) => {
+      // A press on a button of the row is that button's, and one that ends the selecting of text opens nothing.
+      if (!event.target.closest('button') && getSelection().isCollapsed) toggle();
+    },
+    onkeydown: (event) => {
+      // Enter and the space bar while the keyboard is on the row itself, not on a button of it.
+      if (event.target !== row || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      toggle();
+    },
+  },
+  cells.map((cell, n) => h('td', { class: `cell-${columns[n][1]}`, 'data-label': columns[n][2] && columns[n][0] }, cell)),
+  tooled && h('td', { class: 'cell-tools' }, h('div', { class: 'entry-tools' }, tools)));
+  // A row that was open stays open when the page is drawn again.
+  if (open.has(id)) under.append(...detail());
+  return h('tbody', { class: 'entry' },
+    row,
+    note && h('tr', { class: 'entry-note' }, h('td', { colspan: width }, note)),
+    below);
+}
+
+/**
+ * A table of rows that open: the names of its `columns`, then `rows`, each as
+ * `entry` takes one. `label` names it to a screen reader. It has a column for
+ * the buttons of its rows where any row has some.
+ */
+function table(label, columns, open, rows) {
+  const tooled = rows.some((row) => row.tools);
+  return h('table', { class: 'table', 'aria-label': label },
+    h('thead', null, h('tr', null,
+      columns.map(([title, kind]) => h('th', { class: `cell-${kind}`, scope: 'col' }, title)),
+      // Over the buttons of a row, which need no name to the eye.
+      tooled && h('th', { class: 'cell-tools', scope: 'col', 'aria-label': 'Actions' }))),
+    rows.map((row) => entry(columns, open, tooled, row)));
+}
+
+// How many of a list a robot's page asks for at first and then more each time
+// it is asked, and the most the server gives at once.
+const LISTS = { events: [EVENTS_STEP, EVENTS_MAX], maps: [MAPS_STEP, MAPS_MAX] };
+
+/** A way to the older rows of a list, while the server says there are more than it gave. */
+function older(mine, list, more) {
+  const [step, most] = LISTS[list];
+  return more && h('div', { class: 'more' }, mine.asked[list] < most
+    ? h('button', {
+      class: 'button',
+      type: 'button',
+      'data-focus': `older-${list}`,
+      onclick: () => {
+        mine.asked[list] = Math.min(mine.asked[list] + step, most);
+        refresh(mine);
+      },
+    }, 'Show older')
+    : h('p', { class: 'hint' }, `These are the latest ${most}. Older ${list} are in the database.`));
+}
+
 // ---- The events of one robot ----
 
 /** A value a robot sent as a word for a sentence, or null when it is not one. */
@@ -599,12 +696,8 @@ const SERVICES = new Map([
   ['logs.update_status', ['Log upload', 'file', 'quiet', (body) => [word(body.state), word(body.log_id)]]],
 ]);
 
-/** When an event happened: the time on the clock first, as a log is read, then how long ago. */
-function eventTime(stamp) {
-  const at = Date.parse(stamp);
-  return h('span', { class: 'event-time' },
-    Number.isNaN(at) ? plain(stamp) : [clock(at), h('span', { class: 'faint' }, when(stamp))]);
-}
+// The columns of the events: when one happened, what it was, and what its body says in a line.
+const EVENT_COLUMNS = [['Time', 'time'], ['Event', 'kind'], ['Details', 'what']];
 
 /** What opening an event shows: when and what it was as the database has it, and its whole body. */
 function eventDetail(event) {
@@ -617,65 +710,23 @@ function eventDetail(event) {
   ];
 }
 
-/**
- * A row that opens, as an event and a map each are: its `line`, and under that
- * what `detail` gives. `open` is the view's set of the rows that are open, by
- * `id`, and `focus` names the row to the keyboard's focus.
- */
-function entry(id, open, focus, line, detail) {
-  // The detail is laid out when the row is first opened: most rows never are.
-  const under = h('div', { class: 'event-detail' });
-  const row = h('details', {
-    class: 'event',
-    ontoggle: () => {
-      if (!row.open) {
-        open.delete(id);
-        return;
-      }
-      open.add(id);
-      if (!under.hasChildNodes()) under.append(...detail());
-    },
-  }, h('summary', { 'data-focus': focus }, line, icon('chevron')), under);
-  // A row that was open stays open when the page is drawn again.
-  if (open.has(id)) {
-    under.append(...detail());
-    row.open = true;
-  }
-  return row;
-}
-
-// How many of a list a robot's page asks for at first and then more each time
-// it is asked, and the most the server gives at once.
-const LISTS = { events: [EVENTS_STEP, EVENTS_MAX], maps: [MAPS_STEP, MAPS_MAX] };
-
-/** A way to the older rows of a list, while the server says there are more than it gave. */
-function older(mine, list, more) {
-  const [step, most] = LISTS[list];
-  return more && h('div', { class: 'more' }, mine.asked[list] < most
-    ? h('button', {
-      class: 'button',
-      type: 'button',
-      'data-focus': `older-${list}`,
-      onclick: () => {
-        mine.asked[list] = Math.min(mine.asked[list] + step, most);
-        refresh(mine);
-      },
-    }, 'Show older')
-    : h('p', { class: 'hint' }, `These are the latest ${most}. Older ${list} are in the database.`));
-}
-
-function eventRow(event, mine) {
+/** An event as a row of the table. */
+function eventRow(event) {
   const known = event.service == null ? CONNECTION.get(event.kind) : SERVICES.get(event.service);
   const [label, glyph, tone, says] = known ?? [String(event.service ?? event.kind), 'message', 'quiet', () => []];
   const said = says(record(parsed(event.body_json))).filter(Boolean).join(' · ');
-  const line = [eventTime(event.at), pill(tone, label, glyph), h('span', { class: 'event-what' }, said)];
-  return entry(event.id, mine.open, `event-${event.id}`, line, () => eventDetail(event));
+  return {
+    id: event.id,
+    focus: `event-${event.id}`,
+    cells: [when(event.at), pill(tone, label, glyph), said || null],
+    detail: () => eventDetail(event),
+  };
 }
 
 /** The robot's events, newest first. */
 function eventLog(mine, events, more) {
   if (events.length === 0) return none('Nothing yet.');
-  return [h('div', { class: 'events' }, events.map((event) => eventRow(event, mine))), older(mine, 'events', more)];
+  return [table('Events', EVENT_COLUMNS, mine.open, events.map(eventRow)), older(mine, 'events', more)];
 }
 
 // ---- The maps of one robot ----
@@ -710,23 +761,27 @@ function areaOf(runs) {
   return areas.length > 0 ? `${areas.reduce((sum, area) => sum + area, 0).toFixed(2)} m²` : null;
 }
 
-/** What a map says of its run, beside the picture. */
+/** What a map says of its run that its row does not, beside the picture. */
 function mapFacts(map, runs) {
   const timing = record(map.timing);
+  // What the runs were set to: one value where they agree, as the one run of most maps does with itself.
+  const setting = (name) => {
+    const values = [...new Set(runs.map((run) => word(record(run.settings)[name])).filter(Boolean))];
+    return values.length > 0 ? values.join(', ') : none();
+  };
   return rows([
-    ['Started', moment(timing.start)],
-    ['Ended', moment(timing.end)],
-    ['Paused', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
+    // As the start is in the row: how long ago, and the rest to a pointer that rests on it.
+    ['End time', when(timing.end)],
+    ['Paused for', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
     ['Started by', plain(map.started_by)],
     ['Cleaning complete', flag(map.cleaning_complete)],
-    ...runs.map((run, n) => {
-      const settings = record(run.settings);
-      const said = [word(run.state), areaOf([run]), word(settings.mode), word(settings.navigation_mode)].filter(Boolean);
-      return [runs.length === 1 ? 'Run' : `Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
-    }),
-    ['Rank UUID', h('span', { class: 'mono' }, plain(map.rank_uuid))],
-    // The floor plan the run was on: a robot gave here what its schedule named as the floor plan to clean.
-    ['Persistent rank UUID', h('span', { class: 'mono' }, plain(map.persistent_rank_uuid))],
+    ['Mode', setting('mode')],
+    ['Navigation', setting('navigation_mode')],
+    // The row of a map of more runs than one has only how many they were and what they cleaned between them.
+    ...(runs.length > 1 ? runs.map((run, n) => {
+      const said = [word(run.state), areaOf([run])].filter(Boolean);
+      return [`Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
+    }) : []),
   ]);
 }
 
@@ -790,7 +845,6 @@ async function picture(map) {
     return h('li', null, swatch, label);
   };
   const marked = new Set(made.marks.map((mark) => mark.name));
-  const metres = (millimetres) => (millimetres / 1000).toFixed(1);
   if (real !== null && made.cleaned === null) {
     notes.push('The cleaned cells are not shown: real_binary is not laid out as rank_binary is.');
   }
@@ -806,8 +860,6 @@ async function picture(map) {
       made.cleaned !== null && key('cleaned', 'Cleaned'),
       marked.has('robot') && key('robot', 'Robot'),
       marked.has('base') && key('base', 'Base')),
-    made.span && h('p', { class: 'hint' },
-      `The robot saw ${metres(made.span.width)} m by ${metres(made.span.height)} m, at ${made.cell} mm to a cell.`),
     ...notes.map((note) => h('p', { class: 'hint' }, note)),
   ].filter(Boolean);
 }
@@ -846,31 +898,84 @@ function drawing(mine, id) {
   return node;
 }
 
+// The columns of the maps: when the run of one started, how it went, what it cleaned
+// and how long it took, and whether the robot keeps the map as a floor plan.
+const MAP_COLUMNS = [
+  ['Start time', 'time'],
+  ['Status', 'kind'],
+  ['Area', 'amount', true],
+  ['Duration', 'amount', true],
+  ['Floor plan', 'kept', true],
+];
+
+/**
+ * Whether a map is kept as a floor plan: a box that is ticked when `plan` is
+ * the floor plan the server had the robot make of it. What the robot knows
+ * that by is told to a pointer that rests on the box, and shown nowhere. The
+ * box only says so: the buttons of the row are what changes it.
+ */
+function kept(plan) {
+  const text = plan ? `Kept as floor plan ${plan.rank_uuid}` : 'Not kept as a floor plan';
+  return h('span', { class: plan ? 'tick on' : 'tick', role: 'img', 'aria-label': text, title: text }, plan && icon('check'));
+}
+
+/** A map as a row of the table. */
 function mapRow(row, mine, robot, plans) {
   const map = record(parsed(row.map_json));
   const runs = (Array.isArray(map.runs) ? map.runs : []).map(record);
-  // A map of one run, as the rule is, wears the state of that run.
+  // A map of one run, as the rule is, has the state of that run for its status.
   const state = runs.length === 1 ? word(runs[0].state) : null;
-  const label = state ?? (runs.length > 1 ? `${runs.length} runs` : 'Map');
-  const kept = plans.some((plan) => plan.map_id === row.id) && 'floor plan';
-  const said = [kept, areaOf(runs), took(record(map.timing)), named('started by', map.started_by)].filter(Boolean).join(' · ');
-  const line = [eventTime(row.at), pill(RUN_TONES.get(state) ?? 'quiet', label, 'map'), h('span', { class: 'event-what' }, said)];
-  return entry(row.id, mine.openMaps, `map-${row.id}`, line, () => [h('div', { class: 'map-detail' },
-    drawing(mine, row.id),
-    h('div', { class: 'map-facts' }, mapFacts(map, runs), mapTools(mine, robot, plans, row.id, map)))]);
+  const status = state ?? (runs.length > 1 ? `${runs.length} runs` : null);
+  // The floor plan the server had the robot make of this map, if it did.
+  const plan = plans.find((known) => known.map_id === row.id) ?? null;
+  return {
+    id: row.id,
+    focus: `map-${row.id}`,
+    cells: [
+      // When the robot says the run began, which every map of one run says alike.
+      when(record(map.timing).start),
+      status === null ? none() : pill(RUN_TONES.get(state) ?? 'quiet', status, 'map'),
+      areaOf(runs) ?? none(),
+      took(record(map.timing)) ?? none(),
+      kept(plan),
+    ],
+    tools: mapTools(mine, robot, plans, row.id, map, plan),
+    note: floorQuestion(mine, robot, plans, row.id, map, plan) || floorSaid(mine, row.id),
+    detail: () => [h('div', { class: 'map-detail' },
+      drawing(mine, row.id),
+      h('div', { class: 'map-facts' }, mapFacts(map, runs)))],
+  };
 }
 
-/** The maps the robot uploaded, newest first. */
-function mapList(mine, { robot, maps, more_maps: more, floorplans: plans }) {
-  if (maps.length === 0) return none('Nothing yet.');
-  return [h('div', { class: 'events' }, maps.map((row) => mapRow(row, mine, robot, plans))), older(mine, 'maps', more)];
+/**
+ * The maps the robot uploaded: at the top those it keeps as floor plans, however
+ * old they are, the one it accepted last first, and then the others, newest first.
+ */
+function mapList(mine, { robot, maps, more_maps: more, floorplans: plans, floorplan_maps: old }) {
+  const all = [...maps, ...old];
+  if (all.length === 0) return none('Nothing yet.');
+  const made = plans.map((plan) => plan.map_id);
+  const rows = [
+    ...all.filter((row) => made.includes(row.id)).sort((a, b) => made.indexOf(a.id) - made.indexOf(b.id)),
+    ...all.filter((row) => !made.includes(row.id)),
+  ];
+  const said = mine.floors.said;
+  return [
+    table('Maps', MAP_COLUMNS, mine.openMaps, rows.map((row) => mapRow(row, mine, robot, plans))),
+    // How it went with a map that is listed no more, as an old one is once it is no floor plan.
+    said !== null && !rows.some((row) => row.id === said.map) && floorSaid(mine, said.map),
+    older(mine, 'maps', more),
+  ];
 }
 
 // ---- The floor plans of one robot ----
 //
 // A floor plan is a map that the robot keeps, to clean by. The robot makes one
 // of a map it uploaded when the server tells it to, and the server remembers
-// which it told the robot to make: a robot cannot be asked which it has.
+// which it told the robot to make: a robot cannot be asked which it has. So a
+// floor plan has no list of its own: it is the map it was made of, ticked, at
+// the top of the table of the maps, and the buttons of that row are what is
+// asked of the robot with it.
 
 /** A UUID as short as a button can carry: how it begins. */
 function short(uuid) {
@@ -880,16 +985,18 @@ function short(uuid) {
 /**
  * Ask the robot, through the server, to keep a map as a floor plan or to drop
  * one it keeps. The view's `floors` holds whether an answer is waited for and
- * how the last request went, with the map it was pressed on, or null for one
- * pressed on a floor plan: that is where it is said. One is asked at a time.
+ * how the last request went, with the map it was pressed on, under whose row
+ * that is said. One is asked at a time. `focus` names the button the keyboard
+ * goes to when the one that was pressed leaves the page with its question.
  */
-async function askFloor(mine, label, more, map = null) {
+async function askFloor(mine, label, more, map, focus = null) {
   const floors = mine.floors;
   if (floors.waiting) return;
   floors.waiting = true;
   floors.asking = null;
   floors.said = null;
   drawRobot(mine);
+  if (focus) app.querySelector(`[data-focus="${focus}"]`)?.focus();
   const address = `api/floorplan?${new URLSearchParams({ ...mine.robot, ...more })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
   floors.waiting = false;
@@ -901,69 +1008,88 @@ async function askFloor(mine, label, more, map = null) {
 }
 
 /**
- * The buttons for something that takes a floor plan from the robot, which is
- * asked twice. The second time Keep stands where the first button stood, with
- * the keyboard on it, and the button that does it beside that, so that
- * pressing the first one twice drops nothing. `key` names what is asked, and
- * the view's `floors.asking` holds the one that awaits its second press.
+ * Ask whether a floor plan is to go from the robot, or take that back.
+ * `asking` is the map whose button was pressed and what that would do, which
+ * the view's `floors.asking` holds until the second press, or null for none,
+ * and `focus` names the button the keyboard goes to.
  */
-function askTwice(mine, robot, key, label, again, press) {
-  const floors = mine.floors;
-  const set = (asking) => () => {
-    floors.asking = asking;
-    floors.said = null;
-    drawRobot(mine);
-  };
-  return floors.asking === key
-    ? [robotButton(floors, robot, 'Keep', key, set(null)), robotButton(floors, robot, again, `${key}-again`, press)]
-    : [robotButton(floors, robot, label, key, set(key))];
-}
-
-/** How the last request about a floor plan went, where it was pressed: on the map of that `id`, or with null on a floor plan. */
-function floorSaid(mine, map) {
-  const said = mine.floors.said;
-  return said !== null && said.map === map && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text);
+function askAgain(mine, asking, focus) {
+  mine.floors.asking = asking;
+  mine.floors.said = null;
+  // A selection would hold the page as it is, and the press has to show.
+  getSelection().removeAllRanges();
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${focus}"]`)?.focus();
 }
 
 /**
- * What can be asked of the robot with a map: to keep it as a new floor plan, or
- * in place of one that it has. Those are the floor plans the server had it
- * make and the one this map says it was cleaned on.
+ * The floor plans a map can be kept in place of: those the server had the
+ * robot make and the one the map says it was cleaned on, but not its own.
  */
-function mapTools(mine, robot, plans, id, map) {
-  const has = [...new Set([...plans.map((plan) => plan.rank_uuid), map.persistent_rank_uuid])]
+function replaceable(plans, map) {
+  return [...new Set([...plans.map((plan) => plan.rank_uuid), map.persistent_rank_uuid])]
     .filter((uuid) => typeof uuid === 'string' && uuid !== '' && uuid !== map.rank_uuid);
-  return h('div', { class: 'map-tools' },
-    robotButton(mine.floors, robot, 'Promote to floor plan', `floor-new-${id}`,
-      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id)),
-    has.flatMap((old) => askTwice(mine, robot, `floor-swap-${id}-${old}`, `Replace floor plan ${short(old)}`, 'Replace it',
-      () => askFloor(mine, 'Replace', { action: 'update', map: id, old_rank_uuid: old }, id))),
-    floorSaid(mine, id));
 }
 
-/** A floor plan in a row: when the robot accepted it, what the robot knows it by, and the way to have the robot drop it. */
-function floorRow(mine, robot, plan) {
-  const uuid = String(plan.rank_uuid);
-  return h('div', { class: 'floor' },
-    moment(plan.at),
-    h('span', { class: 'floor-id' }, uuid),
-    h('div', { class: 'slot-tools' }, askTwice(mine, robot, `floor-drop-${uuid}`, 'Demote', 'Demote it',
-      () => askFloor(mine, 'Demote', { action: 'demote', rank_uuid: uuid }))));
+/**
+ * The buttons of a map's row: to have the robot keep the map as a new floor
+ * plan, to have it drop the floor plan made of the map, and to have it keep
+ * the map in place of another floor plan. A map that is a floor plan can be
+ * demoted and one that is none can be promoted or put in the place of another.
+ * The last two take a floor plan from the robot, so they only ask what
+ * `floorQuestion` puts under the row.
+ */
+function mapTools(mine, robot, plans, id, map, plan) {
+  const floors = mine.floors;
+  const made = plan ? 'this map is a floor plan already' : null;
+  const lone = replaceable(plans, map).length === 0 ? 'the robot is not known to have a floor plan to replace' : null;
+  const asks = (action) => () => askAgain(mine, { map: id, action }, 'floor-keep');
+  return [
+    robotButton(floors, robot, 'Promote to floor plan', `floor-new-${id}`,
+      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id), made, null, 'promote'),
+    robotButton(floors, robot, 'Demote from floor plan', `floor-drop-${id}`, asks('demote'),
+      plan ? null : 'this map is not a floor plan', null, 'demote'),
+    robotButton(floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`, asks('replace'),
+      made ?? lone, null, 'replace'),
+  ];
 }
 
-/** The floor plans the server had the robot make, the one it accepted last first. */
-function floorPanel(mine, { robot, floorplans: plans }) {
-  return panel('Floor plans', [
-    plans.length === 0
-      ? h('p', { class: 'plan-note' }, none('None.'))
-      : h('div', { class: 'floors' }, plans.map((plan) => floorRow(mine, robot, plan))),
-    floorSaid(mine, null),
-  ], {
-    hint: 'The maps this server had the robot keep as floor plans, to clean by. A robot cannot be asked which it has, '
-      + 'so one it was given elsewhere is not listed. A map is made one from where it is opened below, '
-      + 'and Demote has the robot delete one.',
-    wide: true,
-  });
+/**
+ * What a press on Demote or on Replace asks, under the row of its map, and the
+ * answers to that. Taking a floor plan from the robot is asked twice, and the
+ * second time here and not where the button that asked first is, so that
+ * pressing that one twice takes nothing, and the keyboard is put on Keep.
+ * Where the robot has more floor plans than one to replace, the second press
+ * is also what chooses among them.
+ */
+function floorQuestion(mine, robot, plans, id, map, plan) {
+  const floors = mine.floors;
+  const asking = floors.asking;
+  if (asking === null || asking.map !== id) return null;
+  const demoting = asking.action === 'demote';
+  const others = demoting ? [] : replaceable(plans, map);
+  // Nothing is asked of a map that the buttons would no longer ask it of.
+  if (demoting ? plan === null : plan !== null || others.length === 0) return null;
+  const back = demoting ? `floor-drop-${id}` : `floor-swap-${id}`;
+  const question = demoting ? `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones.`
+    : others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.`
+    : 'Replace which floor plan with this map? The robot keeps the map in its place.';
+  const again = demoting
+    ? [robotButton(floors, robot, 'Demote it', 'floor-again',
+      () => askFloor(mine, 'Demote', { action: 'demote', rank_uuid: plan.rank_uuid }, id, back))]
+    : others.map((old) => robotButton(floors, robot, others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
+      `floor-again-${old}`, () => askFloor(mine, 'Replace', { action: 'update', map: id, old_rank_uuid: old }, id, back)));
+  return h('div', { class: 'entry-ask' },
+    h('p', null, question),
+    h('div', { class: 'slot-tools' },
+      h('button', { class: 'button', type: 'button', 'data-focus': 'floor-keep', onclick: () => askAgain(mine, null, back) }, 'Keep'),
+      again));
+}
+
+/** How the last request about a floor plan went, for the map of that `id`, which it was pressed on. */
+function floorSaid(mine, map) {
+  const said = mine.floors.said;
+  return said !== null && said.map === map && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text);
 }
 
 // ---- The schedule of one robot ----
@@ -1137,20 +1263,21 @@ function save(mine) {
  * there is another reason `why` not, and does nothing while the robot has yet
  * to answer the last one pressed, which `job.waiting` says: `job` is the
  * view's `schedule` or its `floors`. `look` makes it something other than a
- * button with its label on it.
+ * button with its label on it, and `glyph` a button with that icon on it
+ * alone, which says what it does to a pointer that rests on it.
  */
-function robotButton(job, robot, label, focus, press, why = null, look = null) {
+function robotButton(job, robot, label, focus, press, why = null, look = null, glyph = null) {
   const reason = !robot.session ? 'the robot is not connected' : why;
   // Held back, not disabled: a disabled button could not keep the keyboard's focus.
   const held = reason === null && Boolean(job.waiting);
   return h('button', {
-    class: 'button',
+    class: glyph ? 'button tool' : 'button',
     type: 'button',
     ...look,
     disabled: reason !== null,
     'aria-disabled': held && 'true',
-    'aria-label': look && label,
-    title: held ? `${label}: waiting for the robot to answer` : reason && `${label}: ${reason}`,
+    'aria-label': (look || glyph) && label,
+    title: held ? `${label}: waiting for the robot to answer` : reason ? `${label}: ${reason}` : glyph && label,
     'data-focus': focus,
     onclick: () => {
       if (job.waiting) return;
@@ -1158,7 +1285,7 @@ function robotButton(job, robot, label, focus, press, why = null, look = null) {
       getSelection().removeAllRanges();
       press();
     },
-  }, !look && label);
+  }, glyph ? icon(glyph) : !look && label);
 }
 
 /** A button of the schedule. */
@@ -1718,13 +1845,7 @@ function statusPanels(robot) {
 const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
-  ['maps', 'Maps', (mine, body) => [
-    floorPanel(mine, body),
-    panel('Maps', mapList(mine, body), {
-      hint: 'What the robot mapped on a run, newest first. It uploads a map at each pause of a run and at its end.',
-      wide: true,
-    }),
-  ]],
+  ['maps', 'Maps', (mine, body) => panel('Maps', mapList(mine, body), { wide: true })],
   ['events', 'Events', (mine, { events, more }) => panel('Events', eventLog(mine, events, more), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
     wide: true,
@@ -1859,8 +1980,8 @@ function drawRobot(mine) {
   const body = mine.body;
   if (mine !== view || !body) return;
   const data = [
-    body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, mine.tab, mine.naming, mine.command,
-    mine.accepted, mine.schedule, mine.floors, mine.deleting,
+    body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, mine.tab,
+    mine.naming, mine.command, mine.accepted, mine.schedule, mine.floors, mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
 }
@@ -1957,8 +2078,8 @@ function navigate() {
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave
     // and when; how the last request failed; the form, when one is open; and the event about to be deleted.
     schedule: { asked: null, waiting: null, shown: null, at: null, said: null, form: null, dropping: null },
-    // Whether the robot has yet to answer what was asked of it about a floor plan; what awaits its second press;
-    // and how the last request went, with the map it was pressed on.
+    // Whether the robot has yet to answer what was asked of it about a floor plan; the map whose button awaits
+    // its second press, with what that would do; and how the last request went, with the map it was pressed on.
     floors: { waiting: false, asking: null, said: null },
     // Whether deleting the robot has been asked for and awaits its second press; whether the server has yet to answer; and how it failed.
     deleting: { asked: false, waiting: false, said: null },
