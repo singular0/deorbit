@@ -1206,6 +1206,14 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+/* A warning sign in a line, before what it warns of. */
+.sign {
+  display: inline-flex;
+  margin-right: 5px;
+  color: var(--tone);
+  vertical-align: -0.2em;
+}
+
 /* An event that is off is still there to read, only quieter. */
 .slot.off .slot-time,
 .slot.off .day {
@@ -1281,7 +1289,8 @@ h2 {
   margin-bottom: 0;
 }
 
-.slot-form .hint {
+.slot-form .hint,
+.slot-form .plan-note {
   flex-basis: 100%;
   margin: 0;
 }
@@ -1316,6 +1325,12 @@ h2 {
   font: inherit;
   font-size: 14px;
   font-variant-numeric: tabular-nums;
+}
+
+/* A floor plan is a longer line than a narrow screen is wide. */
+.field > select {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .picks {

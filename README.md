@@ -81,10 +81,11 @@ robot · ❌ not there
 | Pause, resume, return to base | ✅ | |
 | Cancel a cleaning | 🟡 | Written; not yet tried on a real robot. |
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |
-| Add, change and delete scheduled cleanings | 🟡 | Time, days, mode and navigation. Written; not yet tried on a real robot. |
+| Add, change and delete scheduled cleanings | 🟡 | Time, days, mode, navigation and floor plan. Written; not yet tried on a real robot. |
 | Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. |
 | Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, while the robot is connected. The page lists the floor plans it had the robot make, not those the robot got from Neato's cloud. Written; not yet tried on a real robot. |
-| Clean by a floor plan, zones and no-go lines | ❌ | No floor plan can be edited or chosen for a cleaning. Scheduled cleanings that already use one are shown and left as they are. |
+| Clean by a floor plan | 🟡 | A scheduled cleaning can be put on one of the floor plans the page lists; Start always cleans without one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. Written; not yet tried on a real robot. |
+| Zones and no-go lines | ❌ | None can be drawn or chosen. A scheduled cleaning of a zone is shown, and keeps its zone while it stays on its floor plan. |
 | History of what a robot reported | ✅ | Its connections, its messages and error reports, and the commands it was sent. |
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
 | Name a robot | ✅ | Kept by the server; the robot is not told. |

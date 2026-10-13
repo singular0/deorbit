@@ -991,15 +991,48 @@ function runsOf(event) {
   return Array.isArray(runs) ? runs.map(record) : [];
 }
 
-/** What the runs of an event clean and how, in a line. */
-function cleans(runs) {
+/** What the robot knows the floor plan of a run by, or null for a run on none, or on one it names by no text. */
+function floorOf(run) {
+  const uuid = record(run.map).rank_id;
+  return typeof uuid === 'string' && uuid !== '' ? uuid : null;
+}
+
+/**
+ * Those of the floor plans `uuids` that are not among `plans`, the ones the
+ * server had the robot keep. A robot cannot be asked which it has, so one of
+ * these may be a floor plan it was given elsewhere, or one it has no more.
+ */
+function strays(uuids, plans) {
+  const kept = new Set(plans.map((plan) => plan.rank_uuid));
+  return [...new Set(uuids)].filter((uuid) => uuid && !kept.has(uuid));
+}
+
+/** What is said of floor plans that an event names and the robot is not known to have. */
+function strayed(uuids) {
+  return `Not a floor plan this server had the robot keep, so the robot may not have it: ${uuids.join(', ')}`;
+}
+
+/**
+ * A warning sign to set in a line, before what it warns of. With `text` it
+ * says that to a pointer that rests on it and to a screen reader; without, the
+ * line it is in says it.
+ */
+function sign(text = null) {
+  return h('span', { class: 'sign warn', role: text && 'img', 'aria-label': text, title: text }, icon('alert'));
+}
+
+/** What the runs of an event clean and how, in a line, with a warning sign before a floor plan the robot is not known to have. */
+function cleans(runs, plans) {
   if (runs.length === 0) return 'no runs';
   const place = runs[0].map == null ? null : record(runs[0].map);
   const where = place === null ? 'no floor plan' : named('floor plan', place.rank_id) ?? 'a floor plan';
-  if (runs.length > 1) return `${runs.length} runs · ${where}`;
+  const lost = strays(runs.map(floorOf), plans);
+  const marked = lost.length > 0 ? [sign(strayed(lost)), where] : [where];
   const settings = record(runs[0].settings);
-  return [word(settings.mode), word(settings.navigation_mode), where, place && named('zone', place.track_id)]
-    .filter(Boolean).join(' · ');
+  const said = runs.length > 1
+    ? [`${runs.length} runs`, marked]
+    : [word(settings.mode), word(settings.navigation_mode), marked, place && named('zone', place.track_id)];
+  return said.filter(Boolean).flatMap((part, n) => (n > 0 ? [' · ', part] : [part])).flat();
 }
 
 /** An event as the server takes one: the fields the spec gives one, and of its command the runs alone. */
@@ -1052,8 +1085,22 @@ function draftOf(event) {
     time: event && typeof event.time === 'string' ? event.time : '',
     mode: among(MODES, settings.mode),
     navigation: among(NAVIGATION_MODES, settings.navigation_mode),
+    // The floor plan of the event's only run, by what the robot knows it by, or nothing for none.
+    floor: (runs.length === 1 && floorOf(runs[0])) || '',
     runs,
   };
+}
+
+/**
+ * The map of a run that is to be on the floor plan `floor`, or on none where
+ * that is empty. A run that stays on its floor plan keeps its map as the robot
+ * gave it, with its zone. On another it cleans the whole of it and is not told
+ * to mind a no-go map: a floor plan this server had the robot make has no
+ * zones and no such map.
+ */
+function placed(run, floor) {
+  if (floor === '') return null;
+  return floor === floorOf(run) ? run.map : { rank_id: floor, track_id: null, nogo_enabled: false };
 }
 
 /** Open the form on `event`, or on a new one when there is none, and put the keyboard in it. */
@@ -1069,15 +1116,17 @@ function edit(mine, event) {
 /** Ask for the event in the form to be added, or to be put in place of the one the form was opened on. */
 function save(mine) {
   const plan = mine.schedule;
-  const { id, enabled, time, mode, navigation, runs } = plan.form;
+  const { id, enabled, time, mode, navigation, floor, runs } = plan.form;
   const days = DAYS.map(([name]) => name).filter((name) => plan.form.days.includes(name));
   if (days.length === 0) {
     plan.said = { tone: 'bad', text: 'Save: choose at least one day' };
     drawRobot(mine);
     return;
   }
-  // The form has the settings of an event's only run. The runs of an event with more go back as the robot gave them.
-  const changed = runs.length === 1 ? [{ ...runs[0], settings: { mode, navigation_mode: navigation } }] : runs;
+  // The form has the settings and the floor plan of an event's only run. The runs of an event with more go back as the robot gave them.
+  const changed = runs.length === 1
+    ? [{ ...runs[0], settings: { mode, navigation_mode: navigation }, map: placed(runs[0], floor) }]
+    : runs;
   const event = sent({ id, enabled, days, time, runs: changed });
   askSchedule(mine, id === null ? 'add' : 'update', 'Save', { event: JSON.stringify(event) });
 }
@@ -1117,19 +1166,26 @@ function planButton(mine, ...rest) {
   return robotButton(mine.schedule, ...rest);
 }
 
+/** A floor plan as a line to choose it by: how what the robot knows it by begins, and when the robot accepted it. */
+function floorLabel(plan) {
+  const at = Date.parse(plan.at);
+  return `${short(String(plan.rank_uuid))} · ${Number.isNaN(at) ? plan.at : clock(at)}`;
+}
+
 /**
  * The form an event is added or changed through. What is entered goes to the
  * view's `schedule.form` as it is entered, and a new page draws the form from
- * that.
+ * that. `plans` are the floor plans the server had the robot keep, which an
+ * event of one run can be put on.
  */
-function scheduleForm(mine, robot) {
+function scheduleForm(mine, robot, plans) {
   const plan = mine.schedule;
   const draft = plan.form;
   const field = (label, control) => h('label', { class: 'field' }, h('span', null, label), control);
-  const choice = (name, values) => h('select', {
+  const choice = (name, values, label = (value) => value) => h('select', {
     'data-focus': `plan-${name}`,
     onchange: (event) => { draft[name] = event.target.value; },
-  }, values.map((value) => h('option', { value, selected: value === draft[name] }, value)));
+  }, values.map((value) => h('option', { value, selected: value === draft[name] }, label(value))));
   const pick = (label, focus, on, set) => h('label', { class: 'pick' },
     h('input', { type: 'checkbox', checked: on, 'data-focus': focus, onchange: (event) => set(event.target.checked) }),
     h('span', null, label));
@@ -1142,8 +1198,20 @@ function scheduleForm(mine, robot) {
     title: !robot.session ? 'Save: the robot is not connected' : waiting && 'Save: waiting for the robot to answer',
     'data-focus': 'plan-save',
   }, 'Save');
-  const kept = draft.runs.length > 1 ? `Its ${draft.runs.length} runs stay as they are.`
-    : draft.runs[0]?.map != null ? 'The floor plan it cleans stays as it is.'
+  const single = draft.runs.length === 1;
+  const own = single ? floorOf(draft.runs[0]) : null;
+  // The floor plans the robot is not known to have: of an event of one run the one it is on and the one last chosen here.
+  const lost = strays(single ? [own, draft.floor] : draft.runs.map(floorOf), plans);
+  // What there is to choose from: no floor plan, then those, then the ones the server had the robot keep.
+  // A map, because a robot chooses the names that are looked up.
+  const offered = new Map([
+    ['', 'None'],
+    ...lost.map((uuid) => [uuid, `⚠ ${short(uuid)} · not listed`]),
+    ...plans.map((known) => [known.rank_uuid, floorLabel(known)]),
+  ]);
+  const zone = own === null ? null : word(record(draft.runs[0].map).track_id);
+  const kept = !single ? `Its ${draft.runs.length} runs stay as they are.`
+    : zone !== null ? `It cleans the zone ${zone} of its floor plan. Another floor plan is cleaned whole.`
     : null;
   return h('form', {
     class: 'slot-form',
@@ -1167,9 +1235,10 @@ function scheduleForm(mine, robot) {
     h('div', { class: 'picks' }, DAYS.map(([name, label]) => pick(label, `plan-${name}`, draft.days.includes(name), (on) => {
       draft.days = on ? [...draft.days, name] : draft.days.filter((day) => day !== name);
     })))),
-  // The settings of a run, where the event has one run to set them for.
-  draft.runs.length === 1 && field('Mode', choice('mode', MODES)),
-  draft.runs.length === 1 && field('Navigation', choice('navigation', NAVIGATION_MODES)),
+  // The settings and the floor plan of a run, where the event has one run to set them for.
+  single && field('Mode', choice('mode', MODES)),
+  single && field('Navigation', choice('navigation', NAVIGATION_MODES)),
+  single && field('Floor plan', choice('floor', [...offered.keys()], (uuid) => offered.get(uuid))),
   pick('Enabled', 'plan-enabled', draft.enabled, (on) => { draft.enabled = on; }),
   h('div', { class: 'slot-tools' },
     button,
@@ -1184,11 +1253,12 @@ function scheduleForm(mine, robot) {
         drawRobot(mine);
       },
     }, 'Cancel')),
+  lost.length > 0 && h('p', { class: 'plan-note warn' }, sign(), strayed(lost)),
   kept && h('p', { class: 'hint' }, kept));
 }
 
 /** An event of the schedule in a row: when it starts, what it cleans, whether it is on, and the ways to change it. */
-function slot(mine, robot, event) {
+function slot(mine, robot, event, plans) {
   const plan = mine.schedule;
   // The robot knows an event by its id, so one it gave none can only be shown.
   const id = typeof event.id === 'string' && event.id !== '' ? event.id : null;
@@ -1205,7 +1275,7 @@ function slot(mine, robot, event) {
       days.length === 0 ? none('No days')
         : all ? h('span', { class: 'day' }, 'Every day')
         : days.map((day) => h('span', { class: 'day' }, DAY_LABELS.get(day) ?? String(day)))),
-    h('span', { class: 'event-what' }, cleans(runsOf(event))),
+    h('span', { class: 'event-what' }, cleans(runsOf(event), plans)),
     h('div', { class: 'slot-tools' },
       planButton(mine, robot, 'Enabled', `slot-on-${id}`, toggle, nameless,
         { class: 'switch', role: 'switch', 'aria-checked': String(on) }),
@@ -1232,7 +1302,7 @@ function slot(mine, robot, event) {
  * robot keeps the schedule and the server none of it, so there is one to show
  * only once a connected robot has been asked.
  */
-function schedulePanel(mine, robot) {
+function schedulePanel(mine, { robot, floorplans: plans }) {
   const plan = mine.schedule;
   const shown = plan.shown;
   const events = shown !== null && Array.isArray(shown.events) ? shown.events.map(record) : [];
@@ -1253,8 +1323,8 @@ function schedulePanel(mine, robot) {
       && h('p', { class: 'plan-note warn' }, 'The robot says that its schedule as a whole is off, which nothing here can change.'),
     shown !== null && events.length === 0 && !adding && h('p', { class: 'plan-note' }, none('No events.')),
     events.length > 0 && h('div', { class: 'slots' },
-      events.map((event) => (changing(event) ? scheduleForm(mine, robot) : slot(mine, robot, event)))),
-    adding && scheduleForm(mine, robot),
+      events.map((event) => (changing(event) ? scheduleForm(mine, robot, plans) : slot(mine, robot, event, plans)))),
+    adding && scheduleForm(mine, robot, plans),
     plan.said && h('p', { class: `command-said ${plan.said.tone}`, role: 'status' }, plan.said.text),
   ], { hint, wide: true, tools });
 }
@@ -1647,7 +1717,7 @@ function statusPanels(robot) {
 // the server's answer. Only the one that is shown is built.
 const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
-  ['schedule', 'Schedule', (mine, { robot }) => schedulePanel(mine, robot)],
+  ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
   ['maps', 'Maps', (mine, body) => [
     floorPanel(mine, body),
     panel('Maps', mapList(mine, body), {
