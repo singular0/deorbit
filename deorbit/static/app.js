@@ -579,14 +579,18 @@ function drawAdd(mine) {
  * a line of its own under it; and `detail`, which gives what it opens on. The
  * row itself is what opens it, at a press or from the keyboard, so it is a
  * stop for the Tab key, which `focus` names to the keyboard's focus. `open` is
- * the view's set of the rows that are open, by `id`.
+ * the view's set of the rows that are open, by `id`. A row that is `dim` is
+ * set quieter than the others, and one that is `pinned` is open and cannot be
+ * shut, as a row is while the form it opens on is being filled in.
  */
-function entry(columns, open, tooled, { id, focus, cells, tools, note, detail }) {
+function entry(columns, open, tooled, { id, focus, cells, tools, note, detail, dim, pinned }) {
   const width = columns.length + (tooled ? 1 : 0);
+  const opened = pinned || open.has(id);
   // The detail is laid out when the row is first opened: most rows never are.
   const under = h('td', { colspan: width });
-  const below = h('tr', { class: 'entry-detail', id: `${focus}-detail`, hidden: !open.has(id) }, under);
+  const below = h('tr', { class: 'entry-detail', id: `${focus}-detail`, hidden: !opened }, under);
   const toggle = () => {
+    if (pinned) return;
     const shown = !open.has(id);
     if (shown) open.add(id);
     else open.delete(id);
@@ -597,7 +601,7 @@ function entry(columns, open, tooled, { id, focus, cells, tools, note, detail })
   const row = h('tr', {
     class: 'entry-row',
     tabindex: '0',
-    'aria-expanded': String(open.has(id)),
+    'aria-expanded': String(opened),
     'aria-controls': below.id,
     'data-focus': focus,
     onclick: (event) => {
@@ -614,8 +618,8 @@ function entry(columns, open, tooled, { id, focus, cells, tools, note, detail })
   cells.map((cell, n) => h('td', { class: `cell-${columns[n][1]}`, 'data-label': columns[n][2] && columns[n][0] }, cell)),
   tooled && h('td', { class: 'cell-tools' }, h('div', { class: 'entry-tools' }, tools)));
   // A row that was open stays open when the page is drawn again.
-  if (open.has(id)) under.append(...detail());
-  return h('tbody', { class: 'entry' },
+  if (opened) under.append(...detail());
+  return h('tbody', { class: dim ? 'entry dim' : 'entry' },
     row,
     note && h('tr', { class: 'entry-note' }, h('td', { colspan: width }, note)),
     below);
@@ -761,22 +765,23 @@ function areaOf(runs) {
   return areas.length > 0 ? `${areas.reduce((sum, area) => sum + area, 0).toFixed(2)} m²` : null;
 }
 
+/** What these runs were set to under `name`: one value where they agree, as the one run of most maps does with itself. */
+function setting(runs, name) {
+  const values = [...new Set(runs.map((run) => word(record(run.settings)[name])).filter(Boolean))];
+  return values.length > 0 ? values.join(', ') : none();
+}
+
 /** What a map says of its run that its row does not, beside the picture. */
 function mapFacts(map, runs) {
   const timing = record(map.timing);
-  // What the runs were set to: one value where they agree, as the one run of most maps does with itself.
-  const setting = (name) => {
-    const values = [...new Set(runs.map((run) => word(record(run.settings)[name])).filter(Boolean))];
-    return values.length > 0 ? values.join(', ') : none();
-  };
   return rows([
     // As the start is in the row: how long ago, and the rest to a pointer that rests on it.
     ['End time', when(timing.end)],
     ['Paused for', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
     ['Started by', plain(map.started_by)],
     ['Cleaning complete', flag(map.cleaning_complete)],
-    ['Mode', setting('mode')],
-    ['Navigation', setting('navigation_mode')],
+    ['Mode', setting(runs, 'mode')],
+    ['Navigation', setting(runs, 'navigation_mode')],
     // The row of a map of more runs than one has only how many they were and what they cleaned between them.
     ...(runs.length > 1 ? runs.map((run, n) => {
       const said = [word(run.state), areaOf([run])].filter(Boolean);
@@ -886,13 +891,17 @@ async function loadMap(mine, id, node) {
 
 /**
  * The picture of a map. The view keeps the node, so a map is fetched and read
- * once, when it is first opened, however often the page is drawn again.
+ * once, when it is first opened, however often the page is drawn again. A node
+ * is in one place of a page, so a picture that is shown elsewhere than in the
+ * row of its map, as that of a floor plan is in the schedule, is kept by that
+ * `place` as well, and is fetched once for it.
  */
-function drawing(mine, id) {
-  let node = mine.drawings.get(id);
+function drawing(mine, id, place = null) {
+  const key = place === null ? id : `${place} ${id}`;
+  let node = mine.drawings.get(key);
   if (!node) {
     node = h('div', { class: 'map-drawing' });
-    mine.drawings.set(id, node);
+    mine.drawings.set(key, node);
     loadMap(mine, id, node);
   }
   return node;
@@ -1046,11 +1055,11 @@ function mapTools(mine, robot, plans, id, map, plan) {
   const asks = (action) => () => askAgain(mine, { map: id, action }, 'floor-keep');
   return [
     robotButton(floors, robot, 'Promote to floor plan', `floor-new-${id}`,
-      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id), made, null, 'promote'),
+      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id), { why: made, glyph: 'promote', alone: true }),
     robotButton(floors, robot, 'Demote from floor plan', `floor-drop-${id}`, asks('demote'),
-      plan ? null : 'this map is not a floor plan', null, 'demote'),
+      { why: plan ? null : 'this map is not a floor plan', glyph: 'demote', alone: true }),
     robotButton(floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`, asks('replace'),
-      made ?? lone, null, 'replace'),
+      { why: made ?? lone, glyph: 'replace', alone: true }),
   ];
 }
 
@@ -1147,18 +1156,33 @@ function sign(text = null) {
   return h('span', { class: 'sign warn', role: text && 'img', 'aria-label': text, title: text }, icon('alert'));
 }
 
-/** What the runs of an event clean and how, in a line, with a warning sign before a floor plan the robot is not known to have. */
-function cleans(runs, plans) {
-  if (runs.length === 0) return 'no runs';
+/**
+ * The floor plan the runs of an event are on, with a warning sign before one
+ * the robot is not known to have. For the row of the event it is how what the
+ * robot knows it by begins, the rest of which is told to a pointer that rests
+ * on it, and after it the zone of it that is cleaned, or how many runs there
+ * are where there are more than one. For the event's form it is `whole`, and
+ * alone.
+ */
+function floorShown(runs, plans, whole = false) {
+  if (runs.length === 0) return none('No runs');
   const place = runs[0].map == null ? null : record(runs[0].map);
-  const where = place === null ? 'no floor plan' : named('floor plan', place.rank_id) ?? 'a floor plan';
+  const uuid = place && word(place.rank_id);
   const lost = strays(runs.map(floorOf), plans);
-  const marked = lost.length > 0 ? [sign(strayed(lost)), where] : [where];
-  const settings = record(runs[0].settings);
-  const said = runs.length > 1
-    ? [`${runs.length} runs`, marked]
-    : [word(settings.mode), word(settings.navigation_mode), marked, place && named('zone', place.track_id)];
-  return said.filter(Boolean).flatMap((part, n) => (n > 0 ? [' · ', part] : [part])).flat();
+  return [
+    lost.length > 0 && sign(strayed(lost)),
+    place === null ? none() : uuid === null ? none('Unnamed') : whole ? uuid : h('span', { title: uuid }, short(uuid)),
+    !whole && (runs.length > 1 ? ` · ${runs.length} runs` : place && named(' · zone', place.track_id)),
+  ];
+}
+
+/** The days of an event, a chip to each, or one chip for all seven. */
+function daysOf(event) {
+  const days = Array.isArray(event.days) ? event.days : [];
+  return h('span', { class: 'days' },
+    days.length === 0 ? none('No days')
+      : DAYS.every(([name]) => days.includes(name)) ? h('span', { class: 'day' }, 'Every day')
+      : days.map((day) => h('span', { class: 'day' }, DAY_LABELS.get(day) ?? String(day))));
 }
 
 /** An event as the server takes one: the fields the spec gives one, and of its command the runs alone. */
@@ -1189,7 +1213,6 @@ async function askSchedule(mine, action, label, more = {}) {
     plan.said = went;
   } else if (action === 'show') {
     plan.shown = record(answer.body);
-    plan.at = answer.sent;
   } else {
     plan.form = null;
     plan.dropping = null;
@@ -1229,9 +1252,14 @@ function placed(run, floor) {
   return floor === floorOf(run) ? run.map : { rank_id: floor, track_id: null, nogo_enabled: false };
 }
 
-/** Open the form on `event`, or on a new one when there is none, and put the keyboard in it. */
+/**
+ * Open the form on `event`, or on a new one when there is none, and put the
+ * keyboard in it. The form of an event is what its row opens on, so that row
+ * is opened, and is still open when the form is done with.
+ */
 function edit(mine, event) {
   const plan = mine.schedule;
+  if (event) mine.openSlots.add(event.id);
   plan.form = draftOf(event);
   plan.dropping = null;
   plan.said = null;
@@ -1262,22 +1290,22 @@ function save(mine) {
  * the floor plans do. It can be pressed while the robot is connected, unless
  * there is another reason `why` not, and does nothing while the robot has yet
  * to answer the last one pressed, which `job.waiting` says: `job` is the
- * view's `schedule` or its `floors`. `look` makes it something other than a
- * button with its label on it, and `glyph` a button with that icon on it
- * alone, which says what it does to a pointer that rests on it.
+ * view's `schedule` or its `floors`. `glyph` is an icon that stands before its
+ * label, or `alone` on it, as on a button of a row, which then says what it
+ * does to a pointer that rests on it. One that is `lit` shows that what it
+ * turns off is on.
  */
-function robotButton(job, robot, label, focus, press, why = null, look = null, glyph = null) {
+function robotButton(job, robot, label, focus, press, { why = null, glyph = null, alone = false, lit = false } = {}) {
   const reason = !robot.session ? 'the robot is not connected' : why;
   // Held back, not disabled: a disabled button could not keep the keyboard's focus.
   const held = reason === null && Boolean(job.waiting);
   return h('button', {
-    class: glyph ? 'button tool' : 'button',
+    class: ['button', alone && 'tool', lit && 'lit'].filter(Boolean).join(' '),
     type: 'button',
-    ...look,
     disabled: reason !== null,
     'aria-disabled': held && 'true',
-    'aria-label': (look || glyph) && label,
-    title: held ? `${label}: waiting for the robot to answer` : reason ? `${label}: ${reason}` : glyph && label,
+    'aria-label': alone && label,
+    title: held ? `${label}: waiting for the robot to answer` : reason ? `${label}: ${reason}` : alone && label,
     'data-focus': focus,
     onclick: () => {
       if (job.waiting) return;
@@ -1285,7 +1313,7 @@ function robotButton(job, robot, label, focus, press, why = null, look = null, g
       getSelection().removeAllRanges();
       press();
     },
-  }, glyph ? icon(glyph) : !look && label);
+  }, glyph && icon(glyph), !alone && label);
 }
 
 /** A button of the schedule. */
@@ -1300,22 +1328,88 @@ function floorLabel(plan) {
 }
 
 /**
- * The form an event is added or changed through. What is entered goes to the
- * view's `schedule.form` as it is entered, and a new page draws the form from
- * that. `plans` are the floor plans the server had the robot keep, which an
- * event of one run can be put on.
+ * The form of an event of the schedule: a line to each thing the event has, as
+ * a map has its facts, which is what a row of the schedule opens on. An event
+ * is changed and added through the same form: with a `draft`, which is the
+ * view's `schedule.form`, a line holds the field that changes what it says.
+ * What is entered goes to the draft as it is entered, and a new page draws the
+ * form from that. `event` is the event as the robot gave it, which a form that
+ * adds one has none of. `plans` are the floor plans the server had the robot
+ * keep, which an event of one run can be put on, and `back` names the button
+ * that opens the form on its draft, which Cancel returns the keyboard to.
+ * Beside the lines is the picture of the floor plan the event is on, where the
+ * server had the robot keep that one and so knows the map it was made of.
  */
-function scheduleForm(mine, robot, plans) {
+function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
   const plan = mine.schedule;
-  const draft = plan.form;
-  const field = (label, control) => h('label', { class: 'field' }, h('span', null, label), control);
-  const choice = (name, values, label = (value) => value) => h('select', {
+  const runs = draft ? draft.runs : runsOf(event);
+  const single = runs.length === 1;
+  const own = single ? floorOf(runs[0]) : null;
+  const zone = own === null ? null : word(record(runs[0].map).track_id);
+  // The settings and the floor plan of a run have a field where the event has one run to set them for.
+  const set = draft !== null && single;
+  // The floor plans the robot is not known to have: of an event of one run the one it is on and the one last chosen here.
+  const lost = draft === null ? [] : strays(single ? [own, draft.floor] : runs.map(floorOf), plans);
+  // What there is to choose from: no floor plan, then those, then the ones the server had the robot keep.
+  // A map, because a robot chooses the names that are looked up.
+  const offered = new Map([
+    ['', 'None'],
+    ...lost.map((uuid) => [uuid, `⚠ ${short(uuid)} · not listed`]),
+    ...plans.map((known) => [known.rank_uuid, floorLabel(known)]),
+  ]);
+  // The picture follows the floor plan that is chosen as it is chosen, since no field draws the page again.
+  // Each form keeps a picture of its own, which is what `back` tells one form from another by.
+  const picture = h('div', { class: 'slot-picture' });
+  const depict = () => {
+    const uuid = set ? draft.floor : runs.length > 0 ? floorOf(runs[0]) : null;
+    const made = plans.find((known) => known.rank_uuid === uuid);
+    picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back)] : []));
+  };
+  depict();
+  // A line names its field to the eye, and this to a screen reader.
+  const choice = (name, label, values, said = (value) => value, then = () => {}) => h('select', {
+    'aria-label': label,
     'data-focus': `plan-${name}`,
-    onchange: (event) => { draft[name] = event.target.value; },
-  }, values.map((value) => h('option', { value, selected: value === draft[name] }, label(value))));
-  const pick = (label, focus, on, set) => h('label', { class: 'pick' },
-    h('input', { type: 'checkbox', checked: on, 'data-focus': focus, onchange: (event) => set(event.target.checked) }),
+    onchange: ({ target }) => {
+      draft[name] = target.value;
+      then();
+    },
+  }, values.map((value) => h('option', { value, selected: value === draft[name] }, said(value))));
+  const pick = (label, focus, on, flip) => h('label', { class: 'pick' },
+    h('input', { type: 'checkbox', checked: on, 'data-focus': focus, onchange: ({ target }) => flip(target.checked) }),
     h('span', null, label));
+  const lines = rows([
+    ['Time', draft === null ? plain(event.time) : h('input', {
+      type: 'time',
+      required: '',
+      value: draft.time,
+      'aria-label': 'Time',
+      'data-focus': 'plan-time',
+      oninput: ({ target }) => { draft.time = target.value; },
+    })],
+    ['Days', draft === null ? daysOf(event) : h('div', { class: 'picks', role: 'group', 'aria-label': 'Days' },
+      DAYS.map(([name, label]) => pick(label, `plan-${name}`, draft.days.includes(name), (on) => {
+        draft.days = on ? [...draft.days, name] : draft.days.filter((day) => day !== name);
+      })))],
+    ['Mode', set ? choice('mode', 'Mode', MODES) : setting(runs, 'mode')],
+    ['Navigation', set ? choice('navigation', 'Navigation', NAVIGATION_MODES) : setting(runs, 'navigation_mode')],
+    ['Floor plan', set
+      ? choice('floor', 'Floor plan', [...offered.keys()], (uuid) => offered.get(uuid), depict)
+      : floorShown(runs, plans, true)],
+    ...(zone !== null ? [['Zone', zone]] : []),
+    // The columns of an event of more runs than one have what its runs are set to between them.
+    ...(runs.length > 1 ? runs.map((run, n) => {
+      const settings = record(run.settings);
+      const said = [word(settings.mode), word(settings.navigation_mode), named('zone', record(run.map).track_id)].filter(Boolean);
+      return [`Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
+    }) : []),
+    ['Enabled', draft === null ? flag(event.enabled) : h('select', {
+      'aria-label': 'Enabled',
+      'data-focus': 'plan-enabled',
+      onchange: ({ target }) => { draft.enabled = target.value === 'yes'; },
+    }, h('option', { value: 'yes', selected: draft.enabled }, 'Yes'), h('option', { value: 'no', selected: !draft.enabled }, 'No'))],
+  ]);
+  if (draft === null) return h('div', { class: 'slot-form' }, h('div', { class: 'slot-lines' }, lines), picture);
   const waiting = plan.waiting !== null;
   const button = h('button', {
     class: 'command',
@@ -1325,103 +1419,115 @@ function scheduleForm(mine, robot, plans) {
     title: !robot.session ? 'Save: the robot is not connected' : waiting && 'Save: waiting for the robot to answer',
     'data-focus': 'plan-save',
   }, 'Save');
-  const single = draft.runs.length === 1;
-  const own = single ? floorOf(draft.runs[0]) : null;
-  // The floor plans the robot is not known to have: of an event of one run the one it is on and the one last chosen here.
-  const lost = strays(single ? [own, draft.floor] : draft.runs.map(floorOf), plans);
-  // What there is to choose from: no floor plan, then those, then the ones the server had the robot keep.
-  // A map, because a robot chooses the names that are looked up.
-  const offered = new Map([
-    ['', 'None'],
-    ...lost.map((uuid) => [uuid, `⚠ ${short(uuid)} · not listed`]),
-    ...plans.map((known) => [known.rank_uuid, floorLabel(known)]),
-  ]);
-  const zone = own === null ? null : word(record(draft.runs[0].map).track_id);
-  const kept = !single ? `Its ${draft.runs.length} runs stay as they are.`
+  const kept = !single ? `Its ${runs.length} runs stay as they are.`
     : zone !== null ? `It cleans the zone ${zone} of its floor plan. Another floor plan is cleaned whole.`
     : null;
   return h('form', {
     class: 'slot-form',
-    onsubmit: (event) => {
-      event.preventDefault();
+    onsubmit: (submit) => {
+      submit.preventDefault();
       // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
       button.focus();
       getSelection().removeAllRanges();
       if (!plan.waiting) save(mine);
     },
   },
-  field('Time', h('input', {
-    type: 'time',
-    required: '',
-    value: draft.time,
-    'data-focus': 'plan-time',
-    oninput: (event) => { draft.time = event.target.value; },
-  })),
-  h('fieldset', { class: 'field' },
-    h('legend', null, 'Days'),
-    h('div', { class: 'picks' }, DAYS.map(([name, label]) => pick(label, `plan-${name}`, draft.days.includes(name), (on) => {
-      draft.days = on ? [...draft.days, name] : draft.days.filter((day) => day !== name);
-    })))),
-  // The settings and the floor plan of a run, where the event has one run to set them for.
-  single && field('Mode', choice('mode', MODES)),
-  single && field('Navigation', choice('navigation', NAVIGATION_MODES)),
-  single && field('Floor plan', choice('floor', [...offered.keys()], (uuid) => offered.get(uuid))),
-  pick('Enabled', 'plan-enabled', draft.enabled, (on) => { draft.enabled = on; }),
-  h('div', { class: 'slot-tools' },
-    button,
-    h('button', {
-      class: 'button',
-      type: 'button',
-      'data-focus': 'plan-cancel',
-      onclick: () => {
-        getSelection().removeAllRanges();
-        plan.form = null;
-        plan.said = null;
-        drawRobot(mine);
-      },
-    }, 'Cancel')),
-  lost.length > 0 && h('p', { class: 'plan-note warn' }, sign(), strayed(lost)),
-  kept && h('p', { class: 'hint' }, kept));
+  h('div', { class: 'slot-lines' },
+    lines,
+    h('div', { class: 'slot-tools' },
+      button,
+      h('button', {
+        class: 'button',
+        type: 'button',
+        'data-focus': 'plan-cancel',
+        onclick: () => {
+          getSelection().removeAllRanges();
+          plan.form = null;
+          plan.said = null;
+          drawRobot(mine);
+          app.querySelector(`[data-focus="${back}"]`)?.focus();
+        },
+      }, 'Cancel')),
+    lost.length > 0 && h('p', { class: 'plan-note warn' }, sign(), strayed(lost)),
+    kept && h('p', { class: 'hint' }, kept)),
+  picture);
 }
 
-/** An event of the schedule in a row: when it starts, what it cleans, whether it is on, and the ways to change it. */
-function slot(mine, robot, event, plans) {
+// The columns of the schedule: when an event starts and on which days, what
+// its runs are set to, and the floor plan they are on.
+const SCHEDULE_COLUMNS = [
+  ['Time', 'clock'],
+  ['Days', 'days'],
+  ['Mode', 'setting', true],
+  ['Navigation', 'setting', true],
+  ['Floor plan', 'floor', true],
+];
+
+/**
+ * Ask whether an event is to go from the robot's schedule, or take that back.
+ * `id` is that event's, which the view's `schedule.dropping` holds until the
+ * second press, or null for none, and `focus` names the button the keyboard
+ * goes to.
+ */
+function askDrop(mine, id, focus) {
+  mine.schedule.dropping = id;
+  // A selection would hold the page as it is, and the press has to show.
+  getSelection().removeAllRanges();
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${focus}"]`)?.focus();
+}
+
+/**
+ * An event of the schedule as a row of the table: when it starts and on which
+ * days, what its runs are set to and the floor plan they are on, and at its
+ * end the buttons that turn it on or off, open the form on it and ask whether
+ * to delete it. `n` is where it stands among the events. The row opens on the
+ * form of the event, which says what the event has, and Edit opens it with the
+ * fields that change that; it is not shut while they are there. Under the row
+ * is what a press on Delete asks. Deleting is asked twice, and the second time
+ * there and not where the button that asked first is, so that pressing that
+ * one twice deletes nothing, and the keyboard is put on Keep.
+ */
+function slot(mine, robot, event, n, plans) {
   const plan = mine.schedule;
   // The robot knows an event by its id, so one it gave none can only be shown.
   const id = typeof event.id === 'string' && event.id !== '' ? event.id : null;
-  const nameless = id === null ? 'the robot gave this event no id' : null;
+  const changing = id !== null && plan.form !== null && plan.form.id === id;
+  // While the form is open on an event to change it, the form is where it is changed.
+  const why = id === null ? 'the robot gave this event no id' : changing ? 'this event is being changed in the form under it' : null;
   const on = event.enabled === true;
-  const days = Array.isArray(event.days) ? event.days : [];
-  const all = DAYS.every(([name]) => days.includes(name));
+  const runs = runsOf(event);
   const toggle = () => askSchedule(mine, 'update', on ? 'Turn off' : 'Turn on', {
-    event: JSON.stringify(sent({ ...event, enabled: !on, runs: runsOf(event) })),
+    event: JSON.stringify(sent({ ...event, enabled: !on, runs })),
   });
-  return h('div', { class: `slot${on ? '' : ' off'}` },
-    h('strong', { class: 'slot-time' }, plain(event.time)),
-    h('span', { class: 'days' },
-      days.length === 0 ? none('No days')
-        : all ? h('span', { class: 'day' }, 'Every day')
-        : days.map((day) => h('span', { class: 'day' }, DAY_LABELS.get(day) ?? String(day)))),
-    h('span', { class: 'event-what' }, cleans(runsOf(event), plans)),
+  const question = () => h('div', { class: 'entry-ask' },
+    h('p', null, 'Delete this event? The robot takes it out of its schedule.'),
     h('div', { class: 'slot-tools' },
-      planButton(mine, robot, 'Enabled', `slot-on-${id}`, toggle, nameless,
-        { class: 'switch', role: 'switch', 'aria-checked': String(on) }),
-      // Deleting is asked twice. The second button takes the place of the first, and the keyboard's focus with it.
-      ...(id !== null && plan.dropping === id
-        ? [
-          planButton(mine, robot, 'Delete it', `slot-drop-${id}`, () => askSchedule(mine, 'delete', 'Delete', { id })),
-          planButton(mine, robot, 'Keep', `slot-keep-${id}`, () => {
-            plan.dropping = null;
-            drawRobot(mine);
-          }),
-        ]
-        : [
-          planButton(mine, robot, 'Edit', `slot-edit-${id}`, () => edit(mine, event), nameless),
-          planButton(mine, robot, 'Delete', `slot-drop-${id}`, () => {
-            plan.dropping = id;
-            drawRobot(mine);
-          }, nameless),
-        ])));
+      // No button of the robot's, so it also takes the question back while the robot is away.
+      h('button', { class: 'button', type: 'button', 'data-focus': 'slot-keep', onclick: () => askDrop(mine, null, `slot-drop-${n}`) }, 'Keep'),
+      planButton(mine, robot, 'Delete it', 'slot-again', () => askSchedule(mine, 'delete', 'Delete', { id }))));
+  return {
+    // The place of an event that has no id stands for one: a number, which no id is.
+    id: id ?? n,
+    focus: `slot-${n}`,
+    // An event that is off is still there to read, only quieter.
+    dim: !on,
+    pinned: changing,
+    cells: [
+      plain(event.time),
+      daysOf(event),
+      setting(runs, 'mode'),
+      setting(runs, 'navigation_mode'),
+      floorShown(runs, plans),
+    ],
+    tools: [
+      planButton(mine, robot, on ? 'Turn off' : 'Turn on', `slot-on-${n}`, toggle, { why, glyph: 'power', alone: true, lit: on }),
+      planButton(mine, robot, 'Edit', `slot-edit-${n}`, () => edit(mine, event), { why, glyph: 'pencil', alone: true }),
+      planButton(mine, robot, 'Delete', `slot-drop-${n}`, () => askDrop(mine, id, 'slot-keep'), { why, glyph: 'trash', alone: true }),
+    ],
+    note: plan.dropping !== null && plan.dropping === id && question(),
+    detail: () => [scheduleForm(mine, robot, plans, event, changing ? plan.form : null, `slot-edit-${n}`)],
+  };
 }
 
 /**
@@ -1434,13 +1540,9 @@ function schedulePanel(mine, { robot, floorplans: plans }) {
   const shown = plan.shown;
   const events = shown !== null && Array.isArray(shown.events) ? shown.events.map(record) : [];
   const adding = plan.form !== null && plan.form.id === null;
-  const changing = (event) => plan.form !== null && plan.form.id !== null && plan.form.id === event.id;
   const tools = h('div', { class: 'panel-tools' },
-    planButton(mine, robot, 'Read again', 'plan-read', () => askSchedule(mine, 'show', 'Schedule')),
-    planButton(mine, robot, 'Add', 'plan-add', () => edit(mine, null)));
-  const hint = shown === null
-    ? 'What the robot cleans by itself, and when. The robot keeps this, so it is read from the robot while it is connected.'
-    : ['What the robot cleans by itself, and when, as the robot gave it ', when(plan.at), '. A time is one of the robot\'s own clock.'];
+    planButton(mine, robot, 'Add', 'plan-add', () => edit(mine, null), { glyph: 'plus' }),
+    planButton(mine, robot, 'Refresh', 'plan-read', () => askSchedule(mine, 'show', 'Schedule'), { glyph: 'refresh' }));
   return panel('Schedule', [
     shown === null && h('p', { class: 'plan-note' }, none(!robot.session ? 'The robot is not connected.'
       : plan.waiting === 'show' ? 'Asking the robot…'
@@ -1449,11 +1551,11 @@ function schedulePanel(mine, { robot, floorplans: plans }) {
     shown !== null && shown.enabled === false
       && h('p', { class: 'plan-note warn' }, 'The robot says that its schedule as a whole is off, which nothing here can change.'),
     shown !== null && events.length === 0 && !adding && h('p', { class: 'plan-note' }, none('No events.')),
-    events.length > 0 && h('div', { class: 'slots' },
-      events.map((event) => (changing(event) ? scheduleForm(mine, robot, plans) : slot(mine, robot, event, plans)))),
-    adding && scheduleForm(mine, robot, plans),
+    events.length > 0
+      && table('Schedule', SCHEDULE_COLUMNS, mine.openSlots, events.map((event, n) => slot(mine, robot, event, n, plans))),
+    adding && scheduleForm(mine, robot, plans, null, plan.form, 'plan-add'),
     plan.said && h('p', { class: `command-said ${plan.said.tone}`, role: 'status' }, plan.said.text),
-  ], { hint, wide: true, tools });
+  ], { wide: true, tools });
 }
 
 // ---- One robot ----
@@ -2070,14 +2172,15 @@ function navigate() {
     asked: { events: EVENTS_STEP, maps: MAPS_STEP },
     open: new Set(),
     openMaps: new Set(),
+    openSlots: new Set(),
     drawings: new Map(),
     // The name in the field, when the field is open; whether the server has yet to answer; and how the last one failed.
     naming: { draft: null, waiting: false, said: null },
     command: null,
     accepted: null,
-    // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave
-    // and when; how the last request failed; the form, when one is open; and the event about to be deleted.
-    schedule: { asked: null, waiting: null, shown: null, at: null, said: null, form: null, dropping: null },
+    // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave;
+    // how the last request failed; the form, when one is open; and the event about to be deleted.
+    schedule: { asked: null, waiting: null, shown: null, said: null, form: null, dropping: null },
     // Whether the robot has yet to answer what was asked of it about a floor plan; the map whose button awaits
     // its second press, with what that would do; and how the last request went, with the map it was pressed on.
     floors: { waiting: false, asking: null, said: null },

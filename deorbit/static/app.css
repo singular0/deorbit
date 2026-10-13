@@ -932,7 +932,7 @@ h2 {
   pointer-events: none;
 }
 
-/* ---- The tables of one robot: its events and its maps, which are of one design ---- */
+/* ---- The tables of one robot: its schedule, its maps and its events, which are of one design ---- */
 
 /* A column is as wide as its name is told to be below, and those that are told nothing share what is left. */
 .table {
@@ -958,6 +958,16 @@ h2 {
 
 .table th.cell-kind {
   width: 10.5rem;
+}
+
+/* When an event of the schedule starts, by the robot's clock. */
+.table th.cell-clock {
+  width: 5.5rem;
+}
+
+/* What the runs of one are set to. */
+.table th.cell-setting {
+  width: 7rem;
 }
 
 /* Room for the buttons of a row, in a table whose rows have some. */
@@ -1004,12 +1014,14 @@ td.cell-what {
   color: var(--muted);
 }
 
-/* What an event of the schedule cleans, in its row. */
-.event-what {
-  grid-area: what;
-  min-width: 0;
-  color: var(--muted);
-  overflow-wrap: anywhere;
+td.cell-clock {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A row that is quieter than the others: an event of the schedule that is off is still there to read. */
+.entry.dim > .entry-row > td {
+  color: var(--faint);
 }
 
 /* The buttons at the end of a row. */
@@ -1023,6 +1035,23 @@ td.cell-what {
 /* A button with an icon alone on it. */
 .button.tool {
   padding: 6px;
+}
+
+/* The one that turns an event of the schedule off, which is lit while the event is on. */
+.button.tool.lit {
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+  background: color-mix(in srgb, var(--good) 18%, transparent);
+  color: var(--good);
+}
+
+.button.tool.lit:hover {
+  background: color-mix(in srgb, var(--good) 30%, transparent);
+}
+
+.button.tool.lit:disabled,
+.button.tool.lit[aria-disabled] {
+  background: color-mix(in srgb, var(--good) 18%, transparent);
+  opacity: 0.55;
 }
 
 /* Whether a map is kept as a floor plan: a box, ticked when it is. */
@@ -1188,33 +1217,7 @@ td.cell-what {
   margin-bottom: 0;
 }
 
-/* An event: when it starts, on which days, what it cleans, and what can be done with it. */
-.slot {
-  display: grid;
-  grid-template-columns: 4.5rem minmax(0, 15rem) minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px 16px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.slot:first-child {
-  border-top: 0;
-  padding-top: 0;
-}
-
-.slot:last-child {
-  padding-bottom: 0;
-}
-
-.slot-time {
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
+/* The days of an event, a chip to each. */
 .days {
   display: flex;
   flex-wrap: wrap;
@@ -1240,107 +1243,59 @@ td.cell-what {
   vertical-align: -0.2em;
 }
 
-/* An event that is off is still there to read, only quieter. */
-.slot.off .slot-time,
-.slot.off .day {
-  color: var(--faint);
-}
-
+/* Buttons in a line: those of a form, and the answers to a question. */
 .slot-tools {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-/* Whether an event is on: a knob that sits to the right when it is. */
-.switch {
-  position: relative;
-  flex: none;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--raised);
-  cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease;
-}
-
-.switch::before {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--faint);
-  transition: transform 0.16s ease, background 0.16s ease;
-}
-
-.switch[aria-checked="true"] {
-  border-color: color-mix(in srgb, var(--good) 45%, transparent);
-  background: color-mix(in srgb, var(--good) 18%, transparent);
-}
-
-.switch[aria-checked="true"]::before {
-  background: var(--good);
-  transform: translateX(16px);
-}
-
-.switch:disabled,
-.switch[aria-disabled] {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* The form an event is added or changed through. */
+/*
+  The form of an event: a line to each thing the event has, as a map has its facts, which a row of the
+  schedule opens on. While the event is changed, or one is added, a line holds the field for what it says.
+  Beside the lines is the picture of the floor plan the event is on. It is after them and not before, as a
+  map's is, so that the fields stay where they are when a floor plan is chosen and its picture comes.
+*/
 .slot-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 14px 20px;
-  margin: 12px 0;
-  padding: 16px 18px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--raised);
-}
-
-.slot-form:first-child {
-  margin-top: 0;
-}
-
-.slot-form:last-child {
-  margin-bottom: 0;
-}
-
-.slot-form .hint,
-.slot-form .plan-note {
-  flex-basis: 100%;
-  margin: 0;
-}
-
-/* A field with its name over it. The days are a fieldset, whose legend is that name. */
-.field {
   display: grid;
-  gap: 6px;
+  grid-template-columns: minmax(0, 32rem) minmax(0, 1fr);
+  align-items: start;
+  gap: 20px 32px;
+}
+
+.slot-lines {
   min-width: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 600;
 }
 
-.field legend {
-  margin-bottom: 6px;
-  padding: 0;
+/* An event on no floor plan, or on one whose map the server does not know, has no picture. */
+.slot-picture:empty {
+  display: none;
 }
 
-.field > input,
-.field > select,
+/* The one a new event is added through, under the table. */
+.table + .slot-form {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* Save and Cancel, under the lines. */
+.slot-lines > .slot-tools {
+  margin-top: 16px;
+}
+
+.slot-lines > .hint,
+.slot-lines > .plan-note {
+  margin: 12px 0 0;
+}
+
+/* The days stand at the end of their line, as what the other lines say does. */
+.slot-form .days,
+.slot-form .picks {
+  justify-content: flex-end;
+}
+
+.slot-form dd > input,
+.slot-form dd > select,
 .name-form > input {
   height: 34px;
   padding: 0 10px;
@@ -1354,7 +1309,7 @@ td.cell-what {
 }
 
 /* A floor plan is a longer line than a narrow screen is wide. */
-.field > select {
+.slot-form dd > select {
   min-width: 0;
   max-width: 100%;
 }
@@ -1607,18 +1562,9 @@ td.cell-what {
     font-size: 12px;
   }
 
-  .map-detail {
+  .map-detail,
+  .slot-form {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* When an event starts and its days share a line; what it cleans and what can be done with it take one each. */
-  .slot {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .slot > .event-what,
-  .slot > .slot-tools {
-    grid-column: 1 / -1;
   }
 }
 
