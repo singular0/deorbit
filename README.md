@@ -83,7 +83,8 @@ robot · ❌ not there
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |
 | Add, change and delete scheduled cleanings | 🟡 | Time, days, mode and navigation. Written; not yet tried on a real robot. |
 | Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. |
-| Floor plans, zones and no-go lines | ❌ | No floor plan can be saved, edited or chosen for a cleaning. Scheduled cleanings that already use one are shown and left as they are. |
+| Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, while the robot is connected. The page lists the floor plans it had the robot make, not those the robot got from Neato's cloud. Written; not yet tried on a real robot. |
+| Clean by a floor plan, zones and no-go lines | ❌ | No floor plan can be edited or chosen for a cleaning. Scheduled cleanings that already use one are shown and left as they are. |
 | History of what a robot reported | ✅ | Its connections, its messages and error reports, and the commands it was sent. |
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
 | Name a robot | ✅ | Kept by the server; the robot is not told. |
@@ -117,7 +118,7 @@ server at startup with a message that names it.
 | `key` | `certs/server.key` | The server's TLS private key (PEM). |
 | `generate_certs` | `true` | Create a certificate authority and a certificate when `cert` and `key` are both missing: see [Certificates](#certificates). |
 | `keys` | empty | A folder of robots' public keys. Empty: any robot is let in. See [Checking robots' keys](#checking-robots-keys). |
-| `database` | `data/deorbit.db` | The SQLite file that holds each robot's last status, its history, its maps and its name. It is created when missing. |
+| `database` | `data/deorbit.db` | The SQLite file that holds each robot's last status, its history, its maps, the floor plans it was given and its name. It is created when missing. |
 | `heartbeat_interval` | `30` | Seconds between the heartbeats that keep a robot's connection open. A robot hangs up after 70 seconds of silence. |
 | `idle_timeout` | `150` | Seconds after which a robot that has sent nothing is dropped. |
 | `login_timeout` | `30` | Seconds a new connection has to log in. |

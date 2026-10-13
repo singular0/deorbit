@@ -144,6 +144,11 @@ class StoreTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.path)) as db:
             return {RobotId(vendor, serial): name for vendor, serial, name in db.execute("SELECT * FROM names")}
 
+    def plans(self) -> list[tuple]:
+        """Every floor plan in the file but for when it was noted, read the way another process would."""
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT vendor, serial, rank_uuid, map_id FROM floorplans ORDER BY serial, rank_uuid").fetchall()
+
     def assertJustNow(self, stamp: str) -> None:
         self.assertRegex(stamp, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
         self.assertLess(abs(datetime.now(timezone.utc) - datetime.fromisoformat(stamp)), timedelta(seconds=5))
@@ -485,6 +490,93 @@ class StoreTests(unittest.TestCase):
                              [("maps",)])
         self.assertEqual([row["id"] for row in store.maps(ROBOT, 10)], [1])
 
+    def test_floor_plan_is_noted_with_the_map_it_was_made_of(self) -> None:
+        store = self.open()
+        self.assertEqual(store.floorplans(ROBOT), [])
+        self.assertTrue(store.save_floorplan(ROBOT, "first", 3))
+        self.assertTrue(store.save_floorplan(OTHER, "first", 4))
+        self.assertTrue(store.save_floorplan(ROBOT, "second", 5))
+        self.assertEqual(self.plans(), [("n", "board1", "first", 3), ("n", "board1", "second", 5), ("n", "board2", "first", 4)])
+        # A robot's own, as the rows are stored, and the one it accepted last first.
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            db.execute("UPDATE floorplans SET at = '2026-10-06T12:00:00.000Z' WHERE rank_uuid = 'second'")
+            db.commit()
+        newest, oldest = store.floorplans(ROBOT)
+        self.assertEqual(newest, {"vendor": "n", "serial": "board1", "rank_uuid": "first", "map_id": 3, "at": newest["at"]})
+        self.assertJustNow(newest["at"])
+        self.assertEqual((oldest["rank_uuid"], oldest["at"]), ("second", "2026-10-06T12:00:00.000Z"))
+        self.assertEqual([row["map_id"] for row in store.floorplans(OTHER)], [4])
+        self.assertEqual(store.floorplans(RobotId("3", "board1")), [])
+        # A floor plan alone does not make a robot, and it is neither a map nor an event.
+        self.assertEqual((self.rows(), self.logged(), self.maps()), ({}, [], []))
+        # One that is made again is the same floor plan, of the map and the time it was last made of.
+        self.assertTrue(store.save_floorplan(ROBOT, "second", 7))
+        again = {row["rank_uuid"]: row for row in store.floorplans(ROBOT)}
+        self.assertEqual({name: row["map_id"] for name, row in again.items()}, {"first": 3, "second": 7})
+        self.assertJustNow(again["second"]["at"])
+        store.close()
+        self.assertEqual(len(self.open().floorplans(ROBOT)), 2)
+
+    def test_floor_plan_takes_the_place_of_another_or_is_dropped(self) -> None:
+        store = self.open()
+        for robot in (ROBOT, OTHER):
+            store.save_floorplan(robot, "first", 1)
+            store.save_floorplan(robot, "second", 2)
+        # The other robot's of the same name stays, and so does this robot's other one.
+        self.assertTrue(store.save_floorplan(ROBOT, "third", 3, "first"))
+        others = [("n", "board2", "first", 1), ("n", "board2", "second", 2)]
+        self.assertEqual(self.plans(), [("n", "board1", "second", 2), ("n", "board1", "third", 3), *others])
+        # In place of one the server never knew of, and in place of one that is already there.
+        self.assertTrue(store.save_floorplan(ROBOT, "fourth", 4, "elsewhere"))
+        self.assertTrue(store.save_floorplan(ROBOT, "second", 5, "third"))
+        self.assertEqual(self.plans(), [("n", "board1", "fourth", 4), ("n", "board1", "second", 5), *others])
+        # One that is dropped is gone, and one that was never held is dropped as well as any.
+        for _ in range(2):
+            self.assertTrue(store.delete_floorplan(ROBOT, "fourth"))
+            self.assertEqual(self.plans(), [("n", "board1", "second", 5), *others])
+        self.assertTrue(store.delete_floorplan(RobotId("3", "board1"), "second"))
+        self.assertEqual(len(self.plans()), 3)
+
+    def test_floor_plan_that_cannot_be_noted(self) -> None:
+        with mock.patch("deorbit.store._BUSY_TIMEOUT", 0.05):
+            store = self.open()
+        store.save_floorplan(ROBOT, "first", 1)
+        before = self.plans()
+        with contextlib.closing(sqlite3.connect(self.path)) as db, self.assertLogs("deorbit", "ERROR") as logs:
+            self.assertFalse(store.save_floorplan(ROBOT, "\ud800", 2))  # not text that UTF-8 can carry
+            # Another program has the file for longer than the store waits for it.
+            db.execute("BEGIN IMMEDIATE")
+            self.assertFalse(store.save_floorplan(ROBOT, "second", 2))
+            self.assertFalse(store.delete_floorplan(ROBOT, "first"))
+            db.execute("ROLLBACK")
+            # The new one is not let in, when the one it takes the place of has already gone.
+            db.execute("CREATE TRIGGER no_insert BEFORE INSERT ON floorplans BEGIN SELECT RAISE(ABORT, 'full'); END")
+            self.assertFalse(store.save_floorplan(ROBOT, "second", 2, "first"))
+            self.assertEqual(self.plans(), before)
+            db.execute("DROP TRIGGER no_insert")
+        self.assertEqual(len(logs.output), 4)
+        for line, why in zip(logs.output[1:], ("database is locked", "database is locked", "full")):
+            self.assertIn(f"[n/board1] not saved to the database: {why}", line)
+        # None of that left the store in the middle of anything: what it writes next is in the file.
+        self.assertTrue(store.save_floorplan(ROBOT, "second", 2, "first"))
+        self.assertEqual(self.plans(), [("n", "board1", "second", 2)])
+
+    def test_file_without_a_floorplans_table_gets_one(self) -> None:
+        store = self.open()
+        store.save_state(ROBOT, STATE)
+        store.add_event(ROBOT, "login")
+        store.save_map(ROBOT, MAP)
+        store.save_name(ROBOT, "Rosie")
+        store.close()
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TABLE floorplans")  # as in a file from before floor plans were noted
+        before = self.rows(), self.logged(), self.maps(), self.names()
+        store = self.open()
+        self.assertEqual(store.floorplans(ROBOT), [])
+        self.assertTrue(store.save_floorplan(ROBOT, MAP["rank_uuid"], 1))
+        self.assertEqual(self.plans(), [("n", "board1", MAP["rank_uuid"], 1)])
+        self.assertEqual((self.rows(), self.logged(), self.maps(), self.names()), before)
+
     def fill(self, store: Store) -> None:
         """Give both robots something in every table."""
         for robot in (ROBOT, OTHER):
@@ -494,15 +586,16 @@ class StoreTests(unittest.TestCase):
             store.add_event(robot, "request", "robots.notify", {"message_code": "bin_full"})
             store.save_map(robot, MAP)
             store.save_name(robot, "Rosie")
+            store.save_floorplan(robot, MAP["rank_uuid"], 1)
 
     def held(self) -> tuple:
         """All that the file holds, table by table."""
-        return self.rows(), self.logged(), self.maps(), self.names()
+        return self.rows(), self.logged(), self.maps(), self.names(), self.plans()
 
     def test_robot_is_deleted_from_every_table(self) -> None:
         store = self.open()
         self.fill(store)
-        rows, logged, maps, names = self.held()
+        rows, logged, maps, names, plans = self.held()
         self.assertTrue(store.delete(ROBOT))
         # The other robot has all it had, and this one nothing.
         self.assertEqual(self.held(), (
@@ -510,10 +603,11 @@ class StoreTests(unittest.TestCase):
             [event for event in logged if event["serial"] == "board2"],
             [row for row in maps if row["serial"] == "board2"],
             {OTHER: "Rosie"},
+            [("n", "board2", MAP["rank_uuid"], 1)],
         ))
-        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1])
+        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1, 1])
         self.assertIsNone(store.robot(ROBOT))
-        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10)), ([], []))
+        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10), store.floorplans(ROBOT)), ([], [], []))
         # A robot the file has nothing of is deleted as well as any.
         self.assertTrue(store.delete(ROBOT))
         self.assertTrue(store.delete(RobotId("3", "board2")))
@@ -532,7 +626,8 @@ class StoreTests(unittest.TestCase):
         store.add_event(gone, "request", "robots.notify", {"message_code": "event-of-the-deleted"})
         store.save_map(gone, {"map": {"rank_binary": "map-of-the-deleted" * 5000}})
         store.save_name(gone, "name-of-the-deleted")
-        for what in (b"serial", b"state", b"event", b"map", b"name"):
+        store.save_floorplan(gone, "plan-of-the-deleted", 1)
+        for what in (b"serial", b"state", b"event", b"map", b"name", b"plan"):
             self.assertIn(what + b"-of-the-deleted", self.path.read_bytes())
         before = self.held()
         self.assertTrue(store.delete(gone))
@@ -576,9 +671,10 @@ class StoreTests(unittest.TestCase):
             db.execute("DROP TABLE robots")
             db.execute("DROP TABLE events")
             db.execute("DROP TABLE maps")
+            db.execute("DROP TABLE floorplans")
         for table, read in (("robots", store.robots), ("robots", lambda: store.robot(ROBOT)),
                             ("events", lambda: store.events(ROBOT, 10)), ("maps", lambda: store.maps(ROBOT, 10)),
-                            ("maps", lambda: store.map(ROBOT, 1))):
+                            ("maps", lambda: store.map(ROBOT, 1)), ("floorplans", lambda: store.floorplans(ROBOT))):
             with self.assertRaisesRegex(StoreError, f"^cannot read the database: no such table: {table}$"):
                 read()
 

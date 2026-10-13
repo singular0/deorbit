@@ -1,6 +1,8 @@
-"""What the web UI can send a robot: its commands and the changes to its schedule, each an ability invoked through ``Session.call``."""
+"""What the web UI can send a robot: its commands and the changes to its schedule and its floor plans, each an ability invoked through ``Session.call``."""
 
+import base64
 import json
+import math
 import re
 
 # By the name a robot's state gives the command under ``available_commands``:
@@ -9,10 +11,9 @@ import re
 #
 # ``cleaning.start`` takes ``runs``, at least one, each with its ``settings``
 # and its ``map`` (section 6.1 of the spec). A map of ``None`` is a cleaning on
-# no saved floor plan, the only kind there is to ask for while this server
-# keeps no floor plans. The mode may be eco, turbo, auto or max and the
-# navigation mode normal or gentle; these two are the ones a robot gave for a
-# run started from its own button.
+# no saved floor plan, which is the only kind the Start button asks for. The
+# mode may be eco, turbo, auto or max and the navigation mode normal or gentle;
+# these two are the ones a robot gave for a run started from its own button.
 COMMANDS: dict[str, tuple[str, dict]] = {
     "start": ("cleaning.start", {"runs": [{"map": None, "settings": {"mode": "eco", "navigation_mode": "normal"}}]}),
     "pause": ("cleaning.pause", {}),
@@ -29,6 +30,11 @@ NAVIGATION_MODES = ("normal", "gentle")
 
 _ID = re.compile(r"[0-9]+")
 _TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+# What a robot knows a floor plan by. To the spec a UUID is any string that is
+# not empty, and the ones a robot gave have this shape. A robot deletes a floor
+# plan by it, and what it does with any other text is not known, so nothing
+# else is sent for one.
+_UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 
 
 def _fields(given: object, where: str, *names: str) -> list:
@@ -133,3 +139,79 @@ def scheduling(action: str, number: str, event: str) -> tuple[str, dict]:
             raise ValueError("event must be JSON") from None
         return f"scheduling.{action}", {"event": _event(given, known=action == "update")}
     raise ValueError("action must be one of show, add, update, delete")
+
+
+def _uuid(value: object, where: str) -> str:
+    if not isinstance(value, str) or not _UUID.fullmatch(value):
+        raise ValueError(f"{where} must be a UUID")
+    return value
+
+
+def _binary(value: object, where: str) -> str:
+    """An encoded map, which goes back to the robot as the Base64 text it came as."""
+    try:
+        held = isinstance(value, str) and base64.b64decode(value, validate=True)
+    except ValueError:  # not Base64
+        held = False
+    if not held:
+        raise ValueError(f"{where} must be Base64 that is not empty")
+    return value
+
+
+def _base(given: object, where: str) -> dict:
+    """Where a robot's base is, made of the place ``given``: the three fields a floor plan takes and nothing else."""
+    if not isinstance(given, dict):
+        raise ValueError(f"{where} must be an object of x, y, dir")
+    base = {}
+    for name in ("x", "y"):
+        base[name] = given.get(name)
+        if not isinstance(base[name], int) or isinstance(base[name], bool):
+            raise ValueError(f"{where}.{name} must be a whole number")
+    heading = given.get("dir")
+    whole = isinstance(heading, int) and not isinstance(heading, bool)
+    if not whole and not (isinstance(heading, float) and math.isfinite(heading)):
+        raise ValueError(f"{where}.dir must be a number")
+    return {**base, "dir": heading}
+
+
+def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | None, created: str) -> tuple[str, dict]:
+    """The ability for an action on a robot's floor plans and what is sent with it, or a ``ValueError`` that says what is wrong.
+
+    ``demote`` has the robot drop the floor plan ``rank_uuid``. The other two
+    make a floor plan of ``uploaded``, the JSON of a map as the robot uploaded
+    it: ``promote`` a new one, and ``update`` one that takes the place of
+    ``old_rank_uuid``. The spec lets ``maps.promote_floorplan`` name a floor
+    plan to supersede as well; here it never does, and ``maps.update_floorplan``
+    always does. ``created`` is the time the floor plan is to say it was made.
+
+    A floor plan has the map's ``rank_uuid``, its two binaries and where the
+    base was, each checked and nothing else of the map passed on: section 6.3
+    of the spec has a robot refuse a base with a field too many.
+    """
+    if action == "demote":
+        return "maps.demote_floorplan", {"rank_uuid": _uuid(rank_uuid, "rank_uuid")}
+    if action not in ("promote", "update"):
+        raise ValueError("action must be one of promote, update, demote")
+    old = _uuid(old_rank_uuid, "old_rank_uuid") if action == "update" else None
+    try:
+        given = json.loads(uploaded)
+    except (ValueError, RecursionError):  # as for an event of a schedule
+        raise ValueError("the map must be JSON") from None
+    if not isinstance(given, dict):
+        raise ValueError("the map must be an object")
+    binaries, places = (given[name] if isinstance(given.get(name), dict) else {} for name in ("map", "robot"))
+    new = _uuid(given.get("rank_uuid"), "the map's rank_uuid")
+    if old is not None and old.lower() == new.lower():
+        raise ValueError("old_rank_uuid must not be the map's own rank_uuid")
+    plan = {
+        "rank_uuid": new,
+        "rank_binary": _binary(binaries.get("rank_binary"), "the map's map.rank_binary"),
+        "real_binary": _binary(binaries.get("real_binary"), "the map's map.real_binary"),
+        "old_rank_uuid": old,
+        "base": _base(places.get("base"), "the map's robot.base"),
+        "date_created": created,
+    }
+    if action == "update":
+        return "maps.update_floorplan", plan
+    # Without a no-go map and with no zones, which is how a robot promotes a map by itself (section 7.3).
+    return "maps.promote_floorplan", {**plan, "nogo_track": None, "cleaning_tracks": []}

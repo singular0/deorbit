@@ -1098,6 +1098,57 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+/* What the robot said of the run, and under that what can be asked of the robot with the map. */
+.map-facts {
+  min-width: 0;
+}
+
+.map-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.map-tools .command-said {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* ---- The floor plans of one robot ---- */
+
+/* A floor plan: when the robot accepted it, what the robot knows it by, and what can be done with it. */
+.floor {
+  display: grid;
+  grid-template-columns: minmax(0, 14rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.floor:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.floor:last-child {
+  padding-bottom: 0;
+}
+
+/* Read from the left here, where beside a label it is set to the right. */
+.floor > .moment {
+  justify-content: flex-start;
+}
+
+.floor-id {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
 /* ---- The schedule of one robot ---- */
 
 /* A line that says something of the schedule as a whole. */
@@ -1479,6 +1530,11 @@ h2 {
   }
 
   .map-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* When a floor plan was accepted, what it is known by and what can be done with it take a line each. */
+  .floor {
     grid-template-columns: minmax(0, 1fr);
   }
 

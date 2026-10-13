@@ -1,4 +1,4 @@
-"""SQLite database of what the server remembers about each robot: its state, its events, its maps and its name."""
+"""SQLite database of what the server remembers about each robot: its state, its events, its maps, its floor plans and its name."""
 
 import json
 import logging
@@ -74,7 +74,7 @@ _ROBOTS = "robots LEFT JOIN names USING (vendor, serial)"
 
 # Every table. Each names the robot a row is of by its vendor and serial, which
 # is how ``delete`` finds all there is of one.
-_TABLES = ("robots", "events", "maps", "names")
+_TABLES = ("robots", "events", "maps", "names", "floorplans")
 
 # A map as a list of maps gives it: its columns, with everything in the body
 # but the two binaries. Those are most of a map, and only its picture needs them.
@@ -138,6 +138,20 @@ CREATE TABLE IF NOT EXISTS names (
     PRIMARY KEY (vendor, serial)
 )
 """,
+    # A floor plan is a map that the robot keeps, and the robot is what keeps
+    # it: no message of the spec has a robot say which it has. So a row is what
+    # the server remembers of having had the robot make one, and of which map.
+    # The map stays where it is, in its own table.
+    """
+CREATE TABLE IF NOT EXISTS floorplans (
+    vendor    TEXT NOT NULL,
+    serial    TEXT NOT NULL,
+    rank_uuid TEXT NOT NULL,     -- what the robot knows the floor plan by
+    map_id    INTEGER NOT NULL,  -- the map it was made of, by its id in maps
+    at        TEXT NOT NULL,     -- when the robot accepted it
+    PRIMARY KEY (vendor, serial, rank_uuid)
+)
+""",
 )
 
 
@@ -161,7 +175,8 @@ class Store:
         db = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # Autocommit: every write is a single statement, but for ``delete``, which begins a transaction itself.
+            # Autocommit: every write is a single statement, but for ``delete`` and
+            # ``save_floorplan``, which begin a transaction themselves.
             db = sqlite3.connect(path, timeout=_BUSY_TIMEOUT, isolation_level=None)
             # What is deleted is written over with zeros, so a robot that was
             # deleted is gone from the file and not only from its tables.
@@ -211,6 +226,29 @@ class Store:
         )
         return self._write(robot, sql, (robot.vendor, robot.serial, name))
 
+    def save_floorplan(self, robot: RobotId, rank_uuid: str, map_id: int, replaced: str | None = None) -> bool:
+        """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so."""
+        where = (robot.vendor, robot.serial)
+        try:
+            with self._db:  # as in ``delete``: the old one goes and the new one comes, or neither
+                self._db.execute("BEGIN IMMEDIATE")
+                if replaced is not None:
+                    self._db.execute("DELETE FROM floorplans WHERE vendor = ? AND serial = ? AND rank_uuid = ?", (*where, replaced))
+                self._db.execute(
+                    "INSERT INTO floorplans (vendor, serial, rank_uuid, map_id, at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT (vendor, serial, rank_uuid) DO UPDATE SET map_id = excluded.map_id, at = excluded.at",
+                    (*where, rank_uuid, map_id, now()),
+                )
+        except (sqlite3.Error, UnicodeError) as exc:
+            log.error("[%s] not saved to the database: %s", robot, exc)
+            return False
+        return True
+
+    def delete_floorplan(self, robot: RobotId, rank_uuid: str) -> bool:
+        """Note that the robot no longer keeps the floor plan ``rank_uuid``, and say whether the file now has it so, as it does of one it never held."""
+        sql = "DELETE FROM floorplans WHERE vendor = ? AND serial = ? AND rank_uuid = ?"
+        return self._write(robot, sql, (robot.vendor, robot.serial, rank_uuid))
+
     def delete(self, robot: RobotId) -> bool:
         """Delete the robot's rows from every table, all of them or none, and say whether they are gone."""
         try:
@@ -248,6 +286,11 @@ class Store:
         sql = "SELECT * FROM maps WHERE id = ? AND vendor = ? AND serial = ?"
         rows = self._select(sql, (map_id, robot.vendor, robot.serial))
         return rows[0] if rows else None
+
+    def floorplans(self, robot: RobotId) -> list[dict[str, object]]:
+        """The floor plans the robot is known to keep, the one it accepted last first."""
+        sql = "SELECT * FROM floorplans WHERE vendor = ? AND serial = ? ORDER BY at DESC, rank_uuid"
+        return self._select(sql, (robot.vendor, robot.serial))
 
     def _select(self, sql: str, parameters: tuple[object, ...] = ()) -> list[dict[str, object]]:
         # Unlike a failed write, a failed read is raised: without the rows the caller has nothing to show.

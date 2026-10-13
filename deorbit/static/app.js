@@ -1,6 +1,6 @@
 // The web UI: the robots in the server's database as a list, and a page for
-// each with its name, its schedule, its maps, its events, the commands it
-// takes and the way to delete it.
+// each with its name, its schedule, its maps and floor plans, its events, the
+// commands it takes and the way to delete it.
 // Whatever a robot sent reaches the page as text nodes, never as markup.
 
 import { PALETTES, paint, readBinary } from './map.js';
@@ -38,8 +38,9 @@ let clockOffset = 0;
 // page is shown, how many of the robot's events and maps it asks for and which
 // of them are open, the pictures of the maps that have been, the name being
 // entered for it, the command last sent from it and when the robot last accepted one,
-// the robot's schedule and what is being done to it, whether the robot is being
-// deleted, the server's last answer, what was last drawn and the fetch under
+// the robot's schedule and what is being done to it, what is being asked of the
+// robot about a floor plan, whether the robot is being deleted, the server's
+// last answer, what was last drawn and the fetch under
 // way. Navigating makes a new one, and a fetch that returns to find its view
 // replaced drops the result.
 let view = null;
@@ -724,6 +725,8 @@ function mapFacts(map, runs) {
       return [runs.length === 1 ? 'Run' : `Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
     }),
     ['Rank UUID', h('span', { class: 'mono' }, plain(map.rank_uuid))],
+    // The floor plan the run was on: a robot gave here what its schedule named as the floor plan to clean.
+    ['Persistent rank UUID', h('span', { class: 'mono' }, plain(map.persistent_rank_uuid))],
   ]);
 }
 
@@ -843,22 +846,124 @@ function drawing(mine, id) {
   return node;
 }
 
-function mapRow(row, mine) {
+function mapRow(row, mine, robot, plans) {
   const map = record(parsed(row.map_json));
   const runs = (Array.isArray(map.runs) ? map.runs : []).map(record);
   // A map of one run, as the rule is, wears the state of that run.
   const state = runs.length === 1 ? word(runs[0].state) : null;
   const label = state ?? (runs.length > 1 ? `${runs.length} runs` : 'Map');
-  const said = [areaOf(runs), took(record(map.timing)), named('started by', map.started_by)].filter(Boolean).join(' · ');
+  const kept = plans.some((plan) => plan.map_id === row.id) && 'floor plan';
+  const said = [kept, areaOf(runs), took(record(map.timing)), named('started by', map.started_by)].filter(Boolean).join(' · ');
   const line = [eventTime(row.at), pill(RUN_TONES.get(state) ?? 'quiet', label, 'map'), h('span', { class: 'event-what' }, said)];
-  return entry(row.id, mine.openMaps, `map-${row.id}`, line,
-    () => [h('div', { class: 'map-detail' }, drawing(mine, row.id), mapFacts(map, runs))]);
+  return entry(row.id, mine.openMaps, `map-${row.id}`, line, () => [h('div', { class: 'map-detail' },
+    drawing(mine, row.id),
+    h('div', { class: 'map-facts' }, mapFacts(map, runs), mapTools(mine, robot, plans, row.id, map)))]);
 }
 
 /** The maps the robot uploaded, newest first. */
-function mapList(mine, maps, more) {
+function mapList(mine, { robot, maps, more_maps: more, floorplans: plans }) {
   if (maps.length === 0) return none('Nothing yet.');
-  return [h('div', { class: 'events' }, maps.map((row) => mapRow(row, mine))), older(mine, 'maps', more)];
+  return [h('div', { class: 'events' }, maps.map((row) => mapRow(row, mine, robot, plans))), older(mine, 'maps', more)];
+}
+
+// ---- The floor plans of one robot ----
+//
+// A floor plan is a map that the robot keeps, to clean by. The robot makes one
+// of a map it uploaded when the server tells it to, and the server remembers
+// which it told the robot to make: a robot cannot be asked which it has.
+
+/** A UUID as short as a button can carry: how it begins. */
+function short(uuid) {
+  return `${uuid.slice(0, 8)}…`;
+}
+
+/**
+ * Ask the robot, through the server, to keep a map as a floor plan or to drop
+ * one it keeps. The view's `floors` holds whether an answer is waited for and
+ * how the last request went, with the map it was pressed on, or null for one
+ * pressed on a floor plan: that is where it is said. One is asked at a time.
+ */
+async function askFloor(mine, label, more, map = null) {
+  const floors = mine.floors;
+  if (floors.waiting) return;
+  floors.waiting = true;
+  floors.asking = null;
+  floors.said = null;
+  drawRobot(mine);
+  const address = `api/floorplan?${new URLSearchParams({ ...mine.robot, ...more })}`;
+  const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
+  floors.waiting = false;
+  if (mine !== view) return;
+  floors.said = { ...outcome(label, status, answer), map };
+  drawRobot(mine);
+  // The floor plans come with the robot, and so do the events of this.
+  refresh(mine);
+}
+
+/**
+ * The buttons for something that takes a floor plan from the robot, which is
+ * asked twice. The second time Keep stands where the first button stood, with
+ * the keyboard on it, and the button that does it beside that, so that
+ * pressing the first one twice drops nothing. `key` names what is asked, and
+ * the view's `floors.asking` holds the one that awaits its second press.
+ */
+function askTwice(mine, robot, key, label, again, press) {
+  const floors = mine.floors;
+  const set = (asking) => () => {
+    floors.asking = asking;
+    floors.said = null;
+    drawRobot(mine);
+  };
+  return floors.asking === key
+    ? [robotButton(floors, robot, 'Keep', key, set(null)), robotButton(floors, robot, again, `${key}-again`, press)]
+    : [robotButton(floors, robot, label, key, set(key))];
+}
+
+/** How the last request about a floor plan went, where it was pressed: on the map of that `id`, or with null on a floor plan. */
+function floorSaid(mine, map) {
+  const said = mine.floors.said;
+  return said !== null && said.map === map && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text);
+}
+
+/**
+ * What can be asked of the robot with a map: to keep it as a new floor plan, or
+ * in place of one that it has. Those are the floor plans the server had it
+ * make and the one this map says it was cleaned on.
+ */
+function mapTools(mine, robot, plans, id, map) {
+  const has = [...new Set([...plans.map((plan) => plan.rank_uuid), map.persistent_rank_uuid])]
+    .filter((uuid) => typeof uuid === 'string' && uuid !== '' && uuid !== map.rank_uuid);
+  return h('div', { class: 'map-tools' },
+    robotButton(mine.floors, robot, 'Promote to floor plan', `floor-new-${id}`,
+      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id)),
+    has.flatMap((old) => askTwice(mine, robot, `floor-swap-${id}-${old}`, `Replace floor plan ${short(old)}`, 'Replace it',
+      () => askFloor(mine, 'Replace', { action: 'update', map: id, old_rank_uuid: old }, id))),
+    floorSaid(mine, id));
+}
+
+/** A floor plan in a row: when the robot accepted it, what the robot knows it by, and the way to have the robot drop it. */
+function floorRow(mine, robot, plan) {
+  const uuid = String(plan.rank_uuid);
+  return h('div', { class: 'floor' },
+    moment(plan.at),
+    h('span', { class: 'floor-id' }, uuid),
+    h('div', { class: 'slot-tools' }, askTwice(mine, robot, `floor-drop-${uuid}`, 'Demote', 'Demote it',
+      () => askFloor(mine, 'Demote', { action: 'demote', rank_uuid: uuid }))));
+}
+
+/** The floor plans the server had the robot make, the one it accepted last first. */
+function floorPanel(mine, { robot, floorplans: plans }) {
+  return panel('Floor plans', [
+    plans.length === 0
+      ? h('p', { class: 'plan-note' }, none('None.'))
+      : h('div', { class: 'floors' }, plans.map((plan) => floorRow(mine, robot, plan))),
+    floorSaid(mine, null),
+  ], {
+    hint: 'The maps this server had the robot keep as floor plans, to clean by. A robot cannot be asked which it has, '
+      + 'so one it was given elsewhere is not listed. A map is made one from where it is opened below, '
+      + 'and Demote has the robot delete one.',
+    wide: true,
+  });
 }
 
 // ---- The schedule of one robot ----
@@ -978,15 +1083,17 @@ function save(mine) {
 }
 
 /**
- * A button of the schedule. It can be pressed while the robot is connected,
- * unless there is another reason `why` not, and does nothing while the robot
- * has yet to answer the last one pressed. `look` makes it something other than
- * a button with its label on it.
+ * A button that asks something of the robot, as those of the schedule and of
+ * the floor plans do. It can be pressed while the robot is connected, unless
+ * there is another reason `why` not, and does nothing while the robot has yet
+ * to answer the last one pressed, which `job.waiting` says: `job` is the
+ * view's `schedule` or its `floors`. `look` makes it something other than a
+ * button with its label on it.
  */
-function planButton(mine, robot, label, focus, press, why = null, look = null) {
+function robotButton(job, robot, label, focus, press, why = null, look = null) {
   const reason = !robot.session ? 'the robot is not connected' : why;
   // Held back, not disabled: a disabled button could not keep the keyboard's focus.
-  const held = reason === null && mine.schedule.waiting !== null;
+  const held = reason === null && Boolean(job.waiting);
   return h('button', {
     class: 'button',
     type: 'button',
@@ -997,12 +1104,17 @@ function planButton(mine, robot, label, focus, press, why = null, look = null) {
     title: held ? `${label}: waiting for the robot to answer` : reason && `${label}: ${reason}`,
     'data-focus': focus,
     onclick: () => {
-      if (mine.schedule.waiting) return;
+      if (job.waiting) return;
       // A selection would hold the page as it is, and the press has to show.
       getSelection().removeAllRanges();
       press();
     },
   }, !look && label);
+}
+
+/** A button of the schedule. */
+function planButton(mine, ...rest) {
+  return robotButton(mine.schedule, ...rest);
 }
 
 /**
@@ -1536,10 +1648,13 @@ function statusPanels(robot) {
 const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
   ['schedule', 'Schedule', (mine, { robot }) => schedulePanel(mine, robot)],
-  ['maps', 'Maps', (mine, { maps, more_maps: more }) => panel('Maps', mapList(mine, maps, more), {
-    hint: 'What the robot mapped on a run, newest first. It uploads a map at each pause of a run and at its end.',
-    wide: true,
-  })],
+  ['maps', 'Maps', (mine, body) => [
+    floorPanel(mine, body),
+    panel('Maps', mapList(mine, body), {
+      hint: 'What the robot mapped on a run, newest first. It uploads a map at each pause of a run and at its end.',
+      wide: true,
+    }),
+  ]],
   ['events', 'Events', (mine, { events, more }) => panel('Events', eventLog(mine, events, more), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
     wide: true,
@@ -1674,8 +1789,8 @@ function drawRobot(mine) {
   const body = mine.body;
   if (mine !== view || !body) return;
   const data = [
-    body.robot, body.events, body.more, body.maps, body.more_maps, mine.tab, mine.naming, mine.command, mine.accepted,
-    mine.schedule, mine.deleting,
+    body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, mine.tab, mine.naming, mine.command,
+    mine.accepted, mine.schedule, mine.floors, mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
 }
@@ -1772,6 +1887,9 @@ function navigate() {
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave
     // and when; how the last request failed; the form, when one is open; and the event about to be deleted.
     schedule: { asked: null, waiting: null, shown: null, at: null, said: null, form: null, dropping: null },
+    // Whether the robot has yet to answer what was asked of it about a floor plan; what awaits its second press;
+    // and how the last request went, with the map it was pressed on.
+    floors: { waiting: false, asking: null, said: null },
     // Whether deleting the robot has been asked for and awaits its second press; whether the server has yet to answer; and how it failed.
     deleting: { asked: false, waiting: false, said: null },
     // The add-robot dialog, over the list: null while shut, else the log lines, whether it is running or done,

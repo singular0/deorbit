@@ -1,4 +1,4 @@
-"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule, and deletes it."""
+"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule, has it keep and drop floor plans, and deletes it."""
 
 import asyncio
 import json
@@ -6,13 +6,16 @@ import logging
 import math
 import socket
 import unicodedata
+from collections.abc import Callable
+from datetime import datetime, timezone
+from functools import partial
 from http import HTTPStatus
 from importlib import resources
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 from .auth import RobotId
-from .commands import COMMANDS, scheduling
+from .commands import COMMANDS, floorplan, scheduling
 from .session import describe
 from .store import StoreError, now
 
@@ -159,6 +162,7 @@ class Web:
         self._posts = {
             "/api/command": self._command,
             "/api/schedule": self._schedule,
+            "/api/floorplan": self._floorplan,
             "/api/name": self._rename,
             "/api/delete": self._delete,
         }
@@ -268,6 +272,7 @@ class Web:
                 "more": len(events) > limits["events"],
                 "maps": maps[: limits["maps"]],
                 "more_maps": len(maps) > limits["maps"],
+                "floorplans": self._store.floorplans(robot),
             }
             return 200, _JSON, _json(answer)
         if path == "/api/map":
@@ -300,6 +305,33 @@ class Web:
         except ValueError as exc:
             return 400, _JSON, _json({"error": str(exc)})
         return await self._call(_named(asked), ability, params)
+
+    async def _floorplan(self, query: str) -> tuple[int, str, bytes]:
+        """Have a robot keep a map it uploaded as a floor plan, or drop a floor plan, as the query says, and answer as for a command."""
+        asked = parse_qs(query)
+        robot = _named(asked)
+        action, rank_uuid, old = (asked.get(key, [""])[0] for key in ("action", "rank_uuid", "old_rank_uuid"))
+        number, uploaded = None, None
+        if action in ("promote", "update"):
+            # A floor plan is made of a map in the database, which is named as ``/api/map`` has it named.
+            number = _number(asked, "map", _MAX_ID)
+            row = None if number is None else self._store.map(robot, number)
+            if row is None:
+                return 404, _JSON, _json({"error": "no such map in the database"})
+            uploaded = row["map_json"]
+        try:
+            # The time is one as the spec has a robot take it, to the second. It is checked whole, as an
+            # event of a schedule is, before anything is sent.
+            created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            ability, params = floorplan(action, rank_uuid, old, uploaded, created)
+        except ValueError as exc:
+            return 400, _JSON, _json({"error": str(exc)})
+        # A robot cannot be asked which floor plans it has, so what it accepts here is all the server knows of them.
+        if action == "demote":
+            noted = partial(self._store.delete_floorplan, robot, params["rank_uuid"])
+        else:
+            noted = partial(self._store.save_floorplan, robot, params["rank_uuid"], number, params["old_rank_uuid"])
+        return await self._call(robot, ability, params, noted)
 
     async def _rename(self, query: str) -> tuple[int, str, bytes]:
         """Give a robot the name in the query, or take away the one it has when the query has none."""
@@ -334,8 +366,13 @@ class Web:
         log.info("[%s] deleted", robot)
         return 200, _JSON, _json({})
 
-    async def _call(self, robot: RobotId, ability: str, params: dict) -> tuple[int, str, bytes]:
-        """Invoke an ability on a robot's live session, and answer with what the robot said or why it said nothing."""
+    async def _call(
+        self, robot: RobotId, ability: str, params: dict, noted: Callable[[], bool] | None = None
+    ) -> tuple[int, str, bytes]:
+        """Invoke an ability on a robot's live session, and answer with what the robot said or why it said nothing.
+
+        ``noted`` writes to the database what the robot has done once it accepts, and says whether that was written.
+        """
         session = self._sessions.get(robot)
         if session is None:
             return 409, _JSON, _json({"error": "the robot is not connected"})
@@ -346,6 +383,9 @@ class Web:
             return 504, _JSON, _json({"error": f"the robot did not answer within {_COMMAND_TIMEOUT:g} s"})
         except OSError as exc:  # the session ended first
             return 502, _JSON, _json({"error": f"no answer from the robot: {describe(exc)}"})
+        # The spec gives each ability that is noted one code for success, and this is it.
+        if noted is not None and answer.get("code") == 200 and not noted():
+            return 503, _JSON, _json({"error": "the robot accepted it, but that could not be saved to the database"})
         try:
             # The robot's code is given as it is, whatever it is: what the status says is that the robot answered.
             # When the command was sent is for the page, which waits for a state that arrived after it.

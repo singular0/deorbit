@@ -626,7 +626,7 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps"})
+        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans"})
         self.assertEqual((answer["events"], answer["more"]), ([], False))
 
     async def test_events_newest_first_as_stored(self) -> None:
@@ -1301,6 +1301,319 @@ class ScheduleTests(WebTestCase):
         self.assertEqual(re.findall(r"^  \['(\w+)', ", listed, re.M), list(DAYS))
         self.assertIn(f"const MODES = {list(MODES)};", script.decode())
         self.assertIn(f"const NAVIGATION_MODES = {list(NAVIGATION_MODES)};", script.decode())
+
+
+class FloorplanTests(WebTestCase):
+    """``POST /api/floorplan``, which is what has a robot keep a map it uploaded as a floor plan, or drop a floor plan."""
+
+    OTHER = RobotId("n", "board0")
+    ROBOT1 = "/api/robot?vendor=n&serial=board1"
+    BOARD1 = "/api/floorplan?vendor=n&serial=board1"
+    PROMOTE = BOARD1 + "&action=promote&map=1"
+    DONE = {"code": 200, "body": {}}
+    # Two floor plans a robot might hold, of which the server knows what a test tells it.
+    OLD = "77b3c9fe-afe6-4449-9b53-bbc5d373bb73"
+    ELSE = "fb7f8145-0615-4a32-8f0d-8d833cd51a5e"
+    # What a floor plan takes of the map of the spec, which is the first in the database.
+    PLAN = {
+        "rank_uuid": MAP["rank_uuid"],
+        "rank_binary": MAP["map"]["rank_binary"],
+        "real_binary": MAP["map"]["real_binary"],
+        "base": MAP["robot"]["base"],
+    }
+
+    async def start(self, **overrides: object) -> Web:
+        web = await super().start(**overrides)
+        # A robot's page lists its floor plans, and it has a page once it is in the database.
+        self.server.store.save_heartbeat(self.ROBOT)
+        self.server.store.save_map(self.ROBOT, MAP)
+        return web
+
+    def upload(self, body: object, robot: RobotId | None = None) -> int:
+        """Store a map, and return the number it has in the database."""
+        self.assertTrue(self.server.store.save_map(robot or self.ROBOT, body))
+        return self.server.store.maps(robot or self.ROBOT, 1)[0]["id"]
+
+    async def plans(self) -> dict[str, int]:
+        """The floor plans that come with the robot's page: the map each was made of, by what the robot knows it by."""
+        return {row["rank_uuid"]: row["map_id"] for row in (await self.api(self.ROBOT1))["floorplans"]}
+
+    def made(self, request: dict) -> dict:
+        """What a robot was sent to make a floor plan of, without the time, which is checked to be the time it was sent."""
+        self.assertEqual(set(request), {"type", "id", "body"})
+        body = dict(request["body"])
+        created = body.pop("date_created")
+        # A time as the spec has a robot take one, to the second.
+        self.assertRegex(created, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertLess(abs(datetime.now(timezone.utc) - datetime.fromisoformat(created)), timedelta(seconds=5))
+        return body
+
+    async def test_promote_sends_a_map_as_a_new_floor_plan(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        self.assertEqual((await self.api(self.ROBOT1))["floorplans"], [])
+        # The robot is named as it is in the address of its page, whatever the case.
+        target = "/api/floorplan?serial=BOARD1&vendor=N&action=promote&map=1"
+        request, told = await self.answered(robot, target, self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.promote_floorplan", "code": 200, "body": {}}))
+        # In place of no other, and with neither a no-go map nor zones, as a robot promotes a map by itself.
+        self.assertEqual(self.made(request), {"ability": "maps.promote_floorplan", **self.PLAN, "old_rank_uuid": None,
+                                              "nogo_track": None, "cleaning_tracks": []})
+        # The server has it from then on, with the map it was made of.
+        (row,) = (await self.api(self.ROBOT1))["floorplans"]
+        self.assertEqual(row, {"vendor": "n", "serial": "board1", "rank_uuid": MAP["rank_uuid"], "map_id": 1, "at": row["at"]})
+        self.assertJustNow(row["at"])
+        # Made again of a later upload of the same map, it is the one floor plan still.
+        again = self.upload(MAP)
+        await self.answered(robot, f"{self.BOARD1}&action=promote&map={again}", self.DONE)
+        self.assertEqual(await self.plans(), {MAP["rank_uuid"]: again})
+
+    async def test_update_sends_a_map_in_place_of_a_floor_plan(self) -> None:
+        await self.start()
+        self.server.store.save_floorplan(self.ROBOT, self.OLD, 7)
+        self.server.store.save_floorplan(self.ROBOT, self.ELSE, 8)
+        self.server.store.save_floorplan(self.OTHER, self.OLD, 9)
+        robot, _ = await self.login()
+        target = f"{self.BOARD1}&action=update&map=1&old_rank_uuid={self.OLD}"
+        request, told = await self.answered(robot, target, self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.update_floorplan", "code": 200, "body": {}}))
+        # The reduced structure of the spec, which has no tracks.
+        self.assertEqual(self.made(request), {"ability": "maps.update_floorplan", **self.PLAN, "old_rank_uuid": self.OLD})
+        # The old one is no longer the robot's, and the other robot's of that name still is its own.
+        self.assertEqual(await self.plans(), {MAP["rank_uuid"]: 1, self.ELSE: 8})
+        self.assertEqual([row["rank_uuid"] for row in self.server.store.floorplans(self.OTHER)], [self.OLD])
+        # In place of one the server never had the robot make, named as it was given.
+        elsewhere = "AAAAAAAA-0000-BBBB-1111-CCCCCCCCCCCC"
+        request, _ = await self.answered(robot, f"{self.BOARD1}&action=update&map=1&old_rank_uuid={elsewhere}", self.DONE)
+        self.assertEqual(request["body"]["old_rank_uuid"], elsewhere)
+        self.assertEqual(await self.plans(), {MAP["rank_uuid"]: 1, self.ELSE: 8})
+
+    async def test_demote_names_the_floor_plan(self) -> None:
+        await self.start()
+        self.server.store.save_floorplan(self.ROBOT, self.OLD, 1)
+        self.server.store.save_floorplan(self.ROBOT, self.ELSE, 1)
+        robot, _ = await self.login()
+        # A map that comes with it is not looked at.
+        request, told = await self.answered(robot, f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}&map=nonsense", self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.demote_floorplan", "code": 200, "body": {}}))
+        self.assertEqual(set(request), {"type", "id", "body"})
+        self.assertEqual(request["body"], {"ability": "maps.demote_floorplan", "rank_uuid": self.OLD})
+        self.assertEqual(await self.plans(), {self.ELSE: 1})
+        # One the server never had the robot make is asked of the robot all the same, which may have it from elsewhere.
+        request, told = await self.answered(robot, f"{self.BOARD1}&action=demote&rank_uuid={MAP['rank_uuid']}", self.DONE)
+        self.assertEqual((request["body"]["rank_uuid"], told[0]), (MAP["rank_uuid"], 200))
+        self.assertEqual(await self.plans(), {self.ELSE: 1})
+
+    async def test_floor_plan_is_made_of_what_the_spec_gives_one_and_no_more(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        # As a robot on firmware 1.7.0 gave the base of a run on no floor plan, and with what a newer one might add.
+        nowhere = {"x": 2147483647, "y": -2147483648, "dir": 274, "seen": False}
+        odd = {**MAP, "rank_uuid": self.ELSE.upper(), "added_by_newer_firmware": "caf\u00e9", "long": 10 ** 400,
+               "map": {**MAP["map"], "resolution": 40}, "robot": {"base": nowhere}}
+        request, _ = await self.answered(robot, f"{self.BOARD1}&action=promote&map={self.upload(odd)}", self.DONE)
+        self.assertEqual(self.made(request), {
+            "ability": "maps.promote_floorplan", **self.PLAN, "rank_uuid": self.ELSE.upper(), "old_rank_uuid": None,
+            "base": {"x": 2147483647, "y": -2147483648, "dir": 274}, "nogo_track": None, "cleaning_tracks": [],
+        })
+
+    async def test_what_the_robot_does_not_accept_is_not_noted(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        update = f"{self.BOARD1}&action=update&map=1&old_rank_uuid={self.OLD}"
+        demote = f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}"
+        self.server.store.save_floorplan(self.ROBOT, self.OLD, 7)
+        # The status says that the robot answered, not what it answered, and 200 alone is the robot accepting.
+        for answer, told in (
+            ({"code": 422, "body": {}}, {"code": 422, "body": {}}),
+            ({"code": 400}, {"code": 400, "body": None}),
+            ({"code": "200", "body": ["caf\u00e9"]}, {"code": "200", "body": ["caf\u00e9"]}),
+            ({}, {"code": None, "body": None}),
+        ):
+            for target, ability in ((self.PROMOTE, "promote"), (update, "update"), (demote, "demote")):
+                with self.subTest(answer=answer, ability=ability):
+                    self.assertEqual((await self.answered(robot, target, answer))[1],
+                                     (200, {"ability": f"maps.{ability}_floorplan", **told}))
+                    self.assertEqual(await self.plans(), {self.OLD: 7})
+
+    async def test_what_is_not_sent_to_a_robot(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        mine = MAP["rank_uuid"]
+        not_one = ("", "first", "1", "..%2F..%2Fetc", self.OLD[:-1], self.OLD + "0", self.OLD + "%0A", "%20" + self.OLD,
+                   self.OLD.replace("-", ""), "%7B" + self.OLD + "%7D", "g" + self.OLD[1:], "%D9%A1" + self.OLD[1:])
+        refused = {
+            "action must be one of promote, update, demote": [
+                self.BOARD1, *(f"{self.BOARD1}&action={action}&map=1&rank_uuid={self.OLD}&old_rank_uuid={self.OLD}"
+                               for action in ("", "PROMOTE", "maps.demote_floorplan", "delete", "demote%20")),
+            ],
+            "rank_uuid must be a UUID": [
+                f"{self.BOARD1}&action=demote", f"{self.BOARD1}&action=demote&old_rank_uuid={self.OLD}&map=1",
+                *(f"{self.BOARD1}&action=demote&rank_uuid={given}" for given in not_one),
+            ],
+            "old_rank_uuid must be a UUID": [
+                f"{self.BOARD1}&action=update&map=1", f"{self.BOARD1}&action=update&map=1&rank_uuid={self.OLD}",
+                *(f"{self.BOARD1}&action=update&map=1&old_rank_uuid={given}" for given in not_one),
+            ],
+            # A floor plan does not take its own place.
+            "old_rank_uuid must not be the map's own rank_uuid": [
+                f"{self.BOARD1}&action=update&map=1&old_rank_uuid={given}" for given in (mine, mine.upper())
+            ],
+        }
+        for error, targets in refused.items():
+            for target in targets:
+                with self.subTest(error=error, target=target):
+                    self.assertEqual(await self.command(target), (400, {"error": error}))
+        # Asked of a robot that is not there, an action or a floor plan is wrong all the same.
+        for target in refused["action must be one of promote, update, demote"] + refused["rank_uuid must be a UUID"]:
+            with self.subTest(target=target):
+                self.assertEqual((await self.command(target.replace("serial=board1", "serial=board2")))[0], 400)
+
+        # A floor plan is made of a map of this robot's that the database has.
+        other = self.upload(MAP, self.OTHER)
+        for given in ("", "&map=", f"&map={other}", "&map=3", "&map=0", "&map=-1", "&map=1.0", "&map=one", f"&map={2 ** 63}",
+                      "&map=" + "9" * 5000, f"&rank_uuid={mine}"):
+            for action in ("promote", f"update&old_rank_uuid={self.OLD}"):
+                with self.subTest(given=given[:60], action=action):
+                    self.assertEqual(await self.command(f"{self.BOARD1}&action={action}{given}"),
+                                     (404, {"error": "no such map in the database"}))
+        self.assertEqual(await self.command("/api/floorplan?vendor=n&serial=board2&action=promote&map=1"),
+                         (404, {"error": "no such map in the database"}))
+
+        # And of a map that has all that a floor plan takes of one, each as the spec has it.
+        def binaries(**changes: object) -> dict:
+            return {**MAP, "map": {**MAP["map"], **changes}}
+
+        def base(**changes: object) -> dict:
+            return {**MAP, "robot": {**MAP["robot"], "base": {**MAP["robot"]["base"], **changes}}}
+
+        def less(given: dict, name: str) -> dict:
+            return {key: value for key, value in given.items() if key != name}
+
+        not_base64 = ("", "cmFuaw", "cmFuaw=", "cmFu aw==", "cmFu\naw==", "cmFuaw==!", "caf\u00e9", 7, None, ["cmFuaw=="])
+        unfit = {
+            "the map's rank_uuid must be a UUID": [
+                {}, less(MAP, "rank_uuid"), *({**MAP, "rank_uuid": given} for given in (None, "", "second", 7, [mine], mine + "\n")),
+            ],
+            "the map's map.rank_binary must be Base64 that is not empty": [
+                less(MAP, "map"), {**MAP, "map": None}, {**MAP, "map": "elsewhere"}, {**MAP, "map": [MAP["map"]]},
+                {**MAP, "map": less(MAP["map"], "rank_binary")}, *(binaries(rank_binary=given) for given in not_base64),
+            ],
+            "the map's map.real_binary must be Base64 that is not empty": [
+                {**MAP, "map": less(MAP["map"], "real_binary")}, *(binaries(real_binary=given) for given in not_base64),
+            ],
+            "the map's robot.base must be an object of x, y, dir": [
+                less(MAP, "robot"), {**MAP, "robot": None}, {**MAP, "robot": {"pos": MAP["robot"]["pos"]}},
+                *({**MAP, "robot": {"base": given}} for given in (None, [20, 200, 45.0], "20,200", 0)),
+            ],
+            "the map's robot.base.x must be a whole number": [
+                {**MAP, "robot": {"base": {"y": 200, "dir": 45.0}}}, *(base(x=given) for given in (20.5, 20.0, "20", True, None, [20])),
+            ],
+            "the map's robot.base.y must be a whole number": [
+                {**MAP, "robot": {"base": {"x": 20, "dir": 45.0}}}, *(base(y=given) for given in (0.5, "200", False, None)),
+            ],
+            "the map's robot.base.dir must be a number": [
+                {**MAP, "robot": {"base": {"x": 20, "y": 200}}}, *(base(dir=given) for given in ("45", True, None, [45.0], {})),
+            ],
+        }
+        for error, maps in unfit.items():
+            for body in maps:
+                number = self.upload(body)
+                for action in ("promote", f"update&old_rank_uuid={self.OLD}"):
+                    with self.subTest(error=error, body=str(body)[:120], action=action):
+                        self.assertEqual(await self.command(f"{self.BOARD1}&action={action}&map={number}"), (400, {"error": error}))
+        self.assertEqual(await self.plans(), {})
+        # None of those reached the robot: the first thing it is sent is this one.
+        request, _ = await self.answered(robot, f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}", self.DONE)
+        self.assertEqual(request["body"], {"ability": "maps.demote_floorplan", "rank_uuid": self.OLD})
+
+    async def test_robot_that_is_not_connected(self) -> None:
+        await self.start()
+        self.server.store.save_floorplan(self.ROBOT, self.OLD, 1)
+        for target in (self.PROMOTE, f"{self.BOARD1}&action=update&map=1&old_rank_uuid={self.OLD}",
+                       f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}",
+                       f"/api/floorplan?vendor=n&serial=board2&action=demote&rank_uuid={self.OLD}",
+                       f"/api/floorplan?action=demote&rank_uuid={self.OLD}"):
+            with self.subTest(target):
+                self.assertEqual(await self.command(target), (409, {"error": "the robot is not connected"}))
+        self.assertEqual(await self.plans(), {self.OLD: 1})
+
+    async def test_only_this_server_s_own_page_may_ask(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        told = (403, {"error": "a command is taken only from this server's own page"})
+        demote = f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}"
+        for sent in (("Host: localhost:8080",), ("Host: localhost:8080", "Origin: http://elsewhere.example"), ()):
+            for target in (self.PROMOTE, demote, "/api/floorplan"):
+                with self.subTest(sent=sent, target=target):
+                    self.assertEqual(await self.command(target, sent), told)
+        for method in ("GET", "HEAD", "PUT", "DELETE"):
+            with self.subTest(method):
+                status, headers, _ = await self.fetch(self.PROMOTE, method, self.PAGE)
+                self.assertEqual((status, headers["Allow"]), (405, "POST"))
+        # None of those reached the robot: the first thing it is sent is this one.
+        request, _ = await self.answered(robot, demote, self.DONE)
+        self.assertEqual(request["body"], {"ability": "maps.demote_floorplan", "rank_uuid": self.OLD})
+
+    async def test_robot_that_does_not_answer_in_time(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        with mock.patch.object(web, "_COMMAND_TIMEOUT", 0.05):
+            self.assertEqual(await self.command(self.PROMOTE), (504, {"error": "the robot did not answer within 0.05 s"}))
+        request = await robot.recv()
+        self.assertEqual(request["body"]["ability"], "maps.promote_floorplan")
+        # An answer that comes after that is nobody's, so the floor plan it tells of is not noted.
+        with self.assertLogs("deorbit", "WARNING") as logs:
+            await robot.send({"type": "response", "id": request["id"], **self.DONE})
+            self.assertEqual((await robot.request("firmware.check", {}, "last"))["id"], "last")
+        self.assertIn("no such call pending", logs.output[0])
+        self.assertEqual(await self.plans(), {})
+        # Asked again, the robot is sent the same, and what it accepts then is noted.
+        await self.answered(robot, self.PROMOTE, self.DONE)
+        self.assertEqual(await self.plans(), {MAP["rank_uuid"]: 1})
+        sending = asyncio.create_task(self.command(f"{self.BOARD1}&action=demote&rank_uuid={MAP['rank_uuid']}"))
+        await robot.recv()
+        robot.writer.transport.abort()
+        status, told = await sending
+        self.assertEqual(status, 502)
+        self.assertRegex(told["error"], r"^no answer from the robot: session closed: connection ")
+        self.assertEqual(await self.plans(), {MAP["rank_uuid"]: 1})
+
+    async def test_floor_plan_that_cannot_be_noted(self) -> None:
+        await self.start()
+        self.server.store.save_floorplan(self.ROBOT, self.OLD, 7)
+        robot, _ = await self.login()
+        told = (503, {"error": "the robot accepted it, but that could not be saved to the database"})
+        with contextlib.closing(sqlite3.connect(self.server.config.database)) as db:
+            # A file that takes no change to a floor plan, as a full disk would not.
+            for change in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"CREATE TRIGGER no_{change} BEFORE {change} ON floorplans BEGIN SELECT RAISE(ABORT, 'full'); END")
+            for target in (self.PROMOTE, f"{self.BOARD1}&action=update&map=1&old_rank_uuid={self.OLD}",
+                           f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}"):
+                with self.subTest(target), self.assertLogs("deorbit", "ERROR") as logs:
+                    # The robot has done it by then, and the page is told that the list is not the robot's any more.
+                    self.assertEqual((await self.answered(robot, target, self.DONE))[1], told)
+                    self.assertIn("[n/board1] not saved to the database: full", logs.output[0])
+            self.assertEqual(await self.plans(), {self.OLD: 7})
+            for change in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"DROP TRIGGER no_{change}")
+        # Asking again puts it right, where the robot accepts again.
+        await self.answered(robot, f"{self.BOARD1}&action=demote&rank_uuid={self.OLD}", self.DONE)
+        self.assertEqual(await self.plans(), {})
+
+    async def test_change_and_its_answer_are_among_the_events(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        await self.answered(robot, self.PROMOTE, self.DONE)
+        answer, call, login = (await self.api(self.ROBOT1))["events"]
+        self.assertEqual([(event["kind"], event["service"]) for event in (answer, call, login)],
+                         [("response", None), ("call", None), ("login", None)])
+        # The binaries are in the map the floor plan was made of, and here by their length alone.
+        sent = json.loads(call["body_json"])
+        self.assertRegex(sent.pop("date_created"), r"Z$")
+        self.assertEqual(sent, {"ability": "maps.promote_floorplan", **self.PLAN, "rank_binary": "<8 chars>",
+                                "real_binary": "<8 chars>", "old_rank_uuid": None, "nogo_track": None, "cleaning_tracks": []})
+        self.assertEqual(json.loads(answer["body_json"]), {"ability": "maps.promote_floorplan", "code": 200, "body": {}})
 
 
 class ServeTests(ServerTestCase):
