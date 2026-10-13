@@ -117,6 +117,11 @@ function chargeText(robot) {
   return typeof robot.charge === 'number' ? `${robot.charge}%` : plain(robot.charge);
 }
 
+/** The estimate of a quick boost as the robot gave it, which is -1 when it has none. */
+function boostEstimate(robot) {
+  return robot.quickboost_estimate === -1 ? none() : plain(robot.quickboost_estimate);
+}
+
 /** The vendor a robot logged in as, which the server keeps in lowercase, by name where it has one. */
 function vendorName(robot) {
   return robot.vendor === 'n' ? 'Neato' : robot.vendor;
@@ -1920,6 +1925,8 @@ function statusPanels(robot) {
     panel('Battery', rows([
       ['Charge', chargeText(robot)],
       ['Charging', flag(robot.is_charging)],
+      ['Quick boost', flag(robot.is_quickboost)],
+      ['Quick boost estimate', boostEstimate(robot)],
     ])),
     panel('Robot', rows([
       ['Vendor', plain(vendorName(robot))],
@@ -1931,11 +1938,12 @@ function statusPanels(robot) {
     panel('Base', rows([
       ['Docked', flag(robot.is_docked)],
       ['Base type', plain(robot.base_type)],
-      ['Quick boost', flag(robot.is_quickboost)],
-      ['Quick boost estimate', plain(robot.quickboost_estimate)],
-      ['Bag status', plain(robot.bag_status)],
-      ['Base error', plain(robot.base_error)],
-      ['Extracting', flag(robot.is_extracting)],
+      // A robot sends these whatever its base is, and only a cleaning center has a bag to speak of.
+      ...(robot.base_type === 'cleaning_center' ? [
+        ['Bag status', plain(robot.bag_status)],
+        ['Base error', plain(robot.base_error)],
+        ['Extracting', flag(robot.is_extracting)],
+      ] : []),
     ])),
     panel('Last run', autonomy(robot)),
   ];
