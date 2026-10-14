@@ -2612,16 +2612,20 @@ function awaiting(mine) {
   return mine.accepted !== null && !(mine.body?.robot.state_at > mine.accepted.sent);
 }
 
-/** Send the robot a command and say under the buttons how it went. */
-async function send(mine, name, label) {
+/** Send the robot a command and say under the buttons how it went. A start may be given the `run` it is to clean. */
+async function send(mine, name, label, run = null) {
   if (mine.command?.waiting || awaiting(mine)) return;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
   mine.command = { name, waiting: true };
   drawRobot(mine);
-  const address = `api/command?${new URLSearchParams({ ...mine.robot, command: name })}`;
+  const address = `api/command?${new URLSearchParams({ ...mine.robot, command: name, ...(run && { run: JSON.stringify(run) }) })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
   const said = { name, ...outcome(label, status, answer) };
+  // The spec has a robot answer this, with nothing more, to a start on a floor plan or a zone that it does not have.
+  if (status === 200 && answer.code === 422 && run?.map) {
+    said.text = `${label}: the robot answered 422, which it gives for a floor plan or a zone it does not have`;
+  }
   mine.command = said;
   // Both times are the server's, as text that sorts by time. The browser's own is for how long to keep asking eagerly.
   if (said.tone === 'good') mine.accepted = { sent: answer.sent, at: Date.now() };
@@ -2639,11 +2643,146 @@ async function send(mine, name, label) {
   }
 }
 
+/** Why the robot would not take the command `name` now, going by its last state, or null when it would. */
+function barred(robot, name) {
+  const value = robot[`can_${name}`];
+  return !robot.session ? 'the robot is not connected'
+    : isOn(value) ? null
+    : isOff(value) ? 'the robot would not accept it now'
+    : 'the robot has not said whether it would accept it';
+}
+
+/**
+ * Shut the menu of the Start button. The keyboard goes back to what opened it,
+ * unless `back` is false, as for a press elsewhere, which leaves the keyboard
+ * and any selection where that press put them.
+ */
+function shutStart(mine, back = true) {
+  mine.start.open = false;
+  // A selection would hold the page as it is, and so would a field of the menu while the keyboard is in it.
+  if (back) getSelection().removeAllRanges();
+  if (document.activeElement?.closest('.start-menu')) document.activeElement.blur();
+  drawRobot(mine);
+  if (back) app.querySelector('[data-focus="start-options"]')?.focus();
+}
+
+/**
+ * The other half of the Start button, which opens and shuts the menu that sets
+ * what a start from it is to clean, and puts the keyboard in that menu. It can
+ * be pressed while Start can, and always while the menu is open, so that the
+ * menu can be shut with it.
+ */
+function startToggle(mine, why) {
+  const start = mine.start;
+  const off = why !== null && !start.open;
+  return h('button', {
+    class: 'command caret',
+    type: 'button',
+    disabled: off,
+    'aria-expanded': String(start.open),
+    'aria-controls': start.open && 'start-menu',
+    'aria-label': 'Start options',
+    title: off ? `Start options: ${why}` : 'Start options',
+    'data-focus': 'start-options',
+    'data-start': '',
+    onclick: () => {
+      if (start.open) {
+        shutStart(mine);
+        return;
+      }
+      start.open = true;
+      // A selection would hold the page as it is, and the press has to show.
+      getSelection().removeAllRanges();
+      drawRobot(mine);
+      app.querySelector('[data-focus="start-mode"]')?.focus();
+    },
+  }, icon('down'));
+}
+
+/**
+ * The menu of the Start button: the run a start from it is to clean, set as a
+ * run of an event of the schedule is, and Start under it. The view's `start`
+ * holds what is chosen, as it is chosen, and keeps it while the page is open,
+ * so the menu opens again on the last choice. A floor plan is one of `plans`,
+ * those the server had the robot keep, and a zone one of its zones; the Start
+ * of the button itself cleans on no floor plan, in the first mode and
+ * navigation mode. `why` is why the robot would not take a start now, and
+ * `hold` why a press would do nothing for now, as for the other commands.
+ */
+function startMenu(mine, plans, why, hold) {
+  const start = mine.start;
+  const option = ([value, label], chosen) => h('option', { value, selected: value === chosen }, label);
+  const field = (label, select) => h('label', { class: 'start-field' }, h('span', null, label), select);
+  const choice = (name, values) => h('select', {
+    'data-focus': `start-${name}`,
+    onchange: ({ target }) => { start[name] = target.value; },
+  }, values.map((value) => option([value, value], start[name])));
+  const zoneField = h('select', { 'data-focus': 'start-zone', onchange: ({ target }) => { start.zone = target.value; } });
+  const nogoField = yesNo('No-go lines', 'start-nogo', start.nogo, (on) => { start.nogo = on; });
+  // The zones to choose from are those of the floor plan that is chosen, so they change with it, in place, since no field draws the page again.
+  const zoning = () => {
+    const zones = plans.find((plan) => plan.rank_uuid === start.floor)?.zones ?? [];
+    const choices = [['', 'Whole floor plan'], ...zones.map((zone) => [zone.track_uuid, word(zone.name) ?? short(zone.track_uuid)])];
+    zoneField.replaceChildren(...choices.map((each) => option(each, start.zone)));
+    // On no floor plan, a run has neither.
+    zoneField.disabled = start.floor === '';
+    nogoField.disabled = start.floor === '';
+    nogoField.value = start.nogo ? 'yes' : 'no';
+  };
+  zoning();
+  const floorField = h('select', {
+    'data-focus': 'start-floor',
+    onchange: ({ target }) => {
+      start.floor = target.value;
+      // Another floor plan is cleaned whole, minding its no-go lines where the server had the robot keep some.
+      start.zone = '';
+      start.nogo = Boolean(plans.find((plan) => plan.rank_uuid === start.floor)?.nogo);
+      zoning();
+    },
+  }, [['', 'None'], ...plans.map((plan) => [plan.rank_uuid, floorLabel(plan)])].map((each) => option(each, start.floor)));
+  // Held back, not disabled, as the other commands are.
+  const held = why === null && hold !== null;
+  const button = h('button', {
+    class: 'command',
+    type: 'submit',
+    disabled: why !== null,
+    'aria-disabled': held && 'true',
+    title: held ? `Start: ${hold}` : why && `Start: ${why}`,
+    'data-focus': 'start-run',
+  }, icon('play'), 'Start');
+  return h('form', {
+    class: 'start-menu',
+    id: 'start-menu',
+    'aria-label': 'Start options',
+    'data-start': '',
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (mine.command?.waiting || awaiting(mine)) return;
+      const run = { settings: { mode: start.mode, navigation_mode: start.navigation }, map: placed(start.floor, start.zone, start.nogo) };
+      start.open = false;
+      // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
+      button.focus();
+      send(mine, 'start', 'Start', run);
+      // The menu went with the press, so the keyboard goes to the Start that is waiting for the robot's answer.
+      app.querySelector('[data-focus="can_start"]')?.focus();
+    },
+  },
+  field('Mode', choice('mode', MODES)),
+  field('Navigation', choice('navigation', NAVIGATION_MODES)),
+  field('Floor plan', floorField),
+  field('Zone', zoneField),
+  field('No-go lines', nogoField),
+  plans.length === 0 && h('p', { class: 'hint' }, 'No floor plans yet: a map is made one on the Maps tab.'),
+  h('div', { class: 'slot-tools' }, button));
+}
+
 /**
  * The commands as buttons, and under them how the last one sent went. One can
  * be pressed when the robot is connected and its last state said it would
  * accept that command. From when one is sent until the robot has answered and,
  * if it accepted, sent its next status, pressing any of them does nothing.
+ * Start is two buttons in one, the second of which opens a menu under them
+ * that sets what a start is to clean.
  */
 function commands(mine, robot) {
   const sent = mine.command;
@@ -2651,15 +2790,20 @@ function commands(mine, robot) {
     : awaiting(mine) ? 'waiting for the robot\'s next status'
     : null;
   return [
-    h('div', { class: 'commands' }, COMMANDS.map(([name, label, glyph]) => {
-      const value = robot[`can_${name}`];
-      const why = !robot.session ? 'the robot is not connected'
-        : isOn(value) ? null
-        : isOff(value) ? 'the robot would not accept it now'
-        : 'the robot has not said whether it would accept it';
+    h('div', {
+      class: 'commands',
+      // Not the Escape that ends the composing of a character.
+      onkeydown: (event) => {
+        if (event.key !== 'Escape' || event.isComposing || !mine.start.open) return;
+        event.preventDefault();
+        shutStart(mine);
+      },
+    },
+    COMMANDS.map(([name, label, glyph]) => {
+      const why = barred(robot, name);
       // Held back, not disabled: a disabled button could not keep the keyboard's focus.
       const held = why === null && hold !== null;
-      return h('button', {
+      const button = h('button', {
         class: `command${sent?.waiting && sent.name === name ? ' busy' : ''}`,
         type: 'button',
         disabled: why !== null,
@@ -2668,7 +2812,9 @@ function commands(mine, robot) {
         'data-focus': `can_${name}`,
         onclick: () => send(mine, name, label),
       }, icon(glyph), label);
-    })),
+      return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why)) : button;
+    }),
+    mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold)),
     sent && !sent.waiting && h('p', { class: `command-said ${sent.tone}`, role: 'status' }, sent.text),
   ];
 }
@@ -3080,7 +3226,8 @@ function drawRobot(mine) {
   if (mine !== view || !body) return;
   const data = [
     body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, body.tracks,
-    mine.tab, mine.naming, mine.command, mine.accepted, mine.schedule, mine.settings, mine.floors, mine.tracks, mine.deleting,
+    mine.tab, mine.naming, mine.command, mine.accepted, mine.start, mine.schedule, mine.settings, mine.floors, mine.tracks,
+    mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
   // The pictures of the maps are no part of what is drawn, and what is drawn over them may have changed.
@@ -3114,6 +3261,11 @@ function show(mine, status, body) {
       // What was being drawn on a floor plan that is one no more, of that map, has nothing to be drawn on.
       const edit = mine.tracks.edit;
       if (edit && !body.floorplans.some((plan) => plan.rank_uuid === edit.rank && plan.map_id === edit.map)) mine.tracks.edit = null;
+      // A floor plan or a zone that is kept no more, as after a Demote, is one the robot does not have to start on either.
+      const start = mine.start;
+      const kept = plansOf(body).find((plan) => plan.rank_uuid === start.floor);
+      if (!kept) start.floor = '';
+      if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
       // The schedule is asked for once of each connection the page sees, not at every turn: asking is a call to the robot.
       const since = body.robot.session?.since;
       if (since && mine.schedule.asked !== since) askSchedule(mine, 'show', 'Schedule');
@@ -3181,6 +3333,9 @@ function navigate() {
     naming: { draft: null, waiting: false, said: null },
     command: null,
     accepted: null,
+    // Whether the menu of the Start button is open, and the run it sets: the settings, the floor plan by what the robot
+    // knows it by or nothing for none, its zone the same way or nothing for the whole of it, and whether it minds its no-go lines.
+    start: { open: false, mode: MODES[0], navigation: NAVIGATION_MODES[0], floor: '', zone: '', nogo: false },
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave;
     // how the last request failed; the form, when one is open; and the event about to be deleted.
     schedule: { asked: null, waiting: null, shown: null, said: null, form: null, dropping: null },
@@ -3217,6 +3372,11 @@ function navigate() {
 }
 
 addEventListener('hashchange', navigate);
+// A press anywhere but in the menu of the Start button, or on what opens it, shuts that menu, as a dropdown is shut. A
+// press that drew the page anew has a target that is no longer in it, but still has the ancestors it had.
+document.addEventListener('click', ({ target }) => {
+  if (view?.start.open && !target.closest?.('[data-start]')) shutStart(view, false);
+});
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && view?.paused) {
     view.paused = false;

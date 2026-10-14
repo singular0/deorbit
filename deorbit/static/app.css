@@ -390,7 +390,10 @@ h1 {
   color: var(--text);
 }
 
+/* Over the tabs and the panels after it, which the menu of the Start button opens over. */
 .hero {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 22px;
@@ -469,10 +472,69 @@ h1 {
 }
 
 .commands {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* Start, and beside it what opens the menu that sets what Start cleans: one button in two. */
+.split {
+  display: inline-flex;
+}
+
+.split > .command:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.split > .caret {
+  padding: 7px 8px;
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.caret .icon {
+  transition: transform 0.16s ease;
+}
+
+.caret[aria-expanded="true"] .icon {
+  transform: rotate(180deg);
+}
+
+/* That menu, under the commands from where Start is, over what follows them. */
+.start-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 2;
+  display: grid;
+  gap: 10px;
+  width: 320px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 24px 56px -20px #00000099;
+}
+
+.start-field {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.start-menu > .hint {
+  margin: 0;
+}
+
+.start-menu > .slot-tools {
+  margin-top: 4px;
 }
 
 .command {
@@ -1375,6 +1437,7 @@ td.cell-clock {
 .setting-form dd > select,
 .track-form dd > input,
 .track-form dd > select,
+.start-field > select,
 .name-form > input {
   height: 34px;
   padding: 0 10px;
@@ -1395,8 +1458,15 @@ td.cell-clock {
   max-width: 100%;
 }
 
+/* The menu of the Start button gives each field the width it has. */
+.start-field > select {
+  width: 100%;
+  min-width: 0;
+}
+
 /* A choice that a run on no floor plan does not have. */
-.slot-form dd > select:disabled {
+.slot-form dd > select:disabled,
+.start-field > select:disabled {
   color: var(--faint);
 }
 
@@ -1597,6 +1667,19 @@ td.cell-clock {
 
   .hero-main h1 {
     font-size: 21px;
+  }
+
+  /* Too narrow to open over the page from beside the robot's picture: the menu of the Start button takes a line of its own under the commands, its names over its fields. */
+  .start-menu {
+    position: static;
+    flex-basis: 100%;
+    width: auto;
+    box-shadow: none;
+  }
+
+  .start-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
   }
 
   /* The tabs share the width of the page, and are moved along sideways where it is too narrow for them. */

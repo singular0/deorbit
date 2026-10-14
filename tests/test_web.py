@@ -933,6 +933,72 @@ class CommandTests(WebTestCase):
                     self.assertIsNone(run["map"])
                 self.assertEqual(body, {})
 
+    def started(self, run: object, robot: str = BOARD1) -> str:
+        """The address that starts ``run``, or whatever is given for one."""
+        text = run if isinstance(run, str) else json.dumps(run)
+        return f"{robot}&command=start&run={quote(text, safe='')}"
+
+    async def test_start_may_name_the_run_it_cleans(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        settings = {"mode": "turbo", "navigation_mode": "gentle"}
+        for run in (
+            {**RUN, "settings": settings},
+            {"settings": {"mode": "max", "navigation_mode": "normal"}, "map": FLOOR},
+            {**RUN, "map": {**FLOOR, "track_id": "888aa432-1067-2a25-9fd7-432169d2d556", "nogo_enabled": False}},
+        ):
+            with self.subTest(run):
+                request, told = await self.answered(robot, self.started(run), {"code": 200, "body": {}})
+                self.assertEqual(told, (200, {"ability": "cleaning.start", "code": 200, "body": {}}))
+                self.assertEqual(request["body"], {"ability": "cleaning.start", "runs": [run]})
+        # A run that is empty is none, and the start is the one the button sends without one.
+        request, _ = await self.answered(robot, self.BOARD1 + "&command=start&run=", {"code": 200})
+        self.assertEqual(request["body"], {"ability": "cleaning.start", "runs": [RUN]})
+        # The spec has a robot answer 422 for a floor plan or a zone it does not have, and that is passed on as any answer is.
+        _, told = await self.answered(robot, self.started({**RUN, "map": FLOOR}), {"code": 422, "body": {}})
+        self.assertEqual(told, (200, {"ability": "cleaning.start", "code": 422, "body": {}}))
+
+    async def test_run_that_is_not_sent_to_a_robot(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        a_run = "run must be an object of settings, map and nothing else"
+        refused = {
+            "run is taken only with start": [
+                f"{self.BOARD1}&command={name}&run={quote(json.dumps(RUN))}" for name in ("pause", "resume", "cancel", "return_to_base")
+            ],
+            "run must be JSON": [self.started(text) for text in ("nonsense", "{'map': null}", json.dumps(RUN)[:-1], "[" * 5000)],
+            # One run, not a list of them.
+            a_run: [self.started(given) for given in (None, [RUN], {"settings": RUN["settings"]}, {**RUN, "force_floorplan": False})],
+            "run.settings must be an object of mode, navigation_mode and nothing else": [
+                self.started({**RUN, "settings": given}) for given in (None, {"mode": "eco"})
+            ],
+            "run.settings.mode must be one of eco, turbo, auto, max": [
+                self.started({**RUN, "settings": {**RUN["settings"], "mode": given}}) for given in ("deep", "ECO", None)
+            ],
+            "run.settings.navigation_mode must be one of normal, gentle": [
+                self.started({**RUN, "settings": {**RUN["settings"], "navigation_mode": given}}) for given in ("fast", None)
+            ],
+            "run.map, unless null, must be an object of rank_id, track_id, nogo_enabled and nothing else": [
+                self.started({**RUN, "map": given}) for given in ({}, "fb7f8145", {"rank_id": FLOOR["rank_id"]})
+            ],
+            "run.map.rank_id must be a string that is not empty": [self.started({**RUN, "map": {**FLOOR, "rank_id": ""}})],
+            "run.map.track_id must be null or a string that is not empty": [self.started({**RUN, "map": {**FLOOR, "track_id": ""}})],
+            "run.map.nogo_enabled must be true or false": [self.started({**RUN, "map": {**FLOOR, "nogo_enabled": None}})],
+            # The command is looked at first.
+            "command must be one of start, pause, resume, cancel, return_to_base": [
+                f"{self.BOARD1}&command=START&run={quote(json.dumps(RUN))}"
+            ],
+        }
+        for error, targets in refused.items():
+            for target in targets:
+                # Asked of a robot that is there and of one that is not: the request is wrong either way.
+                for asked in (target, target.replace("serial=board1", "serial=board2")):
+                    with self.subTest(error=error, target=asked[:200]):
+                        self.assertEqual(await self.command(asked), (400, {"error": error}))
+        # None of those reached the robot: the first thing it is sent is this one.
+        request, _ = await self.answered(robot, self.PAUSE, {"code": 200})
+        self.assertEqual(request["body"], {"ability": "cleaning.pause"})
+
     async def test_whatever_the_robot_answers_is_passed_on(self) -> None:
         await self.start()
         robot, _ = await self.login()

@@ -14,9 +14,10 @@ from collections.abc import Callable
 #
 # ``cleaning.start`` takes ``runs``, at least one, each with its ``settings``
 # and its ``map`` (section 6.1 of the spec). A map of ``None`` is a cleaning on
-# no saved floor plan, which is the only kind the Start button asks for. The
-# mode may be eco, turbo, auto or max and the navigation mode normal or gentle;
-# these two are the ones a robot gave for a run started from its own button.
+# no saved floor plan, which is what the Start button asks for unless it is
+# given a run of its own (see ``command``). The mode may be eco, turbo, auto or
+# max and the navigation mode normal or gentle; these two are the ones a robot
+# gave for a run started from its own button.
 COMMANDS: dict[str, tuple[str, dict]] = {
     "start": ("cleaning.start", {"runs": [{"map": None, "settings": {"mode": "eco", "navigation_mode": "normal"}}]}),
     "pause": ("cleaning.pause", {}),
@@ -80,6 +81,28 @@ def _run(given: object, where: str) -> dict:
             raise ValueError(f"{where}.map.nogo_enabled must be true or false")
         run["map"] = {"rank_id": rank, "track_id": track, "nogo_enabled": nogo}
     return run
+
+
+def command(name: str, run: str) -> tuple[str, dict]:
+    """The ability for the command ``name`` and what is sent with it, or a ``ValueError`` that says what is wrong.
+
+    ``run`` is the JSON of the one run a ``start`` is to clean, checked as a
+    run of an event of a schedule is and built anew, or empty for the run of
+    ``COMMANDS``. No other command takes one. The spec lets ``cleaning.start``
+    take several runs, the zones of one floor plan; here it is given one, and
+    no ``force_floorplan``, which a robot replaces with its own setting.
+    """
+    if name not in COMMANDS:
+        raise ValueError(f"command must be one of {', '.join(COMMANDS)}")
+    if not run:
+        return COMMANDS[name]
+    if name != "start":
+        raise ValueError("run is taken only with start")
+    try:
+        given = json.loads(run)
+    except (ValueError, RecursionError):  # as for an event of a schedule
+        raise ValueError("run must be JSON") from None
+    return "cleaning.start", {"runs": [_run(given, "run")]}
 
 
 def _event(given: object, *, known: bool) -> dict:

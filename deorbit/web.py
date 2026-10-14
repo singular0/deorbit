@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 from .auth import RobotId
-from .commands import COMMANDS, floorplan, scheduling, settings, track
+from .commands import command, floorplan, scheduling, settings, track
 from .session import describe
 from .store import StoreError, now
 
@@ -296,12 +296,15 @@ class Web:
     async def _command(self, query: str) -> tuple[int, str, bytes]:
         """Send a robot the command the query names, and answer with what the robot said or why it said nothing."""
         asked = parse_qs(query)
-        name = asked.get("command", [""])[0]
-        if name not in COMMANDS:
-            return 400, _JSON, _json({"error": f"command must be one of {', '.join(COMMANDS)}"})
+        try:
+            # A start may name the run it is to clean, as JSON in the query as an event of a schedule is, and
+            # checked whole before anything is sent: a robot may drop a body it cannot read without a word.
+            ability, params = command(*(asked.get(key, [""])[0] for key in ("command", "run")))
+        except ValueError as exc:
+            return 400, _JSON, _json({"error": str(exc)})
         # Whether the robot's last state said it would accept the command is not
         # looked at: that state may be out of date, and the robot answers for itself.
-        return await self._call(_named(asked), *COMMANDS[name])
+        return await self._call(_named(asked), ability, params)
 
     async def _schedule(self, query: str) -> tuple[int, str, bytes]:
         """Ask a robot for its schedule or for a change to it, as the query says, and answer as for a command."""

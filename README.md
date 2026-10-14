@@ -75,15 +75,15 @@ it reports is kept in a database file on your machine.
 | Let in only the robots whose key you have | ✅ | Off by default: see [Checking robots' keys](#checking-robots-keys). |
 | List of robots: connected or not, what each is doing, its charge | ✅ | The page refreshes itself every few seconds. |
 | A robot's status: battery, base, errors, how its last run went | ✅ | |
-| Start a cleaning of the whole house | 🟡 | Always in eco mode with normal navigation; the mode cannot be chosen. |
+| Start a cleaning | ✅ | Start cleans the whole house in eco mode with normal navigation. The arrow beside it opens a menu to choose the mode, the navigation, and a floor plan the page lists or a zone of one. |
 | Pause, resume, return to base | ✅ | |
 | Cancel a cleaning | ✅ | |
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |
 | Add, change and delete scheduled cleanings | ✅ | Time, days, mode, navigation and floor plan. |
 | Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. A map can be zoomed into and dragged about. |
 | Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, with the buttons in a map's row, while the robot is connected. The page ticks the maps it had the robot keep as floor plans, not those the robot got from Neato's cloud. |
-| Clean by a floor plan | 🟡 | A scheduled cleaning can be put on one of the floor plans the page lists, or on a zone of one; Start always cleans without one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. |
-| Zones and no-go lines | 🟡 | Drawn on the Maps tab, on the picture of a map the page had the robot keep as a floor plan, while the robot is connected: a zone as a rectangle with a name and a cleaning mode, and no-go lines one at a time. A scheduled cleaning can clean a zone and mind the no-go lines; Start cannot clean a zone. The specification does not say how a robot reads a zone or a line, so the way they are sent is a guess. Zones and lines the robot got from Neato's cloud are not shown. |
+| Clean by a floor plan | 🟡 | A cleaning, started or scheduled, can be put on one of the floor plans the page lists, or on a zone of one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. |
+| Zones and no-go lines | 🟡 | Drawn on the Maps tab, on the picture of a map the page had the robot keep as a floor plan, while the robot is connected: a zone as a rectangle with a name and a cleaning mode, and no-go lines one at a time. A cleaning, started or scheduled, can clean a zone and mind the no-go lines. The specification does not say how a robot reads a zone or a line, so the way they are sent is a guess. Zones and lines the robot got from Neato's cloud are not shown. |
 | History of what a robot reported | ✅ | Its connections, its messages and error reports, and the commands it was sent. |
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
 | Name a robot | ✅ | Kept by the server; the robot is not told. |
