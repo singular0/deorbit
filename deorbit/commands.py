@@ -1,9 +1,10 @@
-"""What the web UI can send a robot: its commands and the changes to its schedule and its floor plans, each an ability invoked through ``Session.call``."""
+"""What the web UI can send a robot: its commands and the changes to its schedule, its floor plans and its settings, each an ability invoked through ``Session.call``."""
 
 import base64
 import json
 import math
 import re
+from collections.abc import Callable
 
 # By the name a robot's state gives the command under ``available_commands``:
 # the ability to invoke and what is sent with it, which is nothing for all but
@@ -215,3 +216,78 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
         return "maps.update_floorplan", plan
     # Without a no-go map and with no zones, which is how a robot promotes a map by itself (section 7.3).
     return "maps.promote_floorplan", {**plan, "nogo_track": None, "cleaning_tracks": []}
+
+
+# What a robot's sounds may be set to (section 6.4 of the spec). To the spec a
+# volume is "conventionally" 0 to 100, and nothing else is sent. The page's
+# script lists the same.
+VOICES = ("on", "off")
+VOLUME_MAX = 100
+
+
+def _flag(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{where} must be true or false")
+    return value
+
+
+def _language(given: object) -> dict:
+    (language,) = _fields(given, "value", "language")
+    # The robot matches it against the languages it lists, in whatever case, so that is the robot's to check.
+    if not isinstance(language, str) or not language:
+        raise ValueError("value.language must be a string that is not empty")
+    return {"language": language}
+
+
+def _sounds(given: object) -> dict:
+    # The spec has only enabled required, and a volume left out set to 100, so a change says all three.
+    enabled, voice, volume = _fields(given, "value", "enabled", "voice", "volume")
+    if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= VOLUME_MAX:
+        raise ValueError(f"value.volume must be a whole number from 0 to {VOLUME_MAX}")
+    return {"enabled": _flag(enabled, "value.enabled"), "voice": _among(voice, VOICES, "value.voice"), "volume": volume}
+
+
+def _switch(name: str) -> Callable[[object], dict]:
+    """What checks the value of a setting that is the one field ``name``, true or false."""
+
+    def checked(given: object) -> dict:
+        (value,) = _fields(given, "value", name)
+        return {name: _flag(value, f"value.{name}")}
+
+    return checked
+
+
+# The settings a robot keeps (section 6.4 of the spec), each under the action
+# that reads it, and what checks a value for the action that changes it, which
+# is the same name after ``set_``. The spec has the one field of
+# ``settings.set_cleaning_options`` optional; it is never left out here, since
+# a change that sets nothing is none. The group has ``settings.factory_reset``
+# too, which is no setting and cannot be undone, so it is not among these.
+_SETTERS = {
+    "robot_language": _language,
+    "sounds": _sounds,
+    "cleaning_options": _switch("force_floorplan"),
+    "ota_updates": _switch("auto"),
+}
+SETTINGS = tuple(_SETTERS)
+
+
+def settings(action: str, value: str) -> tuple[str, dict]:
+    """The ability for an action on a robot's settings and what is sent with it, or a ``ValueError`` that says what is wrong.
+
+    ``action`` is one of the spec's: the name of a setting reads it, and that
+    name after ``set_`` changes it to ``value``, the JSON of an object of the
+    fields that action takes. A value is built anew from checked values, as an
+    event of a schedule is, never passed on.
+    """
+    if action in _SETTERS:
+        return f"settings.{action}", {}
+    setting = action.removeprefix("set_")
+    if setting == action or setting not in _SETTERS:
+        actions = (name for setting in SETTINGS for name in (setting, f"set_{setting}"))
+        raise ValueError(f"action must be one of {', '.join(actions)}")
+    try:
+        given = json.loads(value)
+    except (ValueError, RecursionError):  # as for an event of a schedule
+        raise ValueError("value must be JSON") from None
+    return f"settings.{action}", _SETTERS[setting](given)

@@ -1,6 +1,6 @@
 // The web UI: the robots in the server's database as a list, and a page for
-// each with its name, its schedule, its maps and floor plans, its events, the
-// commands it takes and the way to delete it.
+// each with its name, its schedule, its maps and floor plans, its settings, its
+// events, the commands it takes and the way to delete it.
 // Whatever a robot sent reaches the page as text nodes, never as markup.
 
 import { PALETTES, paint, readBinary } from './map.js';
@@ -41,8 +41,8 @@ let clockOffset = 0;
 // page is shown, how many of the robot's events and maps it asks for and which
 // of them are open, the pictures of the maps that have been, the name being
 // entered for it, the command last sent from it and when the robot last accepted one,
-// the robot's schedule and what is being done to it, what is being asked of the
-// robot about a floor plan, whether the robot is being deleted, the server's
+// the robot's schedule and its settings and what is being done to them, what is
+// being asked of the robot about a floor plan, whether the robot is being deleted, the server's
 // last answer, what was last drawn and the fetch under
 // way. Navigating makes a new one, and a fetch that returns to find its view
 // replaced drops the result.
@@ -1499,11 +1499,11 @@ function save(mine) {
 }
 
 /**
- * A button that asks something of the robot, as those of the schedule and of
- * the floor plans do. It can be pressed while the robot is connected, unless
- * there is another reason `why` not, and does nothing while the robot has yet
- * to answer the last one pressed, which `job.waiting` says: `job` is the
- * view's `schedule` or its `floors`. `glyph` is an icon that stands before its
+ * A button that asks something of the robot, as those of the schedule, of the
+ * settings and of the floor plans do. It can be pressed while the robot is
+ * connected, unless there is another reason `why` not, and does nothing while
+ * the robot has yet to answer the last one pressed, which `job.waiting` says:
+ * `job` is the view's `schedule`, its `settings` or its `floors`. `glyph` is an icon that stands before its
  * label, or `alone` on it, as on a button of a row, which then says what it
  * does to a pointer that rests on it. One that is `lit` shows that what it
  * turns off is on.
@@ -1532,6 +1532,15 @@ function robotButton(job, robot, label, focus, press, { why = null, glyph = null
 /** A button of the schedule. */
 function planButton(mine, ...rest) {
   return robotButton(mine.schedule, ...rest);
+}
+
+/** A field of a form that is a choice of Yes and No, which `set` is told of as true or false. `label` names it to a screen reader. */
+function yesNo(label, focus, on, set) {
+  return h('select', {
+    'aria-label': label,
+    'data-focus': focus,
+    onchange: ({ target }) => set(target.value === 'yes'),
+  }, h('option', { value: 'yes', selected: on }, 'Yes'), h('option', { value: 'no', selected: !on }, 'No'));
 }
 
 /**
@@ -1621,11 +1630,8 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
       const said = [word(settings.mode), word(settings.navigation_mode), named('zone', record(run.map).track_id)].filter(Boolean);
       return [`Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
     }) : []),
-    ['Enabled', draft === null ? flag(event.enabled) : h('select', {
-      'aria-label': 'Enabled',
-      'data-focus': 'plan-enabled',
-      onchange: ({ target }) => { draft.enabled = target.value === 'yes'; },
-    }, h('option', { value: 'yes', selected: draft.enabled }, 'Yes'), h('option', { value: 'no', selected: !draft.enabled }, 'No'))],
+    ['Enabled', draft === null ? flag(event.enabled)
+      : yesNo('Enabled', 'plan-enabled', draft.enabled, (on) => { draft.enabled = on; })],
   ]);
   if (draft === null) return h('div', { class: 'slot-form' }, h('div', { class: 'slot-lines' }, lines), picture);
   const waiting = plan.waiting !== null;
@@ -1776,6 +1782,254 @@ function schedulePanel(mine, body) {
     adding && scheduleForm(mine, robot, plans, null, plan.form, 'plan-add'),
     plan.said && h('p', { class: `command-said ${plan.said.tone}`, role: 'status' }, plan.said.text),
   ], { wide: true, tools });
+}
+
+// ---- The settings of one robot ----
+//
+// The robot keeps its settings and the server none of them, so they are read
+// from a connected robot, as its schedule is: each with the action of its name,
+// and changed with that name after `set_`. The answer to a change says nothing
+// of the setting, so it is read again after one. Reading them all is four calls
+// to the robot, and eight events, so they are asked for only once the Settings
+// tab is shown, and then once for each connection.
+
+// The settings, under the names the server knows them by, in the order of their
+// panels, and what the server takes for the sounds.
+const SETTINGS = ['robot_language', 'sounds', 'cleaning_options', 'ota_updates'];
+const VOICES = ['on', 'off'];
+const VOLUME_MAX = 100; // the loudest; the quietest is 0
+
+/** The languages a robot lists to choose from, those of them that are text. */
+function languages(given) {
+  const listed = given.available_languages;
+  return Array.isArray(listed) ? listed.filter((language) => typeof language === 'string' && language !== '') : [];
+}
+
+// The names of languages in the browser's own, where it has them.
+const LANGUAGE_NAMES = Intl.DisplayNames ? new Intl.DisplayNames(undefined, { type: 'language' }) : null;
+
+/** A language as a robot gives it, such as `fr-ca`, after its name, such as "Canadian French", where the browser knows it by that. */
+function languageName(language) {
+  let name = null;
+  try {
+    name = LANGUAGE_NAMES?.of(language);
+  } catch {
+    // Not a language tag.
+  }
+  return name && name.toLowerCase() !== language.toLowerCase() ? `${name} (${language})` : language;
+}
+
+/** How a setting that is one field of true or false is shown and changed, as `SETTING_WAYS` has each: `field` is that field, and `label` its line. */
+function switchWays(title, field, label) {
+  return {
+    title,
+    lines: (given) => [[label, flag(given[field])]],
+    draft: (given) => ({ [field]: given[field] === true }),
+    fields: (draft) => [[label, yesNo(label, `setting-${field}`, draft[field], (on) => { draft[field] = on; })]],
+    value: (draft) => ({ [field]: draft[field] }),
+  };
+}
+
+// How each setting is shown and changed: the heading of its panel; the lines
+// that say what the robot gave for it; the draft its form starts from, or null
+// where the robot gave nothing to choose from; the lines of that form, each
+// with its field, which writes to the draft; and what the server is sent, made
+// of the draft.
+const SETTING_WAYS = new Map([
+  ['robot_language', {
+    title: 'Language',
+    lines: (given) => [
+      ['Language', typeof given.language === 'string' && given.language !== '' ? languageName(given.language) : plain(given.language)],
+      // Which only some robots give.
+      ...(Object.hasOwn(given, 'gender') ? [['Gender', plain(given.gender)]] : []),
+    ],
+    draft: (given) => {
+      const offered = languages(given);
+      // The robot matches a language in whatever case, and may give its own in another than its list's.
+      const own = typeof given.language === 'string' ? given.language.toLowerCase() : null;
+      return offered.length === 0 ? null : { language: offered.find((one) => one.toLowerCase() === own) ?? offered[0], offered };
+    },
+    fields: (draft) => [['Language', h('select', {
+      'aria-label': 'Language',
+      'data-focus': 'setting-language',
+      onchange: ({ target }) => { draft.language = target.value; },
+    }, draft.offered.map((language) => h('option', { value: language, selected: language === draft.language }, languageName(language))))]],
+    value: ({ language }) => ({ language }),
+  }],
+  ['sounds', {
+    title: 'Sounds',
+    lines: (given) => [
+      ['Sounds', flag(given.enabled)],
+      ['Voice', flag(given.voice === 'on' ? true : given.voice === 'off' ? false : given.voice)],
+      ['Volume', plain(given.volume)],
+    ],
+    // A volume the server would not take starts at the loudest, which is what the robot sets where it is told none.
+    draft: (given) => ({
+      enabled: given.enabled === true,
+      voice: VOICES.includes(given.voice) ? given.voice : 'on',
+      volume: Number.isInteger(given.volume) && given.volume >= 0 && given.volume <= VOLUME_MAX ? given.volume : VOLUME_MAX,
+    }),
+    fields: (draft) => [
+      ['Sounds', yesNo('Sounds', 'setting-enabled', draft.enabled, (on) => { draft.enabled = on; })],
+      ['Voice', yesNo('Voice', 'setting-voice', draft.voice === 'on', (on) => { draft.voice = on ? 'on' : 'off'; })],
+      ['Volume', volumeField(draft)],
+    ],
+    value: ({ enabled, voice, volume }) => ({ enabled, voice, volume }),
+  }],
+  ['cleaning_options', switchWays('Cleaning options', 'force_floorplan', 'Force floor plan')],
+  ['ota_updates', switchWays('Software updates', 'auto', 'Automatic updates')],
+]);
+
+/** The volume as a slider, with the number it is at beside it. */
+function volumeField(draft) {
+  const said = h('output', null, String(draft.volume));
+  return h('span', { class: 'volume' },
+    h('input', {
+      type: 'range',
+      min: 0,
+      max: VOLUME_MAX,
+      step: 1,
+      value: draft.volume,
+      'aria-label': 'Volume',
+      'data-focus': 'setting-volume',
+      oninput: ({ target }) => {
+        draft.volume = Number(target.value);
+        said.textContent = target.value;
+      },
+    }),
+    said);
+}
+
+/** Ask the robot, through the server, for one of its settings, or to change one: the status and the answer. */
+function askSetting(mine, action, more = {}) {
+  const address = `api/settings?${new URLSearchParams({ ...mine.robot, action, ...more })}`;
+  return ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
+}
+
+/**
+ * Read the settings `names` from the robot, one after the other. The view's
+ * `settings` keeps what the robot gave for each and, for one it did not give,
+ * why, and holds the buttons back until the last has been read.
+ */
+async function readSettings(mine, names) {
+  const job = mine.settings;
+  job.waiting = names;
+  for (const name of names) job.said[name] = null;
+  drawRobot(mine);
+  for (const [n, name] of names.entries()) {
+    const [status, answer] = await askSetting(mine, name);
+    if (mine !== view) return;
+    const went = outcome(SETTING_WAYS.get(name).title, status, answer);
+    if (went.tone === 'good') job.shown[name] = record(answer.body);
+    else job.said[name] = went;
+    // What is still to be read, or nothing once all of it has been.
+    job.waiting = n + 1 < names.length ? names.slice(n + 1) : null;
+    drawRobot(mine);
+  }
+}
+
+/** Read the robot's settings when the Settings tab is shown, and has not been for this connection of the robot's. */
+function settingsDue(mine) {
+  const job = mine.settings;
+  const since = mine.body?.robot.session?.since;
+  // While something else is asked of the robot, they are asked for at the next turn.
+  if (mine.tab !== 'settings' || !since || job.asked === since || job.waiting) return;
+  job.asked = since;
+  readSettings(mine, SETTINGS);
+}
+
+/** Open the form on a setting, starting from what the robot last gave for it, and put the keyboard in it. */
+function editSetting(mine, name) {
+  const job = mine.settings;
+  job.form = { name, draft: SETTING_WAYS.get(name).draft(job.shown[name]) };
+  job.said[name] = null;
+  drawRobot(mine);
+  app.querySelector('.setting-form :is(input, select)')?.focus();
+}
+
+/** Shut the form on a setting, and put the keyboard back on the button that opened it. */
+function endSetting(mine, name) {
+  mine.settings.form = null;
+  // A selection would hold the page as it is, and the press has to show.
+  getSelection().removeAllRanges();
+  drawRobot(mine);
+  app.querySelector(`[data-focus="setting-edit-${name}"]`)?.focus();
+}
+
+/** Ask the robot to take what the form on a setting holds, and once it has, read the setting again. */
+async function saveSetting(mine, name) {
+  const job = mine.settings;
+  const value = SETTING_WAYS.get(name).value(job.form.draft);
+  job.waiting = [name];
+  job.said[name] = null;
+  drawRobot(mine);
+  const [status, answer] = await askSetting(mine, `set_${name}`, { value: JSON.stringify(value) });
+  job.waiting = null;
+  if (mine !== view) return;
+  const went = outcome('Save', status, answer);
+  if (went.tone !== 'good') {
+    job.said[name] = went;
+    drawRobot(mine);
+    return;
+  }
+  endSetting(mine, name);
+  readSettings(mine, [name]);
+}
+
+/** The form that changes a setting: a line to each of its fields, as the panel has a line to each value, and Save and Cancel under them. */
+function settingForm(mine, robot, name, draft) {
+  const job = mine.settings;
+  const waiting = job.waiting !== null;
+  const button = h('button', {
+    class: 'command',
+    type: 'submit',
+    disabled: !robot.session,
+    'aria-disabled': robot.session && waiting && 'true',
+    title: !robot.session ? 'Save: the robot is not connected' : waiting && 'Save: waiting for the robot to answer',
+    'data-focus': 'setting-save',
+  }, 'Save');
+  return h('form', {
+    class: 'setting-form',
+    onsubmit: (submit) => {
+      submit.preventDefault();
+      // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
+      button.focus();
+      getSelection().removeAllRanges();
+      if (!job.waiting) saveSetting(mine, name);
+    },
+  },
+  rows(SETTING_WAYS.get(name).fields(draft)),
+  h('div', { class: 'slot-tools' },
+    button,
+    h('button', { class: 'button', type: 'button', 'data-focus': 'setting-cancel', onclick: () => endSetting(mine, name) }, 'Cancel')));
+}
+
+/**
+ * A setting as a panel of its own: what the robot last gave for it, or the
+ * form that changes it while that is open, and beside the heading the buttons
+ * that open the form and that read the setting again. One form is open at a time.
+ */
+function settingPanel(mine, robot, name) {
+  const job = mine.settings;
+  const ways = SETTING_WAYS.get(name);
+  const given = job.shown[name] ?? null;
+  const form = job.form !== null && job.form.name === name ? job.form : null;
+  const said = job.said[name];
+  const why = given === null ? 'the robot has not given this setting'
+    : form !== null ? 'it is being changed below'
+    : ways.draft(given) === null ? 'the robot gave nothing to choose from'
+    : null;
+  const tools = h('div', { class: 'panel-tools' },
+    robotButton(job, robot, 'Edit', `setting-edit-${name}`, () => editSetting(mine, name), { why, glyph: 'pencil' }),
+    robotButton(job, robot, 'Refresh', `setting-read-${name}`, () => readSettings(mine, [name]), { glyph: 'refresh' }));
+  return panel(ways.title, [
+    form !== null ? settingForm(mine, robot, name, form.draft)
+      : given !== null ? rows(ways.lines(given))
+      : h('p', { class: 'plan-note' }, none(!robot.session ? 'The robot is not connected.'
+        : job.waiting?.includes(name) ? 'Asking the robot…'
+        : 'Not read from the robot.')),
+    said && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text),
+  ], { tools });
 }
 
 // ---- One robot ----
@@ -2156,6 +2410,7 @@ const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
   ['maps', 'Maps', (mine, body) => panel('Maps', mapList(mine, body), { wide: true })],
+  ['settings', 'Settings', (mine, { robot }) => SETTINGS.map((name) => settingPanel(mine, robot, name))],
   ['events', 'Events', (mine, { events, more }) => panel('Events', eventLog(mine, events, more), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
     wide: true,
@@ -2176,6 +2431,7 @@ function choose(mine, name) {
   mine.tab = name;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
+  settingsDue(mine);
   drawRobot(mine);
   app.querySelector(`[data-focus="tab-${name}"]`)?.focus();
 }
@@ -2296,7 +2552,7 @@ function drawRobot(mine) {
   if (mine !== view || !body) return;
   const data = [
     body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, mine.tab,
-    mine.naming, mine.command, mine.accepted, mine.schedule, mine.floors, mine.deleting,
+    mine.naming, mine.command, mine.accepted, mine.schedule, mine.settings, mine.floors, mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
 }
@@ -2328,6 +2584,7 @@ function show(mine, status, body) {
       // The schedule is asked for once of each connection the page sees, not at every turn: asking is a call to the robot.
       const since = body.robot.session?.since;
       if (since && mine.schedule.asked !== since) askSchedule(mine, 'show', 'Schedule');
+      settingsDue(mine);
       drawRobot(mine);
     } else {
       mine.body = body;
@@ -2394,6 +2651,9 @@ function navigate() {
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave;
     // how the last request failed; the form, when one is open; and the event about to be deleted.
     schedule: { asked: null, waiting: null, shown: null, said: null, form: null, dropping: null },
+    // The connection the settings were last asked of; those that are being read or saved, while any is; what
+    // the robot gave for each and how the last request about each failed, by name; and the form, when one is open.
+    settings: { asked: null, waiting: null, shown: {}, said: {}, form: null },
     // Whether the robot has yet to answer what was asked of it about a floor plan; the map whose button awaits
     // its second press, with what that would do; and how the last request went, with the map it was pressed on.
     floors: { waiting: false, asking: null, said: null },

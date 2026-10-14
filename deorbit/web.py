@@ -1,4 +1,4 @@
-"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule, has it keep and drop floor plans, and deletes it."""
+"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans, and deletes it."""
 
 import asyncio
 import json
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 from .auth import RobotId
-from .commands import COMMANDS, floorplan, scheduling
+from .commands import COMMANDS, floorplan, scheduling, settings
 from .session import describe
 from .store import StoreError, now
 
@@ -158,10 +158,11 @@ class Web:
         static = resources.files(__package__) / "static"
         self._pages = {path: (kind, (static / name).read_bytes()) for path, (name, kind) in _PAGES.items()}
         # What is sent on to a robot, and what changes the database. Reading a
-        # schedule is the first of those, so that is no GET either.
+        # schedule or a setting is the first of those, so that is no GET either.
         self._posts = {
             "/api/command": self._command,
             "/api/schedule": self._schedule,
+            "/api/settings": self._settings,
             "/api/floorplan": self._floorplan,
             "/api/name": self._rename,
             "/api/delete": self._delete,
@@ -306,6 +307,16 @@ class Web:
             # The event comes as JSON in the query, so that here too no request body is read.
             # It is checked whole before anything is sent: a robot may drop a body it cannot read without a word.
             ability, params = scheduling(*(asked.get(key, [""])[0] for key in ("action", "id", "event")))
+        except ValueError as exc:
+            return 400, _JSON, _json({"error": str(exc)})
+        return await self._call(_named(asked), ability, params)
+
+    async def _settings(self, query: str) -> tuple[int, str, bytes]:
+        """Ask a robot for one of its settings or for a change to one, as the query says, and answer as for a command."""
+        asked = parse_qs(query)
+        try:
+            # As an event of a schedule: the value comes as JSON in the query, and is checked whole before anything is sent.
+            ability, params = settings(*(asked.get(key, [""])[0] for key in ("action", "value")))
         except ValueError as exc:
             return 400, _JSON, _json({"error": str(exc)})
         return await self._call(_named(asked), ability, params)

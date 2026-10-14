@@ -6,9 +6,8 @@ which are gone, and a web page gives back part of what the MyNeato app did:
 seeing what the robot is doing, starting and stopping a cleaning, sending the
 robot back to its base, its schedule and its maps.
 
-This is early work. It has been tried with one real robot, on firmware 1.7.0,
-and much of what the app did is still missing. The [features table](#features)
-says what works.
+This is early work, and much of what the app did is still missing. The
+[features table](#features) says what works.
 
 ## Background
 
@@ -66,8 +65,7 @@ it reports is kept in a database file on your machine.
 
 ## Features
 
-✅ works · 🟡 works in part, or is written but has not been tried on a real
-robot · ❌ not there
+✅ works · 🟡 works in part · ❌ not there
 
 | Feature | Status | Notes |
 | --- | --- | --- |
@@ -79,18 +77,18 @@ robot · ❌ not there
 | A robot's status: battery, base, errors, how its last run went | ✅ | |
 | Start a cleaning of the whole house | 🟡 | Always in eco mode with normal navigation; the mode cannot be chosen. |
 | Pause, resume, return to base | ✅ | |
-| Cancel a cleaning | 🟡 | Written; not yet tried on a real robot. |
+| Cancel a cleaning | ✅ | |
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |
-| Add, change and delete scheduled cleanings | 🟡 | Time, days, mode, navigation and floor plan. Written; not yet tried on a real robot. |
+| Add, change and delete scheduled cleanings | ✅ | Time, days, mode, navigation and floor plan. |
 | Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. A map can be zoomed into and dragged about. |
-| Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, with the buttons in a map's row, while the robot is connected. The page ticks the maps it had the robot keep as floor plans, not those the robot got from Neato's cloud. Written; not yet tried on a real robot. |
-| Clean by a floor plan | 🟡 | A scheduled cleaning can be put on one of the floor plans the page lists; Start always cleans without one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. Written; not yet tried on a real robot. |
+| Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, with the buttons in a map's row, while the robot is connected. The page ticks the maps it had the robot keep as floor plans, not those the robot got from Neato's cloud. |
+| Clean by a floor plan | 🟡 | A scheduled cleaning can be put on one of the floor plans the page lists; Start always cleans without one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. |
 | Zones and no-go lines | ❌ | None can be drawn or chosen. A scheduled cleaning of a zone is shown, and keeps its zone while it stays on its floor plan. |
 | History of what a robot reported | ✅ | Its connections, its messages and error reports, and the commands it was sent. |
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
 | Name a robot | ✅ | Kept by the server; the robot is not told. |
 | Delete a robot with everything kept of it | ✅ | |
-| Robot settings: language, sounds, cleaning options | ❌ | |
+| Robot settings: language, sounds, cleaning options, automatic updates | 🟡 | On the Settings tab, read from the robot, so only while it is connected. A factory reset is not offered. A robot may answer with an error of its own instead of giving its sounds, which then cannot be changed. |
 | Find the robot by sound | ❌ | |
 | Firmware updates | ❌ | A robot that asks is told there is no update. |
 | MyNeato app, Alexa, Google Assistant | ❌ | The web page takes the app's place. |
@@ -163,8 +161,8 @@ nothing, so that a file already in place is never overwritten. With
 ### The web page
 
 The web page has no login and is served over plain HTTP. Anyone who can reach
-it sees every robot, and can command it, change its schedule and its name, and
-delete it. Keep it to a network you trust, and do not open its port to the
+it sees every robot, and can command it, change its schedule, its settings and
+its name, and delete it. Keep it to a network you trust, and do not open its port to the
 internet; neither of the two ports has to be reachable from outside your home.
 
 `web_host: 127.0.0.1` keeps the page to the machine the server runs on, and

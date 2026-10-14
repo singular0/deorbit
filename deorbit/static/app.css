@@ -1275,6 +1275,7 @@ td.cell-clock {
 
 .slot-form dd > input,
 .slot-form dd > select,
+.setting-form dd > select,
 .name-form > input {
   height: 34px;
   padding: 0 10px;
@@ -1287,8 +1288,9 @@ td.cell-clock {
   font-variant-numeric: tabular-nums;
 }
 
-/* A floor plan is a longer line than a narrow screen is wide. */
-.slot-form dd > select {
+/* A floor plan is a longer line than a narrow screen is wide, and a language may be. */
+.slot-form dd > select,
+.setting-form dd > select {
   min-width: 0;
   max-width: 100%;
 }
@@ -1337,6 +1339,31 @@ td.cell-clock {
 .pick input:focus-visible + span {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+/* ---- The settings of one robot ---- */
+
+/* Save and Cancel, under the fields of a setting. */
+.setting-form > .slot-tools {
+  margin-top: 16px;
+}
+
+/* The volume: a slider, and beside it the number it is at. */
+.volume {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.volume > input {
+  width: 160px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.volume > output {
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---- Nothing to show, or not yet ---- */
@@ -1398,7 +1425,7 @@ td.cell-clock {
 
 /* Where the tabs will be. */
 .skeleton.strip {
-  width: 440px;
+  width: 530px;
   max-width: 100%;
   height: 49px;
   margin-top: 16px;
