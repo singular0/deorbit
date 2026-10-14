@@ -265,43 +265,46 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
 # no-go lines, as ``maps.promote_floorplan`` has one ``nogo_track``, and a zone
 # is a cleaning track with a name and a cleaning mode.
 #
-# Section 6.3.1 of the spec gives the file such a binary is: a PGM file of a
-# byte to a cell, compressed with zlib, as a robot's maps are; as large as the
-# floor plan, and placed against its ``real_binary``, whose header it should
-# have as it is. So that is the header it has here, and a cell of it is the
-# cell of the floor plan's maps that the page shows, the two being of one size
-# and lined up cell for cell. Every cell is 0 but those of the zone or of the
-# lines, which are 255. That value is a guess, which is mine: the spec does
-# not know which value marks a zone or a no-go cell, and says not to take 255
-# for it. A zone filled with 255 under the header of the ``rank_binary``,
-# whose alignment the real map does not have, made a real robot (firmware
-# 1.7.0) fail to load it. A zone is a rectangle of cells, and a line goes from
-# cell to cell without a corner that a diagonal step could pass through.
-# These are this server's choices, and so are the limits below.
+# Section 6.3.1 of the spec gives the file such a binary is, read off the
+# robot's own loader: a binary PGM of two bytes to a cell, little-endian, with
+# a maxval of 65535, compressed with zlib; as large as the floor plan, and
+# placed against its ``real_binary``, whose header it has as it is but for the
+# maxval, so that a cell of it is the cell of the floor plan's maps that the
+# page shows, the two being of one size and lined up cell for cell. A marked
+# cell holds 1024, which is the value the robot's zone loader turns into a
+# cell of the zone; every other is 0. An 8-bit file of a byte to a cell fails
+# the reader's maxval check instead, and the run dies with pm_load_fail —
+# which is how this was found: a zone of 255 in an 8-bit file, under the
+# header of the ``rank_binary``, made a real robot (firmware 1.7.0) fail to
+# load it. A zone is a rectangle of cells, and a line goes from cell to cell
+# without a corner that a diagonal step could pass through. These are this
+# server's choices, and so are the limits below.
 ZONE_NAME_MAX = 32  # the most characters a zone's name may have
 LINES_MAX = 100  # the most no-go lines a floor plan may have
-_MARKED = 255
+_MARKED = 1024  # the value of a marked cell, as the robot's zone loader reads it
+_MARKED_BYTES = _MARKED.to_bytes(2, "little")
+_MAXVAL = b"65535"  # the maxval of a track's file of two bytes to a cell
 _HEADER_MAX = 4096  # how much of a floor plan's binary is inflated to read its header
 _CELLS_MAX = 32 * 1024 * 1024  # the most cells a binary is drawn with; a robot's maps had 4 million
 
 
 def _grid(uploaded: str) -> tuple[bytes, int, int]:
-    """The header of the PGM file that the ``real_binary`` of a map, as the robot uploaded it, inflates to, and the width and height of that file in cells, which are those of its ``rank_binary`` too."""
+    """The header a track of a floor plan is drawn with — that of the PGM file the floor plan's ``real_binary`` inflates to, but with the maxval of a track's file — and the width and height of that file in cells, which are those of the ``rank_binary`` too."""
     try:
         given = json.loads(uploaded)
     except (ValueError, RecursionError):  # as for a floor plan
         raise ValueError("the floor plan's map must be JSON") from None
     binaries = given.get("map") if isinstance(given, dict) else None
     binaries = binaries if isinstance(binaries, dict) else {}
-    header, width, height = _pgm(binaries.get("real_binary"), "the floor plan's map.real_binary")
-    _, *size = _pgm(binaries.get("rank_binary"), "the floor plan's map.rank_binary")
+    header, end, width, height = _pgm(binaries.get("real_binary"), "the floor plan's map.real_binary")
+    _, _, *size = _pgm(binaries.get("rank_binary"), "the floor plan's map.rank_binary")
     if size != [width, height]:
         raise ValueError("the floor plan's map.rank_binary and map.real_binary must be of one size")
-    return header, width, height
+    return header + _MAXVAL + end, width, height
 
 
-def _pgm(given: object, where: str) -> tuple[bytes, int, int]:
-    """The header of the PGM file that an encoded map inflates to, and the width and height of that file in cells."""
+def _pgm(given: object, where: str) -> tuple[bytes, bytes, int, int]:
+    """The header of the PGM file that an encoded map inflates to, as far as its maxval, the one byte of white space after it, and the width and height of the file in cells."""
     binary = _binary(given, where)
     unreadable = ValueError(f"{where} must be zlib data of a binary PGM file of a byte to a cell")
     try:
@@ -321,6 +324,8 @@ def _pgm(given: object, where: str) -> tuple[bytes, int, int]:
         while at < len(start) and start[at] not in b" \t\n\v\f\r#":
             at += 1
         words.append(start[begin:at])
+        if len(words) == 4:
+            maxval_at = begin
     # One byte of white space ends the header.
     if at >= len(start) or start[at] not in b" \t\n\v\f\r" or words[0] != b"P5" or not all(w.isdigit() for w in words[1:]):
         raise unreadable
@@ -332,23 +337,25 @@ def _pgm(given: object, where: str) -> tuple[bytes, int, int]:
         raise ValueError(f"{where} must be a PGM file whose maxval is from 129 to 255")
     if width * height > _CELLS_MAX:
         raise ValueError(f"{where} is a PGM file of more than {_CELLS_MAX} cells")
-    return start[: at + 1], width, height
+    return start[:maxval_at], start[at : at + 1], width, height
 
 
 def _drawn(header: bytes, width: int, height: int, zone: list[int] | None = None, lines: list[list[int]] = ()) -> str:
-    """A binary of the floor plan whose PGM file has this header and size: a zone, a rectangle of cells, or lines drawn on it."""
-    cells = bytearray(width * height)
+    """A binary of the floor plan whose track header this is, two bytes to a cell: a zone, a rectangle of cells, or lines drawn on it."""
+    cells = bytearray(width * height * 2)
     if zone is not None:
         left, top, right, bottom = zone
+        marked = _MARKED_BYTES * (right - left + 1)
         for row in range(top, bottom + 1):
-            cells[row * width + left : row * width + right + 1] = bytes([_MARKED]) * (right - left + 1)
+            at = (row * width + left) * 2
+            cells[at : at + len(marked)] = marked
     for x, y, x1, y1 in lines:
         # Bresenham's, with the cell at each corner of the line marked too, so that nothing goes through it on the diagonal.
         dx, dy = abs(x1 - x), -abs(y1 - y)
         sx, sy = (1 if x < x1 else -1), (1 if y < y1 else -1)
         error = dx + dy
         while True:
-            cells[y * width + x] = _MARKED
+            cells[(y * width + x) * 2 : (y * width + x + 1) * 2] = _MARKED_BYTES
             if x == x1 and y == y1:
                 break
             twice = 2 * error
@@ -358,7 +365,7 @@ def _drawn(header: bytes, width: int, height: int, zone: list[int] | None = None
                 x += sx
             if twice <= dx:
                 if across:
-                    cells[y * width + x] = _MARKED
+                    cells[(y * width + x) * 2 : (y * width + x + 1) * 2] = _MARKED_BYTES
                 error += dx
                 y += sy
     return base64.b64encode(zlib.compress(header + cells)).decode("ascii")

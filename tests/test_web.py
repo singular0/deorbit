@@ -1896,9 +1896,11 @@ class TrackTests(WebTestCase):
     PLAN = MAP["rank_uuid"]
     ELSE = "fb7f8145-0615-4a32-8f0d-8d833cd51a5e"
     # The PGM files of a floor plan of 20 by 10 cells, with headers as the maps of a robot have them: its real_binary,
-    # and its rank_binary, which has the alignment that the real one has not.
+    # and its rank_binary, which has the alignment that the real one has not. A track has the real one's header, but
+    # with the maxval of a track's file of two bytes to a cell.
     HEADER = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\r\n20 10\r\n255\r"
     RANK = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=1.535890\r\n20 10\r\n255\r"
+    TRACK = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\r\n20 10\r\n65535\r"
     KITCHEN = {"name": "Kitchen", "cleaning_mode": "eco", "rect": [2, 1, 5, 3]}
     UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
@@ -1925,13 +1927,15 @@ class TrackTests(WebTestCase):
         return f"{self.BOARD1}&action=nogo&rank_uuid={plan}&lines={quote(json.dumps(lines))}"
 
     def drawn(self, sent: dict) -> list[str]:
-        """The cells of a track's binary, a line of text to each row: # for 255 and . for 0. Its header is that of the floor plan's real_binary."""
+        """The cells of a track's binary, a line of text to each row: # for 1024 and . for 0. Its header is that of the floor plan's real_binary, but for the maxval."""
         file = zlib.decompress(base64.b64decode(sent["track_binary"], validate=True))
-        self.assertTrue(file.startswith(self.HEADER))
-        cells = file[len(self.HEADER):]
-        self.assertEqual(len(cells), 200)
-        self.assertLessEqual(set(cells), {0, 255})
-        return ["".join("#" if cell else "." for cell in cells[row * 20:(row + 1) * 20]) for row in range(10)]
+        self.assertTrue(file.startswith(self.TRACK))
+        cells = file[len(self.TRACK):]
+        self.assertEqual(len(cells), 400)
+        values = {int.from_bytes(cells[at : at + 2], "little") for at in range(0, 400, 2)}
+        self.assertLessEqual(values, {0, 1024})
+        return ["".join("#" if int.from_bytes(cells[at : at + 2], "little") else "." for at in range(row * 40, (row + 1) * 40, 2))
+                for row in range(10)]
 
     def sent(self, request: dict) -> dict:
         """The one track a robot was sent to keep, without its binary, which ``drawn`` reads."""
@@ -2155,7 +2159,7 @@ class TrackTests(WebTestCase):
         plan(real_binary=packed(b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes(5)))
         request, _ = await self.answered(robot, self.lines([[0, 0, 1, 0]]), self.DONE)
         file = zlib.decompress(base64.b64decode(request["body"]["tracks"][0]["track_binary"]))
-        self.assertEqual(file, b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes([255, 255]) + bytes(198))
+        self.assertEqual(file, b"P5 #a\n#b\r20#c\n 10\t# d\n65535 " + (1024).to_bytes(2, "little") * 2 + bytes(396))
 
     async def test_robot_that_is_not_connected(self) -> None:
         await self.start()
