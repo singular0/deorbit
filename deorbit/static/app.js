@@ -68,8 +68,14 @@ function icon(name) {
   return svg('svg', { class: 'icon', 'aria-hidden': 'true' }, svg('use', { href: `#icon-${name}` }));
 }
 
-function pill(tone, text, glyph) {
-  return h('span', { class: `pill ${tone}` }, glyph && icon(glyph), text);
+function pill(tone, text, glyph, ...parts) {
+  return h('span', { class: `pill ${tone}` }, glyph && icon(glyph), text, ...parts);
+}
+
+/** The second part of a pill, behind a line from its top to its bottom. */
+function pillPart(glyph, text) {
+  // A space that is not laid out, for whatever reads the two parts as one text.
+  return [' ', h('span', { class: 'pill-part' }, icon(glyph), text)];
 }
 
 function none(text = '—') {
@@ -271,17 +277,26 @@ function presence(robot) {
     h('span', { class: 'dot' }), robot.session ? 'Online' : 'Offline');
 }
 
-// The state and the action each wear one icon whatever they say, which is what
-// tells the two words apart: the spec names neither's values.
-function statePill(robot) {
-  if (robot.state == null) return pill('quiet', 'No state yet', 'pulse');
-  if (hasErrors(robot)) return pill('bad', String(robot.state), 'alert');
-  return pill(robot.state === 'idle' ? 'quiet' : 'accent', String(robot.state), 'pulse');
+/**
+ * The action to show behind the state, as the robot sent it, or null for none:
+ * it sent none, or it is idle and its action is the `invalid` the spec has
+ * among an action's values, which an idle robot gives.
+ */
+function actionShown(robot) {
+  if (robot.action == null || robot.action === '') return null;
+  return robot.state === 'idle' && robot.action === 'invalid' ? null : String(robot.action);
 }
 
-/** The action beside the state, as the robot sent it, or nothing when it sent none. */
-function actionPill(robot) {
-  return robot.action != null && robot.action !== '' && pill('quiet', String(robot.action), 'route');
+/**
+ * The state, in its tone, and behind a line the action where there is one to
+ * show. Each wears one icon whatever it says, which tells the two words apart.
+ */
+function statePill(robot) {
+  const doing = actionShown(robot);
+  const part = doing !== null && pillPart('route', doing);
+  if (robot.state == null) return pill('quiet', 'No state yet', 'pulse', part);
+  if (hasErrors(robot)) return pill('bad', String(robot.state), 'alert', part);
+  return pill(robot.state === 'idle' ? 'quiet' : 'accent', String(robot.state), 'pulse', part);
 }
 
 /**
@@ -291,11 +306,8 @@ function actionPill(robot) {
 function batteryPill(robot) {
   const doing = charging(robot);
   if (robot.charge == null && doing === null) return false;
-  return h('span', { class: `pill ${chargeTone(robot)}` },
-    icon('battery'),
-    h('span', null, 'Battery: ', chargeText(robot)),
-    // A space that is not laid out, for whatever reads the two parts as one text.
-    doing !== null && [' ', h('span', { class: 'pill-part' }, icon('bolt'), doing)]);
+  return pill(chargeTone(robot), h('span', null, 'Battery: ', chargeText(robot)), 'battery',
+    doing !== null && pillPart('bolt', doing));
 }
 
 // ---- The list ----
@@ -310,7 +322,7 @@ function card(robot) {
     called('strong', robot),
     facts(robot),
     h('div', { class: 'robot-foot' },
-      h('div', { class: 'robot-pills' }, presence(robot), statePill(robot), actionPill(robot), batteryPill(robot)),
+      h('div', { class: 'robot-pills' }, presence(robot), statePill(robot), batteryPill(robot)),
       icon('chevron')));
 }
 
@@ -1851,7 +1863,6 @@ function hero(mine, robot) {
       h('div', { class: 'pills' },
         presence(robot),
         statePill(robot),
-        actionPill(robot),
         isOn(robot.is_docked) && pill('quiet', 'Docked', 'dock'),
         batteryPill(robot)),
       commands(mine, robot)));
