@@ -1912,8 +1912,7 @@ function autonomy(robot) {
 /** The whole state as the robot last sent it. */
 function rawState(robot) {
   const state = robot.state_json == null ? null : pretty(robot.state_json);
-  return panel('Raw state', state == null ? none('The robot has not sent a state yet.') : code(state), {
-    hint: 'Everything in the robot\'s last state, including what this page has no field for.',
+  return panel('Last state received', state == null ? none('The robot has not sent a state yet.') : code(state), {
     wide: true,
     tools: state != null && copyButton(state),
   });
