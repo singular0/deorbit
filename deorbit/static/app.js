@@ -11,9 +11,10 @@ const FETCH_TIMEOUT_MS = 8000;
 const EAGER_POLL_MS = 500; // how often instead, while the status that follows a command the robot accepted is due
 const EAGER_FOR_MS = 10000; // how long after that command the page keeps asking that often
 const COMMAND_TIMEOUT_MS = 15000; // longer than the server gives a robot to answer a command
-const ACCEPTED_MS = 5000; // how long the page says that a robot accepted a command
+const TOAST_MS = 5000; // how long a toast that says something went well stays on screen
+const TOASTS_MAX = 5; // the most toasts on screen at once; the oldest goes for a new one
 const START_WATCH_MS = 30000; // how long after a start the robot accepted the page looks for its failing to load what to clean on
-const ANSWER_LIMIT = 160; // how much of a robot's answer to a command is said under the buttons; the events hold all of it
+const ANSWER_LIMIT = 160; // how much of a robot's answer to a command is said in a toast; the events hold all of it
 const SKELETON_MS = 180; // an answer quicker than this is drawn without a placeholder first
 // JSON longer than this is shown without colours, which cost a node per token.
 const HIGHLIGHT_LIMIT = 200000;
@@ -31,8 +32,7 @@ const LINES_MAX = 100; // and the most no-go lines a floor plan may have
 const SVG = 'http://www.w3.org/2000/svg';
 
 const app = document.getElementById('app');
-const notice = document.getElementById('notice');
-const noticeText = document.getElementById('notice-text');
+const toasts = document.getElementById('toasts'); // where what is said of how something went is put
 const live = document.getElementById('live');
 const liveText = document.getElementById('live-text');
 const dialog = document.getElementById('add'); // what "Bind a robot" opens, over the page
@@ -236,7 +236,8 @@ function step(value) {
 }
 
 function tick() {
-  for (const node of app.querySelectorAll('time[data-at]')) node.textContent = ago(Number(node.dataset.at));
+  // The page's, and the toasts', which are no part of it.
+  for (const node of document.querySelectorAll('time[data-at]')) node.textContent = ago(Number(node.dataset.at));
 }
 
 function pretty(json) {
@@ -347,6 +348,74 @@ function batteryPill(robot) {
     doing !== null && pillPart('bolt', doing));
 }
 
+// ---- Toasts ----
+//
+// What is said of how something went is a toast, at the foot of the screen
+// over the page: who or what it is from and when, then what it says. One that
+// says something went well goes by itself, though not while a pointer rests on
+// it or the keyboard is in it; one that says something went wrong stays until
+// it is closed, so that it can be read. Each is of a key, and a new one takes
+// the place of the one of its key that is still there, as how the last command
+// went does of how the one before it went. A toast is no part of the page, so a
+// redraw leaves it be and leaving the page does not take it away.
+
+const onScreen = new Map(); // the toasts by key, the oldest first
+
+/** Take the toast of `key` off the screen, if it is there. */
+function hush(key) {
+  const node = onScreen.get(key);
+  if (!node) return;
+  onScreen.delete(key);
+  node.classList.add('leaving');
+  // Asked for after the class, so that the animation it starts is among them; without motion there is none.
+  const gone = () => node.remove();
+  Promise.all(node.getAnimations().map((animation) => animation.finished)).then(gone, gone);
+}
+
+/**
+ * Say `text` in a toast of the `tone` good or bad, as `outcome` gives the two,
+ * in place of the toast of `key`. It is `from` a robot, which is called what
+ * the page calls it, or from what a word names, such as the server.
+ */
+function toast(key, { tone, text }, from) {
+  hush(key);
+  const node = h('div', { class: `toast ${tone}`, role: tone === 'bad' && 'alert' },
+    h('div', { class: 'toast-head' },
+      icon(tone === 'good' ? 'check' : 'alert'),
+      typeof from === 'string' ? h('strong', null, from) : called('strong', from),
+      when(new Date(Date.now() + clockOffset).toISOString()),
+      h('button', {
+        class: 'button tool toast-close',
+        type: 'button',
+        'aria-label': 'Close',
+        title: 'Close',
+        onclick: () => { if (onScreen.get(key) === node) hush(key); },
+      }, icon('cross'))),
+    h('p', { class: 'toast-body' }, text));
+  if (tone === 'good') {
+    let timer = 0;
+    // Started again whenever the pointer or the keyboard leaves it, and not ended while either is on it.
+    const later = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (onScreen.get(key) === node && !node.matches(':hover, :focus-within')) hush(key);
+      }, TOAST_MS);
+    };
+    node.addEventListener('pointerleave', later);
+    node.addEventListener('focusout', later);
+    later();
+  }
+  toasts.append(node);
+  onScreen.set(key, node);
+  while (onScreen.size > TOASTS_MAX) hush(onScreen.keys().next().value);
+}
+
+/** Say how something asked of the robot of the view `mine` went, in place of the toast of that robot's of the same `kind`. */
+function report(mine, kind, said) {
+  const robot = mine.body?.robot ?? { serial: mine.robot.serial };
+  toast(`${kind} ${mine.robot.vendor}/${mine.robot.serial}`, said, robot);
+}
+
 // ---- The list ----
 
 /** What else a card says of its robot, or nothing when there is nothing to say. */
@@ -446,14 +515,23 @@ function addButton(mine) {
 
 function openAdd(mine) {
   if (mine.adding) return;
-  const add = { log: [], busy: false, done: false, error: null, asking: true, setup: null };
+  const add = { log: [], busy: false, done: false, asking: true, setup: null };
   mine.adding = add;
   drawAdd(mine);
   dialog.showModal();
+  // Outside a modal dialog nothing can be pressed or read aloud, so the toasts are in it while it is open.
+  dialog.append(toasts);
   dialog.querySelector('[data-focus="add-configure"]')?.focus();
   // The helpers are loaded now, so the gesture in `runAdd` is spent on the device prompt, not on an import.
   loadHelpers().then(() => {
-    if (mine.adding === add) drawAdd(mine);
+    if (mine.adding !== add) return;
+    drawAdd(mine);
+    if (helpersError) {
+      toast('bind-helpers', {
+        tone: 'bad',
+        text: `The USB helpers could not be loaded: ${errText(helpersError)}. This server may not provide mtp-fs.js.`,
+      }, 'Bind a robot');
+    }
   });
   // The address to point a robot at and the certificate it is to trust are the server's to say.
   fetchSetup().then((setup) => {
@@ -461,11 +539,17 @@ function openAdd(mine) {
     add.asking = false;
     add.setup = setup;
     drawAdd(mine);
+    const why = noAddress(add);
+    if (why) toast('bind-address', { tone: 'bad', text: why }, 'Bind a robot');
   });
 }
 
 function closeAdd(mine) {
   mine.adding = null;
+  // What was said of why the dialog could not configure a robot goes with it; how a robot was configured stays.
+  hush('bind-helpers');
+  hush('bind-address');
+  document.body.append(toasts);
   if (dialog.open) dialog.close();
   dialog.replaceChildren();
   // The button that opened it may have been drawn anew since, so the browser cannot hand the focus back.
@@ -508,7 +592,6 @@ async function runAdd(mine) {
 
   add.busy = true;
   add.done = false;
-  add.error = null;
   add.log = [];
   drawAdd(mine);
 
@@ -546,9 +629,10 @@ async function runAdd(mine) {
     }
     add.done = true;
     log('Done. Unplug the robot; it connects to this server when it next comes online.');
+    toast('bind', { tone: 'good', text: 'The robot is now set up for this server.' }, 'Bind a robot');
   } catch (err) {
-    add.error = errText(err);
     log(`Failed: ${errText(err)}`);
+    toast('bind', { tone: 'bad', text: `Failed: ${errText(err)}` }, 'Bind a robot');
   } finally {
     if (transport) {
       try { await transport.close(); } catch { /* best effort */ }
@@ -558,7 +642,11 @@ async function runAdd(mine) {
   }
 }
 
-/** What the dialog holds: what is about to happen, the address the robot is pointed at, how it is going, and its two buttons. */
+/**
+ * What the dialog holds: what is about to happen, the address the robot is
+ * pointed at, how it is going, and its two buttons. Why it cannot configure a
+ * robot, and how configuring one went, is said in toasts.
+ */
 function addForm(mine) {
   const add = mine.adding;
   const address = add.setup?.address;
@@ -568,7 +656,6 @@ function addForm(mine) {
     : !helpers ? 'the USB helpers are still being loaded'
     : add.asking ? 'waiting for the server to say its address'
     : !address && 'the server gave no address';
-  const said = (tone, text) => text && h('p', { class: `command-said ${tone}`, role: 'status' }, text);
   return h('form', {
     class: 'add-form',
     onsubmit: (event) => {
@@ -589,11 +676,6 @@ function addForm(mine) {
       + 'configuration file, or auto-detected at server startup. To change it, set public_address in deorbit.yml and '
       + 'restart the server. Robot must be able to connect to this address via its Wi-Fi network.')),
   add.log.length > 0 && h('pre', { class: 'code add-log' }, add.log.join('\n')),
-  !add.busy && helpersError && said('bad',
-    `The USB helpers could not be loaded: ${errText(helpersError)}. This server may not provide mtp-fs.js.`),
-  !add.busy && said('bad', noAddress(add)),
-  !add.busy && said('bad', add.error),
-  add.done && said('good', 'The robot is now set up for this server.'),
   h('div', { class: 'add-actions' },
     // Both are held back, not disabled: the keyboard is put on the first as the dialog opens,
     // before the server has answered, and stays where it is while the robot is configured.
@@ -619,7 +701,11 @@ function drawAdd(mine) {
   if (mine !== view || !mine.adding) return;
   // Whatever had the keyboard's focus is replaced too, so hand it to its successor, as `draw` does.
   const focus = dialog.contains(document.activeElement) && document.activeElement.dataset.focus;
-  dialog.replaceChildren(addForm(mine));
+  // The form alone: the toasts beside it are no part of it.
+  const form = addForm(mine);
+  const old = dialog.querySelector('.add-form');
+  if (old) old.replaceWith(form);
+  else dialog.prepend(form);
   if (focus) dialog.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
   // The last line of the log is the one that says where things are.
   const log = dialog.querySelector('.add-log');
@@ -1224,7 +1310,7 @@ function mapRow(row, mine, robot, plans) {
       kept(plan),
     ],
     tools: mapTools(mine, robot, plans, row.id, map, plan),
-    note: floorQuestion(mine, robot, plans, row.id, map, plan) || floorSaid(mine, row.id),
+    note: floorQuestion(mine, robot, plans, row.id, map, plan),
     detail: () => [h('div', { class: 'map-detail' },
       h('div', { class: 'map-facts' }, mapFacts(map, runs), plan && trackPanel(mine, robot, row.id, plan)),
       drawing(mine, row.id))],
@@ -1245,11 +1331,8 @@ function mapList(mine, body) {
     ...all.filter((row) => made.includes(row.id)).sort((a, b) => made.indexOf(a.id) - made.indexOf(b.id)),
     ...all.filter((row) => !made.includes(row.id)),
   ];
-  const said = mine.floors.said;
   return [
     table('Maps', MAP_COLUMNS, mine.openMaps, rows.map((row) => mapRow(row, mine, robot, plans))),
-    // How it went with a map that is listed no more, as an old one is once it is no floor plan.
-    said !== null && !rows.some((row) => row.id === said.map) && floorSaid(mine, said.map),
     older(mine, 'maps', more),
   ];
 }
@@ -1270,24 +1353,23 @@ function short(uuid) {
 
 /**
  * Ask the robot, through the server, to keep a map as a floor plan or to drop
- * one it keeps. The view's `floors` holds whether an answer is waited for and
- * how the last request went, with the map it was pressed on, under whose row
- * that is said. One is asked at a time. `focus` names the button the keyboard
- * goes to when the one that was pressed leaves the page with its question.
+ * one it keeps, and say in a toast how that went. The view's `floors` holds
+ * whether an answer is waited for, and one is asked at a time. `focus` names
+ * the button the keyboard goes to when the one that was pressed leaves the
+ * page with its question.
  */
-async function askFloor(mine, label, more, map, focus = null) {
+async function askFloor(mine, label, more, focus = null) {
   const floors = mine.floors;
   if (floors.waiting) return;
   floors.waiting = true;
   floors.asking = null;
-  floors.said = null;
   drawRobot(mine);
   if (focus) app.querySelector(`[data-focus="${focus}"]`)?.focus();
   const address = `api/floorplan?${new URLSearchParams({ ...mine.robot, ...more })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
   floors.waiting = false;
+  report(mine, 'floor', outcome(label, status, answer));
   if (mine !== view) return;
-  floors.said = { ...outcome(label, status, answer), map };
   drawRobot(mine);
   // The floor plans come with the robot, and so do the events of this.
   refresh(mine);
@@ -1301,7 +1383,6 @@ async function askFloor(mine, label, more, map, focus = null) {
  */
 function askAgain(mine, asking, focus) {
   mine.floors.asking = asking;
-  mine.floors.said = null;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
   drawRobot(mine);
@@ -1332,7 +1413,7 @@ function mapTools(mine, robot, plans, id, map, plan) {
   const asks = (action) => () => askAgain(mine, { map: id, action }, 'floor-keep');
   return [
     robotButton(floors, robot, 'Promote to floor plan', `floor-new-${id}`,
-      () => askFloor(mine, 'Promote', { action: 'promote', map: id }, id), { why: made, glyph: 'promote', alone: true }),
+      () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { why: made, glyph: 'promote', alone: true }),
     robotButton(floors, robot, 'Demote from floor plan', `floor-drop-${id}`, asks('demote'),
       { why: plan ? null : 'this map is not a floor plan', glyph: 'demote', alone: true }),
     robotButton(floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`, asks('replace'),
@@ -1368,20 +1449,14 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
     : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`;
   const again = demoting
     ? [robotButton(floors, robot, 'Demote it', 'floor-again',
-      () => askFloor(mine, 'Demote', { action: 'demote', rank_uuid: plan.rank_uuid }, id, back))]
+      () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid }, back))]
     : others.map((old) => robotButton(floors, robot, others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
-      `floor-again-${old}`, () => askFloor(mine, 'Replace', { action: 'update', map: id, old_rank_uuid: old }, id, back)));
+      `floor-again-${old}`, () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, back)));
   return h('div', { class: 'entry-ask' },
     h('p', null, question),
     h('div', { class: 'slot-tools' },
       h('button', { class: 'button', type: 'button', 'data-focus': 'floor-keep', onclick: () => askAgain(mine, null, back) }, 'Keep'),
       again));
-}
-
-/** How the last request about a floor plan went, for the map of that `id`, which it was pressed on. */
-function floorSaid(mine, map) {
-  const said = mine.floors.said;
-  return said !== null && said.map === map && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text);
 }
 
 // ---- The zones and no-go lines of a floor plan ----
@@ -1540,7 +1615,6 @@ function drawTracks(mine, id, plan, kind, zone = null) {
       rect: zone ? rectOf(zone) : null }
     : { ...where, track: plan.nogo?.track_uuid ?? null, lines: linesOf(plan.nogo) };
   job.dropping = null;
-  job.said = null;
   drawRobot(mine);
   app.querySelector(`[data-focus="${kind === 'zone' ? 'zone-name' : 'track-save'}"]`)?.focus();
 }
@@ -1548,7 +1622,6 @@ function drawTracks(mine, id, plan, kind, zone = null) {
 /** Shut the form, and put the keyboard back on the button that opened it, which `back` names. */
 function endTracks(mine, back) {
   mine.tracks.edit = null;
-  mine.tracks.said = null;
   // A selection would hold the page as it is, and so would the field for the name while the keyboard is in it.
   getSelection().removeAllRanges();
   if (entering()) document.activeElement.blur();
@@ -1558,23 +1631,22 @@ function endTracks(mine, back) {
 
 /**
  * Ask the robot, through the server, to keep a zone or the no-go lines of a
- * floor plan, or to drop a track, as `more` says. The view's `tracks` holds
- * whether an answer is waited for, and how the last request went, with the map
- * it was about. One is asked at a time. Once the robot accepts, the form is
- * shut and the keyboard goes to the button `back` names.
+ * floor plan, or to drop a track, as `more` says, and say in a toast how that
+ * went. The view's `tracks` holds whether an answer is waited for, and one is
+ * asked at a time. Once the robot accepts, the form is shut and the keyboard
+ * goes to the button `back` names.
  */
-async function askTracks(mine, label, more, map, back) {
+async function askTracks(mine, label, more, back) {
   const job = mine.tracks;
   if (job.waiting) return;
   job.waiting = true;
-  job.said = null;
   drawRobot(mine);
   const address = `api/track?${new URLSearchParams({ ...mine.robot, ...more })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
   job.waiting = false;
-  if (mine !== view) return;
   const went = outcome(label, status, answer);
-  job.said = { ...went, map };
+  report(mine, 'tracks', went);
+  if (mine !== view) return;
   if (went.tone !== 'good') {
     drawRobot(mine);
     return;
@@ -1595,26 +1667,22 @@ async function askTracks(mine, label, more, map, back) {
 
 /** Ask for what the form has drawn to be kept, or say what it lacks. */
 function saveTracks(mine, back) {
-  const job = mine.tracks;
-  const edit = job.edit;
-  const lacks = (text) => {
-    job.said = { tone: 'bad', text: `Save: ${text}`, map: edit.map };
-    drawRobot(mine);
-  };
+  const edit = mine.tracks.edit;
+  const label = edit.kind === 'zone' ? 'Save zone' : 'Save no-go lines';
+  const lacks = (text) => report(mine, 'tracks', { tone: 'bad', text: `${label}: ${text}` });
   if (edit.kind === 'zone') {
     // As the server keeps it: one line, its words a space apart.
     const name = edit.name.split(/\s+/).filter(Boolean).join(' ');
     if (name === '') return lacks('give the zone a name');
     if (edit.rect === null) return lacks('draw the zone on the map');
     const zone = JSON.stringify({ name, cleaning_mode: edit.mode, rect: edit.rect });
-    return askTracks(mine, 'Save', { action: 'zone', rank_uuid: edit.rank, zone, ...(edit.track && { track_uuid: edit.track }) },
-      edit.map, back);
+    return askTracks(mine, label, { action: 'zone', rank_uuid: edit.rank, zone, ...(edit.track && { track_uuid: edit.track }) }, back);
   }
   if (edit.lines.length > 0) {
-    return askTracks(mine, 'Save', { action: 'nogo', rank_uuid: edit.rank, lines: JSON.stringify(edit.lines) }, edit.map, back);
+    return askTracks(mine, label, { action: 'nogo', rank_uuid: edit.rank, lines: JSON.stringify(edit.lines) }, back);
   }
   // With no line left, the floor plan's are dropped, where it has any.
-  if (edit.track) return askTracks(mine, 'Save', { action: 'delete', track_uuid: edit.track }, edit.map, back);
+  if (edit.track) return askTracks(mine, label, { action: 'delete', track_uuid: edit.track }, back);
   return endTracks(mine, back);
 }
 
@@ -1691,7 +1759,6 @@ function trackForm(mine, robot, edit, back) {
 /** Ask whether the zone `uuid` is to go from the robot, or with null take that back, and put the keyboard on the button `focus` names. */
 function askDropZone(mine, uuid, focus) {
   mine.tracks.dropping = uuid;
-  mine.tracks.said = null;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
   drawRobot(mine);
@@ -1733,7 +1800,7 @@ function trackPanel(mine, robot, id, plan) {
           h('button', { class: 'button', type: 'button', 'data-focus': 'zone-keep', onclick: () => askDropZone(mine, null, `${focus}-drop`) },
             'Keep'),
           robotButton(job, robot, 'Delete it', 'zone-again',
-            () => askTracks(mine, 'Delete', { action: 'delete', track_uuid: zone.track_uuid }, id, `zone-add-${id}`)))),
+            () => askTracks(mine, 'Delete zone', { action: 'delete', track_uuid: zone.track_uuid }, `zone-add-${id}`)))),
     ];
   };
   return h('section', { class: 'tracks' },
@@ -1747,8 +1814,7 @@ function trackPanel(mine, robot, id, plan) {
       robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawTracks(mine, id, plan, 'nogo'), { why, glyph: 'pencil' })),
     edit?.kind === 'nogo' ? trackForm(mine, robot, edit, `nogo-edit-${id}`)
       : lines.length > 0 ? h('p', { class: 'track' }, trackSwatch(colours.nogo), `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`)
-      : h('p', { class: 'track-none' }, none('None.')),
-    job.said?.map === id && h('p', { class: `command-said ${job.said.tone}`, role: 'status' }, job.said.text));
+      : h('p', { class: 'track-none' }, none('None.')));
 }
 
 // ---- The schedule of one robot ----
@@ -1893,28 +1959,27 @@ function sent({ id, enabled, days, time, runs }) {
 
 /**
  * Ask the robot, through the server, for its schedule or for a change to it.
- * The view's `schedule` keeps which of those is waited for and, when it failed,
- * how. One is asked at a time. A change the robot accepted is followed by
- * asking for the schedule, because its answer says nothing of that, not even
- * the id it gave a new event.
+ * The view's `schedule` keeps which of those is waited for, and one is asked
+ * at a time. A toast says how a change went, and of the schedule only that it
+ * could not be had, since it is shown when it could. A change the robot
+ * accepted is followed by asking for the schedule, because its answer says
+ * nothing of that, not even the id it gave a new event.
  */
 async function askSchedule(mine, action, label, more = {}) {
   const plan = mine.schedule;
   if (plan.waiting) return;
   plan.waiting = action;
-  plan.said = null;
   if (action === 'show') plan.asked = mine.body?.robot.session?.since ?? null;
   drawRobot(mine);
   const address = `api/schedule?${new URLSearchParams({ ...mine.robot, action, ...more })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
   plan.waiting = null;
-  if (mine !== view) return;
   const went = outcome(label, status, answer);
-  if (went.tone !== 'good') {
-    plan.said = went;
-  } else if (action === 'show') {
+  if (went.tone !== 'good' || action !== 'show') report(mine, 'schedule', went);
+  if (mine !== view) return;
+  if (went.tone === 'good' && action === 'show') {
     plan.shown = record(answer.body);
-  } else {
+  } else if (went.tone === 'good') {
     plan.form = null;
     plan.dropping = null;
     askSchedule(mine, 'show', 'Schedule');
@@ -1963,7 +2028,6 @@ function edit(mine, event) {
   if (event) mine.openSlots.add(event.id);
   plan.form = draftOf(event);
   plan.dropping = null;
-  plan.said = null;
   drawRobot(mine);
   app.querySelector('[data-focus="plan-time"]')?.focus();
 }
@@ -1972,10 +2036,10 @@ function edit(mine, event) {
 function save(mine) {
   const plan = mine.schedule;
   const { id, enabled, time, mode, navigation, floor, zone, nogo, runs } = plan.form;
+  const label = id === null ? 'Add event' : 'Save event';
   const days = DAYS.map(([name]) => name).filter((name) => plan.form.days.includes(name));
   if (days.length === 0) {
-    plan.said = { tone: 'bad', text: 'Save: choose at least one day' };
-    drawRobot(mine);
+    report(mine, 'schedule', { tone: 'bad', text: `${label}: choose at least one day` });
     return;
   }
   // The form has the settings, the floor plan and the zone of an event's only run. The runs of an event with more go back as the robot gave them.
@@ -1983,7 +2047,7 @@ function save(mine) {
     ? [{ ...runs[0], settings: { mode, navigation_mode: navigation }, map: placed(floor, zone, nogo) }]
     : runs;
   const event = sent({ id, enabled, days, time, runs: changed });
-  askSchedule(mine, id === null ? 'add' : 'update', 'Save', { event: JSON.stringify(event) });
+  askSchedule(mine, id === null ? 'add' : 'update', label, { event: JSON.stringify(event) });
 }
 
 /**
@@ -2202,7 +2266,6 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
         onclick: () => {
           getSelection().removeAllRanges();
           plan.form = null;
-          plan.said = null;
           drawRobot(mine);
           app.querySelector(`[data-focus="${back}"]`)?.focus();
         },
@@ -2256,7 +2319,7 @@ function slot(mine, robot, event, n, plans) {
   const why = id === null ? 'the robot gave this event no id' : changing ? 'this event is being changed in the form under it' : null;
   const on = event.enabled === true;
   const runs = runsOf(event);
-  const toggle = () => askSchedule(mine, 'update', on ? 'Turn off' : 'Turn on', {
+  const toggle = () => askSchedule(mine, 'update', on ? 'Turn event off' : 'Turn event on', {
     event: JSON.stringify(sent({ ...event, enabled: !on, runs })),
   });
   const question = () => h('div', { class: 'entry-ask' },
@@ -2264,7 +2327,7 @@ function slot(mine, robot, event, n, plans) {
     h('div', { class: 'slot-tools' },
       // No button of the robot's, so it also takes the question back while the robot is away.
       h('button', { class: 'button', type: 'button', 'data-focus': 'slot-keep', onclick: () => askDrop(mine, null, `slot-drop-${n}`) }, 'Keep'),
-      planButton(mine, robot, 'Delete it', 'slot-again', () => askSchedule(mine, 'delete', 'Delete', { id }))));
+      planButton(mine, robot, 'Delete it', 'slot-again', () => askSchedule(mine, 'delete', 'Delete event', { id }))));
   return {
     // The place of an event that has no id stands for one: a number, which no id is.
     id: id ?? n,
@@ -2315,7 +2378,6 @@ function schedulePanel(mine, body) {
     events.length > 0
       && table('Schedule', SCHEDULE_COLUMNS, mine.openSlots, events.map((event, n) => slot(mine, robot, event, n, plans))),
     adding && scheduleForm(mine, robot, plans, null, plan.form, 'plan-add'),
-    plan.said && h('p', { class: `command-said ${plan.said.tone}`, role: 'status' }, plan.said.text),
   ], { wide: true, tools });
 }
 
@@ -2443,20 +2505,19 @@ function askSetting(mine, action, more = {}) {
 
 /**
  * Read the settings `names` from the robot, one after the other. The view's
- * `settings` keeps what the robot gave for each and, for one it did not give,
- * why, and holds the buttons back until the last has been read.
+ * `settings` keeps what the robot gave for each, and holds the buttons back
+ * until the last has been read. A toast says why the robot did not give one.
  */
 async function readSettings(mine, names) {
   const job = mine.settings;
   job.waiting = names;
-  for (const name of names) job.said[name] = null;
   drawRobot(mine);
   for (const [n, name] of names.entries()) {
     const [status, answer] = await askSetting(mine, name);
-    if (mine !== view) return;
     const went = outcome(SETTING_WAYS.get(name).title, status, answer);
+    if (went.tone !== 'good') report(mine, `setting-${name}`, went);
+    if (mine !== view) return;
     if (went.tone === 'good') job.shown[name] = record(answer.body);
-    else job.said[name] = went;
     // What is still to be read, or nothing once all of it has been.
     job.waiting = n + 1 < names.length ? names.slice(n + 1) : null;
     drawRobot(mine);
@@ -2477,7 +2538,6 @@ function settingsDue(mine) {
 function editSetting(mine, name) {
   const job = mine.settings;
   job.form = { name, draft: SETTING_WAYS.get(name).draft(job.shown[name]) };
-  job.said[name] = null;
   drawRobot(mine);
   app.querySelector('.setting-form :is(input, select)')?.focus();
 }
@@ -2491,19 +2551,19 @@ function endSetting(mine, name) {
   app.querySelector(`[data-focus="setting-edit-${name}"]`)?.focus();
 }
 
-/** Ask the robot to take what the form on a setting holds, and once it has, read the setting again. */
+/** Ask the robot to take what the form on a setting holds, say in a toast how that went, and once it has, read the setting again. */
 async function saveSetting(mine, name) {
   const job = mine.settings;
-  const value = SETTING_WAYS.get(name).value(job.form.draft);
+  const ways = SETTING_WAYS.get(name);
+  const value = ways.value(job.form.draft);
   job.waiting = [name];
-  job.said[name] = null;
   drawRobot(mine);
   const [status, answer] = await askSetting(mine, `set_${name}`, { value: JSON.stringify(value) });
   job.waiting = null;
+  const went = outcome(`Save ${ways.title.toLowerCase()}`, status, answer);
+  report(mine, `setting-${name}`, went);
   if (mine !== view) return;
-  const went = outcome('Save', status, answer);
   if (went.tone !== 'good') {
-    job.said[name] = went;
     drawRobot(mine);
     return;
   }
@@ -2549,7 +2609,6 @@ function settingPanel(mine, robot, name) {
   const ways = SETTING_WAYS.get(name);
   const given = job.shown[name] ?? null;
   const form = job.form !== null && job.form.name === name ? job.form : null;
-  const said = job.said[name];
   const why = given === null ? 'the robot has not given this setting'
     : form !== null ? 'it is being changed below'
     : ways.draft(given) === null ? 'the robot gave nothing to choose from'
@@ -2563,7 +2622,6 @@ function settingPanel(mine, robot, name) {
       : h('p', { class: 'plan-note' }, none(!robot.session ? 'The robot is not connected.'
         : job.waiting?.includes(name) ? 'Asking the robot…'
         : 'Not read from the robot.')),
-    said && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text),
   ], { tools });
 }
 
@@ -2646,7 +2704,10 @@ function startFailed(started, body) {
     || (!started.had && body.robot.state_at > started.sent && loadFailing(body.robot));
 }
 
-/** Send the robot a command and say under the buttons how it went. A start may be given the `run` it is to clean. */
+/**
+ * Send the robot a command and say in a toast how it went, in place of how the
+ * one before it went. A start may be given the `run` it is to clean.
+ */
 async function send(mine, name, label, run = null) {
   if (mine.command?.waiting || awaiting(mine)) return;
   // A selection would hold the page as it is, and the press has to show.
@@ -2657,12 +2718,13 @@ async function send(mine, name, label, run = null) {
   drawRobot(mine);
   const address = `api/command?${new URLSearchParams({ ...mine.robot, command: name, ...(run && { run: JSON.stringify(run) }) })}`;
   const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
-  const said = { name, ...outcome(label, status, answer) };
+  const said = outcome(label, status, answer);
   // The spec has a robot answer this, with nothing more, to a start on a floor plan or a zone that it does not have.
   if (status === 200 && answer.code === 422 && run?.map) {
     said.text = `${label}: the robot answered 422, which it gives for a floor plan or a zone it does not have`;
   }
-  mine.command = said;
+  report(mine, 'command', said);
+  mine.command = null;
   // Both times are the server's, as text that sorts by time. The browser's own is for how long to keep asking eagerly.
   if (said.tone === 'good') mine.accepted = { sent: answer.sent, at: Date.now() };
   if (said.tone === 'good' && name === 'start') mine.started = { sent: answer.sent, at: Date.now(), had, label };
@@ -2670,14 +2732,6 @@ async function send(mine, name, label, run = null) {
   drawRobot(mine);
   // The robot's new state and the events of this command are worth more now than at the next turn.
   refresh(mine);
-  // A command that failed stays said until the next one, so that it can be read.
-  if (said.tone === 'good') {
-    setTimeout(() => {
-      if (mine.command !== said) return;
-      mine.command = null;
-      drawRobot(mine);
-    }, ACCEPTED_MS);
-  }
 }
 
 /** Why the robot would not take the command `name` now, going by its last state, or null when it would. */
@@ -2814,9 +2868,8 @@ function startMenu(mine, plans, why, hold) {
 }
 
 /**
- * The commands as buttons, and under them how the last one sent went. One can
- * be pressed when the robot is connected and its last state said it would
- * accept that command. From when one is sent until the robot has answered and,
+ * The commands as buttons. One can be pressed when the robot is connected and
+ * its last state said it would accept that command. From when one is sent until the robot has answered and,
  * if it accepted, sent its next status, pressing any of them does nothing.
  * Start is two buttons in one, the second of which opens a menu under them
  * that sets what a start is to clean.
@@ -2826,40 +2879,36 @@ function commands(mine, robot) {
   const hold = sent?.waiting ? 'waiting for the robot to answer'
     : awaiting(mine) ? 'waiting for the robot\'s next status'
     : null;
-  return [
-    h('div', {
-      class: 'commands',
-      // Not the Escape that ends the composing of a character.
-      onkeydown: (event) => {
-        if (event.key !== 'Escape' || event.isComposing || !mine.start.open) return;
-        event.preventDefault();
-        shutStart(mine);
-      },
+  return h('div', {
+    class: 'commands',
+    // Not the Escape that ends the composing of a character.
+    onkeydown: (event) => {
+      if (event.key !== 'Escape' || event.isComposing || !mine.start.open) return;
+      event.preventDefault();
+      shutStart(mine);
     },
-    COMMANDS.map(([name, label, glyph]) => {
-      const why = barred(robot, name);
-      // Held back, not disabled: a disabled button could not keep the keyboard's focus.
-      const held = why === null && hold !== null;
-      const button = h('button', {
-        class: `command${sent?.waiting && sent.name === name ? ' busy' : ''}`,
-        type: 'button',
-        disabled: why !== null,
-        'aria-disabled': held && 'true',
-        title: held ? `${label}: ${hold}` : why && `${label}: ${why}`,
-        'data-focus': `can_${name}`,
-        onclick: () => send(mine, name, label),
-      }, icon(glyph), label);
-      return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why)) : button;
-    }),
-    mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold)),
-    sent && !sent.waiting && h('p', { class: `command-said ${sent.tone}`, role: 'status' }, sent.text),
-  ];
+  },
+  COMMANDS.map(([name, label, glyph]) => {
+    const why = barred(robot, name);
+    // Held back, not disabled: a disabled button could not keep the keyboard's focus.
+    const held = why === null && hold !== null;
+    const button = h('button', {
+      class: `command${sent?.waiting && sent.name === name ? ' busy' : ''}`,
+      type: 'button',
+      disabled: why !== null,
+      'aria-disabled': held && 'true',
+      title: held ? `${label}: ${hold}` : why && `${label}: ${why}`,
+      'data-focus': `can_${name}`,
+      onclick: () => send(mine, name, label),
+    }, icon(glyph), label);
+    return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why)) : button;
+  }),
+  mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold));
 }
 
 /** Shut the field for the robot's name, and put the keyboard back on the button that opened it. */
 function endNaming(mine) {
   mine.naming.draft = null;
-  mine.naming.said = null;
   // A selection would hold the page as it is, and so would the field while the keyboard is in it.
   getSelection().removeAllRanges();
   if (entering()) document.activeElement.blur();
@@ -2867,18 +2916,20 @@ function endNaming(mine) {
   app.querySelector('[data-focus="rename"]')?.focus();
 }
 
-/** Ask the server to call the robot what the field holds, or by its serial again when it holds nothing. */
+/** Ask the server to call the robot what the field holds, or by its serial again when it holds nothing, and say in a toast how that went. */
 async function rename(mine) {
   const naming = mine.naming;
   naming.waiting = true;
-  naming.said = null;
   drawRobot(mine);
   const address = `api/name?${new URLSearchParams({ ...mine.robot, name: naming.draft })}`;
   const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS, 'POST');
   naming.waiting = false;
+  // From the robot as it was called until now.
+  report(mine, 'name', status !== 200 ? { tone: 'bad', text: `Rename: ${answer?.error ?? 'no answer from the server'}` }
+    : answer.name === null ? { tone: 'good', text: 'Rename: the robot goes by its board serial again' }
+    : { tone: 'good', text: `Rename: the robot is now called ${answer.name}` });
   if (mine !== view) return;
   if (status !== 200) {
-    naming.said = { tone: 'bad', text: `Rename: ${answer?.error ?? 'no answer from the server'}` };
     drawRobot(mine);
     return;
   }
@@ -2889,18 +2940,18 @@ async function rename(mine) {
   refresh(mine);
 }
 
-/** Ask the server to delete the robot, and go to the list of the others once it has. */
+/** Ask the server to delete the robot, say in a toast how that went, and go to the list of the others once it has. */
 async function forget(mine) {
   const deleting = mine.deleting;
   deleting.waiting = true;
-  deleting.said = null;
   drawRobot(mine);
   const address = `api/delete?${new URLSearchParams(mine.robot)}`;
   const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS, 'POST');
   deleting.waiting = false;
+  report(mine, 'delete', status !== 200 ? { tone: 'bad', text: `Delete robot: ${answer?.error ?? 'no answer from the server'}` }
+    : { tone: 'good', text: 'Delete robot: it is gone from this server' });
   if (mine !== view) return;
   if (status !== 200) {
-    deleting.said = { tone: 'bad', text: `Delete: ${answer?.error ?? 'no answer from the server'}` };
     drawRobot(mine);
     return;
   }
@@ -2930,7 +2981,6 @@ function deleteButton(mine, label, focus, press, glyph) {
 /** Ask whether the robot is to be deleted, or take that back, and put the keyboard on Keep or back on Delete. */
 function askDelete(mine, asked) {
   mine.deleting.asked = asked;
-  mine.deleting.said = null;
   drawRobot(mine);
   app.querySelector(`[data-focus="${asked ? 'delete-keep' : 'delete'}"]`)?.focus();
 }
@@ -2941,15 +2991,13 @@ function askDelete(mine, asked) {
  * button that asked first was, so that pressing that one twice deletes nothing.
  */
 function deleteQuestion(mine) {
-  const deleting = mine.deleting;
-  return deleting.asked && h('div', { class: 'confirm' },
+  return mine.deleting.asked && h('div', { class: 'confirm' },
     h('p', null, 'Delete this robot? Its state, its events, its maps and its name are deleted from the database, '
       + 'and so is its key, if the server keeps one for it. If it is connected, its connection is ended. '
       + 'None of this can be undone. A robot that can still log in is listed again, as a new one, once it connects.'),
     h('div', { class: 'slot-tools' },
       deleteButton(mine, 'Delete it', 'delete-it', () => forget(mine)),
-      deleteButton(mine, 'Keep', 'delete-keep', () => askDelete(mine, false))),
-    deleting.said && h('p', { class: `command-said ${deleting.said.tone}`, role: 'status' }, deleting.said.text));
+      deleteButton(mine, 'Keep', 'delete-keep', () => askDelete(mine, false))));
 }
 
 /**
@@ -3010,8 +3058,7 @@ function nameLine(mine, robot) {
   }),
   save,
   h('button', { class: 'button', type: 'button', 'data-focus': 'name-cancel', onclick: () => endNaming(mine) }, 'Cancel'),
-  h('p', { class: 'hint' }, 'Only this server knows the name. Left empty, the robot goes by its board serial.'),
-  naming.said && h('p', { class: `command-said ${naming.said.tone}`, role: 'status' }, naming.said.text));
+  h('p', { class: 'hint' }, 'Only this server knows the name. Left empty, the robot goes by its board serial.'));
 }
 
 function hero(mine, robot) {
@@ -3271,19 +3318,25 @@ function drawRobot(mine) {
   repaint(mine);
 }
 
+// What the toast that says the server cannot be reached said, while it cannot, or null while it can.
+let down = null;
+
 function show(mine, status, body) {
   const missing = status === 404 && mine.robot && body?.error;
   if (status !== 200 && !missing) {
     // No answer at all, or one that says what went wrong. What is on screen stays.
     setLive('down', body?.error ? 'Server error' : 'Reconnecting');
-    noticeText.textContent = body?.error
+    const text = body?.error
       ? `The server could not answer: ${body.error}`
       : 'Cannot reach the server. Trying again every few seconds.';
-    notice.hidden = false;
+    // Said once and not at every turn, so that a toast that was closed stays closed until there is something new to say.
+    if (text !== down) toast('server', { tone: 'bad', text }, 'Server');
+    down = text;
     return;
   }
   setLive('ok', 'Live');
-  notice.hidden = true;
+  down = null;
+  hush('server');
   if (missing) {
     mine.body = null;
     const { vendor, serial } = mine.robot;
@@ -3303,17 +3356,16 @@ function show(mine, status, body) {
       const kept = plansOf(body).find((plan) => plan.rank_uuid === start.floor);
       if (!kept) start.floor = '';
       if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
-      // A start the robot accepted may still not clean, which the robot says only afterwards. That is said under the buttons
-      // in place of its having been accepted, and stays said until the next command, as a command that failed does.
+      // A start the robot accepted may still not clean, which the robot says only afterwards. That is said in the toast
+      // of the commands, in place of its having been accepted, and stays until it is closed, as a command that failed does.
       const started = mine.started;
       if (started && Date.now() - started.at > START_WATCH_MS) mine.started = null;
       else if (started && startFailed(started, body)) {
         mine.started = null;
-        mine.command = {
-          name: 'start',
+        report(mine, 'command', {
           tone: 'bad',
           text: `${started.label}: the robot accepted it, then could not load the floor plan, the zone or the no-go lines to clean on (${LOAD_FAIL})`,
-        };
+        });
       }
       // The schedule is asked for once of each connection the page sees, not at every turn: asking is a call to the robot.
       const since = body.robot.session?.since;
@@ -3378,8 +3430,9 @@ function navigate() {
     openMaps: new Set(),
     openSlots: new Set(),
     drawings: new Map(),
-    // The name in the field, when the field is open; whether the server has yet to answer; and how the last one failed.
-    naming: { draft: null, waiting: false, said: null },
+    // The name in the field, when the field is open, and whether the server has yet to answer.
+    naming: { draft: null, waiting: false },
+    // The command sent from this view, by its name, while the robot has yet to answer it.
     command: null,
     accepted: null,
     // The start the robot last accepted from this view, while it may yet say that it could not load what to clean on:
@@ -3388,23 +3441,23 @@ function navigate() {
     // Whether the menu of the Start button is open, and the run it sets: the settings, the floor plan by what the robot
     // knows it by or nothing for none, its zone the same way or nothing for the whole of it, and whether it minds its no-go lines.
     start: { open: false, mode: MODES[0], navigation: NAVIGATION_MODES[0], floor: '', zone: '', nogo: false },
+    // How each request below went is said in a toast, and none of it is kept here.
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave;
-    // how the last request failed; the form, when one is open; and the event about to be deleted.
-    schedule: { asked: null, waiting: null, shown: null, said: null, form: null, dropping: null },
+    // the form, when one is open; and the event about to be deleted.
+    schedule: { asked: null, waiting: null, shown: null, form: null, dropping: null },
     // The connection the settings were last asked of; those that are being read or saved, while any is; what
-    // the robot gave for each and how the last request about each failed, by name; and the form, when one is open.
-    settings: { asked: null, waiting: null, shown: {}, said: {}, form: null },
-    // Whether the robot has yet to answer what was asked of it about a floor plan; the map whose button awaits
-    // its second press, with what that would do; and how the last request went, with the map it was pressed on.
-    floors: { waiting: false, asking: null, said: null },
+    // the robot gave for each, by name; and the form, when one is open.
+    settings: { asked: null, waiting: null, shown: {}, form: null },
+    // Whether the robot has yet to answer what was asked of it about a floor plan, and the map whose button
+    // awaits its second press, with what that would do.
+    floors: { waiting: false, asking: null },
     // The same for the zones and no-go lines of a floor plan: whether an answer is waited for; what the form
-    // that draws them has, while it is open; the zone whose Delete awaits its second press; and how the last
-    // request went, with the map it was about.
-    tracks: { waiting: false, edit: null, dropping: null, said: null },
-    // Whether deleting the robot has been asked for and awaits its second press; whether the server has yet to answer; and how it failed.
-    deleting: { asked: false, waiting: false, said: null },
+    // that draws them has, while it is open; and the zone whose Delete awaits its second press.
+    tracks: { waiting: false, edit: null, dropping: null },
+    // Whether deleting the robot has been asked for and awaits its second press, and whether the server has yet to answer.
+    deleting: { asked: false, waiting: false },
     // The add-robot dialog, over the list: null while shut, else the log lines, whether it is running or done,
-    // how it failed, whether the server has yet to say its address and certificate, and what it gave.
+    // whether the server has yet to say its address and certificate, and what it gave.
     adding: null,
     body: null,
     drawn: null,

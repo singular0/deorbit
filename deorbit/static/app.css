@@ -199,19 +199,6 @@ a {
   padding-bottom: 72px;
 }
 
-.notice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 24px;
-  padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--bad) 35%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--bad) 11%, var(--surface));
-  color: var(--bad);
-  font-weight: 550;
-}
-
 .heading {
   margin: 44px 0 26px;
 }
@@ -574,14 +561,6 @@ h1 {
   animation: pulse 1.2s ease-out infinite;
 }
 
-/* How the last command went. */
-.command-said {
-  margin: 10px 0 0;
-  color: var(--tone);
-  font-size: 13.5px;
-  overflow-wrap: anywhere;
-}
-
 /* The list heading, with the "Bind a robot" button beside its title. */
 .heading-row {
   display: flex;
@@ -681,10 +660,6 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.add-form .command-said {
-  margin: 0;
-}
-
 /* The dialog's two buttons, under a line at its foot. */
 .add-actions {
   display: flex;
@@ -701,6 +676,91 @@ h1 {
   border-radius: 11px;
   font-size: 14px;
   font-weight: 600;
+}
+
+/* ---- Toasts: how something went, at the foot of the screen over the page ---- */
+
+/* Fixed to the screen, also from inside the dialog, where it is while that is open. A press goes through it where it has no toast. */
+.toasts {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(380px, calc(100vw - 48px));
+  pointer-events: none;
+}
+
+.toast {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 56px -20px #00000099;
+  font-size: 13.5px;
+  pointer-events: auto;
+  animation: toast-in 0.26s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.toast.leaving {
+  animation: toast-out 0.18s ease-in forwards;
+}
+
+/* Who or what it is from and when, tinted with how it went, and what closes it. */
+.toast-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--tone) 10%, transparent);
+}
+
+.toast-head > .icon {
+  color: var(--tone);
+}
+
+.toast-head > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.toast-head > time {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* No line around it until a pointer rests on it, as nothing else in the head has one. */
+.button.toast-close:not(:hover) {
+  border-color: transparent;
+}
+
+.toast-body {
+  margin: 0;
+  padding: 10px 14px 12px;
+  overflow-wrap: anywhere;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
 }
 
 /* The tabs of a robot's page, between what is said of the robot whichever is shown and the panels of the one that is. */
@@ -1068,13 +1128,9 @@ td.cell-clock {
   stroke-width: 2.75;
 }
 
-/* What is asked about a row, or said of how that went, under it. */
+/* What is asked about a row, under it. */
 .entry-note > td {
   padding: 0 0 12px;
-}
-
-.entry-note .command-said {
-  margin: 0;
 }
 
 /* A question and its answers, the buttons after the words. */
@@ -1106,11 +1162,6 @@ td.cell-clock {
 
 .entry-detail .code {
   max-height: 320px;
-}
-
-/* How it went with a row that is listed no more, under the table. */
-.table + .command-said {
-  margin-top: 14px;
 }
 
 .more {
@@ -1336,10 +1387,6 @@ td.cell-clock {
 .track-form > .slot-tools {
   flex-wrap: wrap;
   margin-top: 12px;
-}
-
-.tracks .command-said {
-  margin: 12px 0 0;
 }
 
 /* ---- The schedule of one robot ---- */
@@ -1702,6 +1749,14 @@ td.cell-clock {
 
   .add-form {
     padding: 20px;
+  }
+
+  /* The toasts take the width of the screen, less its margins. */
+  .toasts {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: auto;
   }
 
   /* A table has no room for its columns here: a row is a line that wraps, with no names over it. */
