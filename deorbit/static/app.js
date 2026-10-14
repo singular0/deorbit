@@ -919,11 +919,33 @@ function setting(runs, name) {
   return values.length > 0 ? values.join(', ') : none();
 }
 
-/** What a map says of its run that its row does not, beside the picture. */
-function mapFacts(map, runs) {
+/** The runs of a map, each as an object. */
+function runsIn(map) {
+  return (Array.isArray(map.runs) ? map.runs : []).map(record);
+}
+
+/** How the run of a map went, as the robot gave it: of a map with more runs than one how many, and of one with none a dash. */
+function runStatus(runs) {
+  // A map of one run, as the rule is, has the state of that run for its status.
+  const state = runs.length === 1 ? word(runs[0].state) : null;
+  const status = state ?? (runs.length > 1 ? `${runs.length} runs` : null);
+  return status === null ? none() : pill(RUN_TONES.get(state) ?? 'quiet', status, 'map');
+}
+
+/**
+ * What a map says of its run that its row does not, beside the picture. The
+ * map of a floor plan has no row, so it has `whole` what the row says as well.
+ */
+function mapFacts(map, runs, whole = false) {
   const timing = record(map.timing);
   return rows([
-    // As the start is in the row: the date and the time, and the rest to a pointer that rests on it.
+    ...(whole ? [
+      ['Start time', dated(timing.start)],
+      ['Status', runStatus(runs)],
+      ['Area', areaOf(runs) ?? none()],
+      ['Duration', took(timing) ?? none()],
+    ] : []),
+    // As the start is: the date and the time, and the rest to a pointer that rests on it.
     ['End time', dated(timing.end)],
     ['Paused for', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
     ['Started by', plain(map.started_by)],
@@ -1234,12 +1256,13 @@ async function loadMap(mine, id, pictured, which, editable) {
 
 /**
  * The picture of a map. The view keeps the node, so a map is fetched and read
- * once, when it is first opened, however often the page is drawn again. A node
- * is in one place of a page, so a picture that is shown elsewhere than in the
- * row of its map, as that of a floor plan is in the schedule, is kept by that
- * `place` as well, and is fetched once for it. The zones and the no-go lines of
- * a floor plan are drawn over its picture, and are drawn on only in the row of
- * its map. Elsewhere `chosen` is the zone that is shown as chosen.
+ * once, when it is first shown, however often the page is drawn again. A node
+ * is in one place of a page, so a picture that is shown elsewhere than on the
+ * Maps tab, in the row of its map or the block of its floor plan, as that of a
+ * floor plan is in the schedule, is kept by that `place` as well, and is
+ * fetched once for it. The zones and the no-go lines of a floor plan are drawn
+ * over its picture, and are drawn on only in its block. Elsewhere `chosen` is
+ * the zone that is shown as chosen.
  */
 function drawing(mine, id, place = null, chosen = null) {
   const key = place === null ? id : `${place} ${id}`;
@@ -1262,78 +1285,73 @@ function repaint(mine) {
   for (const pictured of mine.drawings.values()) pictured.repaint?.();
 }
 
-// The columns of the maps: when the run of one started, how it went, what it cleaned
-// and how long it took, and whether the robot keeps the map as a floor plan.
+// The columns of the maps that are no floor plan: when the run of one started,
+// how it went, what it cleaned and how long it took.
 const MAP_COLUMNS = [
   ['Start time', 'time'],
   ['Status', 'kind'],
   ['Area', 'amount', true],
   ['Duration', 'amount', true],
-  ['Floor plan', 'kept', true],
 ];
 
-/**
- * Whether a map is kept as a floor plan: a box that is ticked when `plan` is
- * the floor plan the server had the robot make of it. What the robot knows
- * that by is told to a pointer that rests on the box, and shown nowhere. The
- * box only says so: the buttons of the row are what changes it.
- */
-function kept(plan) {
-  const text = plan ? `Kept as floor plan ${plan.rank_uuid}` : 'Not kept as a floor plan';
-  return h('span', { class: plan ? 'tick on' : 'tick', role: 'img', 'aria-label': text, title: text }, plan && icon('check'));
-}
-
-/**
- * A map as a row of the table. Opened, it has what the map says of its run
- * and its picture; and, for a map that is a floor plan, its zones and no-go
- * lines under the first, which are drawn on the second. It stays open while
- * one of those is being drawn.
- */
+/** A map that is no floor plan as a row of the table. Opened, it has what the map says of its run and its picture. */
 function mapRow(row, mine, robot, plans) {
   const map = record(parsed(row.map_json));
-  const runs = (Array.isArray(map.runs) ? map.runs : []).map(record);
-  // A map of one run, as the rule is, has the state of that run for its status.
-  const state = runs.length === 1 ? word(runs[0].state) : null;
-  const status = state ?? (runs.length > 1 ? `${runs.length} runs` : null);
-  // The floor plan the server had the robot make of this map, if it did.
-  const plan = plans.find((known) => known.map_id === row.id) ?? null;
+  const runs = runsIn(map);
   return {
     id: row.id,
     focus: `map-${row.id}`,
-    pinned: plan !== null && mine.tracks.edit?.map === row.id,
     cells: [
       // When the robot says the run began, which every map of one run says alike.
       dated(record(map.timing).start),
-      status === null ? none() : pill(RUN_TONES.get(state) ?? 'quiet', status, 'map'),
+      runStatus(runs),
       areaOf(runs) ?? none(),
       took(record(map.timing)) ?? none(),
-      kept(plan),
     ],
-    tools: mapTools(mine, robot, plans, row.id, map, plan),
-    note: floorQuestion(mine, robot, plans, row.id, map, plan),
-    detail: () => [h('div', { class: 'map-detail' },
-      h('div', { class: 'map-facts' }, mapFacts(map, runs), plan && trackPanel(mine, robot, row.id, plan)),
-      drawing(mine, row.id))],
+    tools: mapTools(mine, robot, plans, row.id, map),
+    note: floorQuestion(mine, robot, plans, row.id, map, null),
+    detail: () => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(map, runs)), drawing(mine, row.id))],
   };
 }
 
 /**
- * The maps the robot uploaded: at the top those it keeps as floor plans, however
- * old they are, the one it accepted last first, and then the others, newest first.
+ * A floor plan as a block of its own, open on all of it: the picture of the
+ * map it was made of, with its zones and no-go lines to the right, which are
+ * drawn on the picture, and under both what the map says of its run, in two
+ * columns. Demote stands beside its heading.
  */
-function mapList(mine, body) {
+function floorPanel(mine, robot, plans, plan, row) {
+  const map = record(parsed(row.map_json));
+  const demote = robotButton(mine.floors, robot, 'Demote', `floor-${row.id}`,
+    () => askAgain(mine, { map: row.id, action: 'demote' }, 'floor-keep'), { glyph: 'demote' });
+  return panel('Floor plan', [
+    floorQuestion(mine, robot, plans, row.id, map, plan),
+    h('div', { class: 'floor-plan' }, drawing(mine, row.id), trackPanel(mine, robot, row.id, plan)),
+    h('div', { class: 'floor-facts' }, mapFacts(map, runsIn(map), true)),
+  ], { wide: true, tools: h('div', { class: 'panel-tools' }, demote) });
+}
+
+/**
+ * The maps the robot uploaded: a block to each that it keeps as a floor plan,
+ * however old, the one it accepted last first, and then a table of the
+ * others, newest first. A floor plan whose map the server has no more, which
+ * only a hand in the database brings about, has nothing to show.
+ */
+function mapPanels(mine, body) {
   const { robot, maps, more_maps: more, floorplan_maps: old } = body;
   const plans = plansOf(body);
   const all = [...maps, ...old];
-  if (all.length === 0) return none('Nothing yet.');
-  const made = plans.map((plan) => plan.map_id);
-  const rows = [
-    ...all.filter((row) => made.includes(row.id)).sort((a, b) => made.indexOf(a.id) - made.indexOf(b.id)),
-    ...all.filter((row) => !made.includes(row.id)),
-  ];
+  const kept = plans.map((plan) => [plan, all.find((row) => row.id === plan.map_id)]).filter(([, row]) => row);
+  // The older maps that come with the robot are all of floor plans.
+  const others = maps.filter((row) => !plans.some((plan) => plan.map_id === row.id));
   return [
-    table('Maps', MAP_COLUMNS, mine.openMaps, rows.map((row) => mapRow(row, mine, robot, plans))),
-    older(mine, 'maps', more),
+    ...kept.map(([plan, row]) => floorPanel(mine, robot, plans, plan, row)),
+    panel('Other maps', [
+      others.length > 0
+        ? table('Other maps', MAP_COLUMNS, mine.openMaps, others.map((row) => mapRow(row, mine, robot, plans)))
+        : none(maps.length === 0 ? 'Nothing yet.' : more ? 'None among the latest.' : 'None.'),
+      older(mine, 'maps', more),
+    ], { wide: true }),
   ];
 }
 
@@ -1342,9 +1360,8 @@ function mapList(mine, body) {
 // A floor plan is a map that the robot keeps, to clean by. The robot makes one
 // of a map it uploaded when the server tells it to, and the server remembers
 // which it told the robot to make: a robot cannot be asked which it has. So a
-// floor plan has no list of its own: it is the map it was made of, ticked, at
-// the top of the table of the maps, and the buttons of that row are what is
-// asked of the robot with it.
+// floor plan is the map it was made of, in a block of its own above the table
+// of the other maps, whose rows have the buttons that make one of theirs.
 
 /** A UUID as short as a button can carry: how it begins. */
 function short(uuid) {
@@ -1399,35 +1416,30 @@ function replaceable(plans, map) {
 }
 
 /**
- * The buttons of a map's row: to have the robot keep the map as a new floor
- * plan, to have it drop the floor plan made of the map, and to have it keep
- * the map in place of another floor plan. A map that is a floor plan can be
- * demoted and one that is none can be promoted or put in the place of another.
- * The last two take a floor plan from the robot, so they only ask what
- * `floorQuestion` puts under the row.
+ * The buttons of the row of a map that is no floor plan: to have the robot
+ * keep the map as a new floor plan, and to have it keep the map in place of
+ * another. The second takes a floor plan from the robot, so it only asks what
+ * `floorQuestion` puts under the row. Promote has the name to the keyboard
+ * that Demote has in the block of a floor plan: a map goes from the one to the
+ * other as it is promoted or demoted, and the keyboard goes with it.
  */
-function mapTools(mine, robot, plans, id, map, plan) {
-  const floors = mine.floors;
-  const made = plan ? 'this map is a floor plan already' : null;
+function mapTools(mine, robot, plans, id, map) {
   const lone = replaceable(plans, map).length === 0 ? 'the robot is not known to have a floor plan to replace' : null;
-  const asks = (action) => () => askAgain(mine, { map: id, action }, 'floor-keep');
   return [
-    robotButton(floors, robot, 'Promote to floor plan', `floor-new-${id}`,
-      () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { why: made, glyph: 'promote', alone: true }),
-    robotButton(floors, robot, 'Demote from floor plan', `floor-drop-${id}`, asks('demote'),
-      { why: plan ? null : 'this map is not a floor plan', glyph: 'demote', alone: true }),
-    robotButton(floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`, asks('replace'),
-      { why: made ?? lone, glyph: 'replace', alone: true }),
+    robotButton(mine.floors, robot, 'Promote to floor plan', `floor-${id}`,
+      () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { glyph: 'promote', alone: true }),
+    robotButton(mine.floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`,
+      () => askAgain(mine, { map: id, action: 'replace' }, 'floor-keep'), { why: lone, glyph: 'replace', alone: true }),
   ];
 }
 
 /**
- * What a press on Demote or on Replace asks, under the row of its map, and the
- * answers to that. Taking a floor plan from the robot is asked twice, and the
- * second time here and not where the button that asked first is, so that
- * pressing that one twice takes nothing, and the keyboard is put on Keep.
- * Where the robot has more floor plans than one to replace, the second press
- * is also what chooses among them.
+ * What a press on Demote or on Replace asks, under the heading of a floor
+ * plan or the row of a map, and the answers to that. Taking a floor plan from
+ * the robot is asked twice, and the second time here and not where the button
+ * that asked first is, so that pressing that one twice takes nothing, and the
+ * keyboard is put on Keep. Where the robot has more floor plans than one to
+ * replace, the second press is also what chooses among them.
  */
 function floorQuestion(mine, robot, plans, id, map, plan) {
   const floors = mine.floors;
@@ -1437,7 +1449,10 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
   const others = demoting ? [] : replaceable(plans, map);
   // Nothing is asked of a map that the buttons would no longer ask it of.
   if (demoting ? plan === null : plan !== null || others.length === 0) return null;
-  const back = demoting ? `floor-drop-${id}` : `floor-swap-${id}`;
+  // Keep puts the keyboard back on the button that asked. While the robot answers it is on Promote or Demote,
+  // which go with the map from the table to a block of its own and back, so that it follows a Replace too.
+  const back = demoting ? `floor-${id}` : `floor-swap-${id}`;
+  const after = `floor-${id}`;
   // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
   const drawn = others.some((old) => {
     const known = plans.find((each) => each.rank_uuid === old);
@@ -1449,9 +1464,9 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
     : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`;
   const again = demoting
     ? [robotButton(floors, robot, 'Demote it', 'floor-again',
-      () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid }, back))]
+      () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid }, after))]
     : others.map((old) => robotButton(floors, robot, others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
-      `floor-again-${old}`, () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, back)));
+      `floor-again-${old}`, () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, after)));
   return h('div', { class: 'entry-ask' },
     h('p', null, question),
     h('div', { class: 'slot-tools' },
@@ -1465,10 +1480,10 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
 // and the no-go lines are where it is not to go. The spec calls both tracks.
 // The robot keeps them with the floor plan and cannot be asked which it has, so
 // they are those the server had it keep, each with what was drawn for it. They
-// are drawn on the picture of the map the floor plan was made of, in that map's
-// row: a zone as a rectangle, and the lines one at a time, all of them one
-// track. What is drawn is in cells of the map's rank_binary, from its left and
-// from its top, which is what the server draws a track's binary on.
+// are drawn on the picture of the map the floor plan was made of, in the block
+// of the floor plan: a zone as a rectangle, and the lines one at a time, all of
+// them one track. What is drawn is in cells of the map's rank_binary, from its
+// left and from its top, which is what the server draws a track's binary on.
 
 const isCells = (value) => Array.isArray(value) && value.length === 4 && value.every(Number.isInteger);
 
@@ -1535,7 +1550,7 @@ function paintLine(pen, at, [x0, y0, x1, y1], colour, size, ratio) {
  * What is drawn over the picture of the map of that `id` while it is a floor
  * plan: its zones and its no-go lines. `grid` says where the picture starts
  * among the cells of the map and how many cells there are, and has the
- * colours. In the row of the map, where it is `editable`, it is drawn on while
+ * colours. On the Maps tab, where it is `editable`, it is drawn on while
  * the view's `tracks.edit` is about that map: a drag draws the zone in place of
  * what it was, or one more line. Elsewhere the zone `pictured.chosen` is shown as
  * chosen. All of it is read from the view as it is drawn, since the picture
@@ -1604,8 +1619,7 @@ function trackSwatch(colour) {
 /**
  * Open the form that draws a zone of the floor plan `plan`, which is made of
  * the map of that `id`: the zone `zone`, or a new one where there is none. Of
- * the `kind` nogo, the form draws the floor plan's no-go lines. The row of the
- * map stays open while the form is.
+ * the `kind` nogo, the form draws the floor plan's no-go lines.
  */
 function drawTracks(mine, id, plan, kind, zone = null) {
   const job = mine.tracks;
@@ -1767,7 +1781,7 @@ function askDropZone(mine, uuid, focus) {
 
 /**
  * The zones and the no-go lines of the floor plan `plan`, which is made of the
- * map of that `id`, under what the map says of its run: a line to each zone,
+ * map of that `id`, beside the picture of that map: a line to each zone,
  * with the buttons that draw it again and that ask whether to delete it, and
  * how many no-go lines there are, with the button that draws them; and under
  * either the form that draws them while it is open. Deleting a zone is asked
@@ -1894,7 +1908,7 @@ function sign(text = null) {
 /**
  * The floor plans the server had the robot keep, each with the `start` of the
  * map it was made of: when the robot says that map's run began, which is what
- * the table of the maps shows of it, or null where the server has the map no
+ * the block of the floor plan shows of it, or null where the server has the map no
  * more. Each has as well the `zones` the server had the robot keep of it, by
  * name, and as `nogo` the track of its no-go lines, or null.
  */
@@ -1920,8 +1934,8 @@ function startOf(uuid, plans) {
 
 /**
  * The floor plan the runs of an event are on, with a warning sign before one
- * the robot is not known to have. It is shown as the map it was made of is in
- * the table of the maps, by when that map's run began. One whose map the server
+ * the robot is not known to have. It is shown as its block on the Maps tab
+ * shows it, by when that map's run began. One whose map the server
  * does not know is shown by what the robot knows it by: for the row of the
  * event how that begins, the rest of which is told to a pointer that rests on
  * it, and for the event's form `whole`. The row has after it the zone of it
@@ -2097,7 +2111,7 @@ function yesNo(label, focus, on, set) {
 
 /**
  * A floor plan as a line to choose it by: when the run of the map it was made
- * of began, as the table of the maps has it, or how what the robot knows it by
+ * of began, as its block on the Maps tab has it, or how what the robot knows it by
  * begins where the server does not know that map.
  */
 function floorLabel(plan) {
@@ -3167,7 +3181,7 @@ function statusPanels(robot) {
 const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
-  ['maps', 'Maps', (mine, body) => panel('Maps', mapList(mine, body), { wide: true })],
+  ['maps', 'Maps', (mine, body) => mapPanels(mine, body)],
   ['settings', 'Settings', (mine, { robot }) => SETTINGS.map((name) => settingPanel(mine, robot, name))],
   ['events', 'Events', (mine, { events, more }) => panel('Events', eventLog(mine, events, more), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',

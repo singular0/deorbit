@@ -1106,28 +1106,6 @@ td.cell-clock {
   opacity: 0.55;
 }
 
-/* Whether a map is kept as a floor plan: a box, ticked when it is. */
-.tick {
-  display: inline-grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border: 1.5px solid var(--line-strong);
-  border-radius: 5px;
-  font-size: 11px;
-  vertical-align: middle;
-}
-
-.tick.on {
-  border-color: color-mix(in srgb, var(--good) 55%, transparent);
-  background: color-mix(in srgb, var(--good) 18%, transparent);
-  color: var(--good);
-}
-
-.tick > .icon {
-  stroke-width: 2.75;
-}
-
 /* What is asked about a row, under it. */
 .entry-note > td {
   padding: 0 0 12px;
@@ -1146,6 +1124,11 @@ td.cell-clock {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* What is asked about a floor plan, under its heading. */
+.panel > .entry-ask {
+  margin-bottom: 16px;
 }
 
 /* What a row opens on. */
@@ -1309,11 +1292,45 @@ td.cell-clock {
   min-width: 0;
 }
 
-/* The zones and no-go lines of a map that is a floor plan, under what the robot said of the run. */
+/* A floor plan: the picture of its map, and its zones and no-go lines to the right of it, in the other half of the block. */
+.floor-plan {
+  display: grid;
+  grid-template-columns: 50% minmax(0, 1fr);
+  align-items: start;
+  gap: 20px 32px;
+}
+
+/* The zones and no-go lines of a floor plan, their first heading level with the top of the picture. */
 .tracks {
+  min-width: 0;
+}
+
+.tracks > .tracks-head:first-child {
+  margin-top: 0;
+}
+
+/* What the map of a floor plan says of its run, under the picture and the zones. */
+.floor-facts {
   margin-top: 24px;
-  padding-top: 6px;
+  padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+
+/* In two columns where there is room, a row across both at a time, so the first row is two lines and the last may be. */
+@media (min-width: 761px) {
+  .floor-facts > .kv {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 32px;
+  }
+
+  .floor-facts > .kv > div:nth-child(2) {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .floor-facts > .kv > div:nth-child(odd):nth-last-child(2) {
+    padding-bottom: 0;
+  }
 }
 
 .tracks-head {
@@ -1807,6 +1824,7 @@ td.cell-clock {
   }
 
   .map-detail,
+  .floor-plan,
   .slot-form {
     grid-template-columns: minmax(0, 1fr);
   }
