@@ -201,6 +201,21 @@ function when(stamp) {
   return h('time', { datetime: stamp, title: fullTime(at), 'data-at': at }, ago(at));
 }
 
+/** A time as "01.01.2000 12:30", by the browser's clock. */
+function numeric(at) {
+  const date = new Date(at);
+  const two = (number) => String(number).padStart(2, '0');
+  const day = `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()}`;
+  return `${day} ${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
+/** A timestamp as `numeric` gives it, with the day, the date and the time in full in its tooltip. */
+function dated(stamp) {
+  const at = Date.parse(stamp);
+  if (Number.isNaN(at)) return plain(stamp);
+  return h('time', { datetime: stamp, title: fullTime(at) }, numeric(at));
+}
+
 /** A timestamp both ways: how long ago, and the time on the clock. */
 function moment(stamp) {
   const at = Date.parse(stamp);
@@ -764,7 +779,7 @@ function eventRow(event) {
   return {
     id: event.id,
     focus: `event-${event.id}`,
-    cells: [when(event.at), pill(tone, label, glyph), said || null],
+    cells: [dated(event.at), pill(tone, label, glyph), said || null],
     detail: () => eventDetail(event),
   };
 }
@@ -817,8 +832,8 @@ function setting(runs, name) {
 function mapFacts(map, runs) {
   const timing = record(map.timing);
   return rows([
-    // As the start is in the row: how long ago, and the rest to a pointer that rests on it.
-    ['End time', when(timing.end)],
+    // As the start is in the row: the date and the time, and the rest to a pointer that rests on it.
+    ['End time', dated(timing.end)],
     ['Paused for', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
     ['Started by', plain(map.started_by)],
     ['Cleaning complete', flag(map.cleaning_complete)],
@@ -1118,7 +1133,7 @@ function mapRow(row, mine, robot, plans) {
     focus: `map-${row.id}`,
     cells: [
       // When the robot says the run began, which every map of one run says alike.
-      when(record(map.timing).start),
+      dated(record(map.timing).start),
       status === null ? none() : pill(RUN_TONES.get(state) ?? 'quiet', status, 'map'),
       areaOf(runs) ?? none(),
       took(record(map.timing)) ?? none(),
@@ -1333,21 +1348,43 @@ function sign(text = null) {
 }
 
 /**
+ * The floor plans the server had the robot keep, each with the `start` of the
+ * map it was made of: when the robot says that map's run began, which is what
+ * the table of the maps shows of it, or null where the server has the map no more.
+ */
+function startsOf({ maps, floorplans, floorplan_maps: old }) {
+  const all = [...maps, ...old];
+  return floorplans.map((plan) => {
+    const row = all.find((map) => map.id === plan.map_id);
+    return { ...plan, start: row ? record(record(parsed(row.map_json)).timing).start ?? null : null };
+  });
+}
+
+/** The floor plan of `plans` that the robot knows as `uuid`, where its map has a start that is a time, or else null. */
+function startOf(uuid, plans) {
+  const plan = plans.find((known) => known.rank_uuid === uuid);
+  return plan && !Number.isNaN(Date.parse(plan.start)) ? plan.start : null;
+}
+
+/**
  * The floor plan the runs of an event are on, with a warning sign before one
- * the robot is not known to have. For the row of the event it is how what the
- * robot knows it by begins, the rest of which is told to a pointer that rests
- * on it, and after it the zone of it that is cleaned, or how many runs there
- * are where there are more than one. For the event's form it is `whole`, and
- * alone.
+ * the robot is not known to have. It is shown as the map it was made of is in
+ * the table of the maps, by when that map's run began. One whose map the server
+ * does not know is shown by what the robot knows it by: for the row of the
+ * event how that begins, the rest of which is told to a pointer that rests on
+ * it, and for the event's form `whole`. The row has after it the zone of it
+ * that is cleaned, or how many runs there are where there are more than one.
  */
 function floorShown(runs, plans, whole = false) {
   if (runs.length === 0) return none('No runs');
   const place = runs[0].map == null ? null : record(runs[0].map);
   const uuid = place && word(place.rank_id);
+  const start = uuid && startOf(uuid, plans);
   const lost = strays(runs.map(floorOf), plans);
   return [
     lost.length > 0 && sign(strayed(lost)),
-    place === null ? none() : uuid === null ? none('Unnamed') : whole ? uuid : h('span', { title: uuid }, short(uuid)),
+    place === null ? none() : uuid === null ? none('Unnamed') : start ? dated(start)
+      : whole ? uuid : h('span', { title: uuid }, short(uuid)),
     !whole && (runs.length > 1 ? ` · ${runs.length} runs` : place && named(' · zone', place.track_id)),
   ];
 }
@@ -1497,10 +1534,15 @@ function planButton(mine, ...rest) {
   return robotButton(mine.schedule, ...rest);
 }
 
-/** A floor plan as a line to choose it by: how what the robot knows it by begins, and when the robot accepted it. */
+/**
+ * A floor plan as a line to choose it by: when the run of the map it was made
+ * of began, as the table of the maps has it, or how what the robot knows it by
+ * begins where the server does not know that map.
+ */
 function floorLabel(plan) {
-  const at = Date.parse(plan.at);
-  return `${short(String(plan.rank_uuid))} · ${Number.isNaN(at) ? plan.at : clock(at)}`;
+  const uuid = String(plan.rank_uuid);
+  const start = startOf(uuid, [plan]);
+  return start ? numeric(Date.parse(start)) : short(uuid);
 }
 
 /**
@@ -1711,7 +1753,9 @@ function slot(mine, robot, event, n, plans) {
  * robot keeps the schedule and the server none of it, so there is one to show
  * only once a connected robot has been asked.
  */
-function schedulePanel(mine, { robot, floorplans: plans }) {
+function schedulePanel(mine, body) {
+  const { robot } = body;
+  const plans = startsOf(body);
   const plan = mine.schedule;
   const shown = plan.shown;
   const events = shown !== null && Array.isArray(shown.events) ? shown.events.map(record) : [];

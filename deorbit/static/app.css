@@ -882,7 +882,7 @@ h2 {
 }
 
 .table th.cell-time {
-  width: 9rem;
+  width: 10rem;
 }
 
 .table th.cell-kind {
@@ -929,10 +929,11 @@ h2 {
   padding-right: 0;
 }
 
-/* When: how long ago, with the day, the date and the time for a pointer that rests on it. */
+/* When: the date and the time, on one line, with the day and the seconds for a pointer that rests on it. */
 td.cell-time {
   font-size: 13.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 td.cell-amount {
