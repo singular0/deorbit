@@ -19,8 +19,7 @@
 // - A heading (`dir`) is in degrees, anticlockwise from the x axis.
 
 const INFLATED_MAX = 32 * 1024 * 1024; // the longest file a binary may inflate to; the robot's were 4 MB
-const PIXELS_MAX = 8000000; // the largest picture made, in pixels
-const SCALE_MAX = 8; // the most a small map is enlarged
+const PIXELS_MAX = 8000000; // the largest picture made, in pixels, which are its cells
 const MARGIN = 3; // how many cells are left around what the robot saw
 const UNSEEN = 128;
 const VALUES = 256; // how many values a cell can have
@@ -147,17 +146,17 @@ function sameGrid(one, other) {
 
 /**
  * One picture of the two a map has: the floor and the walls of `rank` with the
- * cells of `real` that were cleaned, cut down to what the robot saw and
- * enlarged to about `side` pixels of the page, each of them `ratio` of the
- * screen's. `real` may be null. `places` are positions the map gives, by name.
+ * cells of `real` that were cleaned, cut down to what the robot saw, a pixel to
+ * a cell. Whoever shows it enlarges it. `real` may be null. `places` are
+ * positions the map gives, by name.
  *
  * It is `width` by `height` pixels, as `rgba`. `marks` are the places that are
- * on the map, each with where it is in the picture and its heading. `cleaned`
+ * on the map, each with where it is in the picture, in cells, and its heading. `cleaned`
  * is how many cells were, or null when `real` could not be laid over `rank`.
  * `odd` are the values in `real` that nothing here has a meaning for, each
  * with its count.
  */
-export function paint(rank, real, places, palette, side, ratio) {
+export function paint(rank, real, places, palette) {
   const { width, height, cells } = rank;
   const over = real !== null && sameGrid(rank, real) ? real.cells : null;
   const counts = new Uint32Array(VALUES);
@@ -201,9 +200,7 @@ export function paint(rank, real, places, palette, side, ratio) {
   right = Math.min(width - 1, right + MARGIN);
   bottom = Math.min(height - 1, bottom + MARGIN);
   const [across, down] = [right - left + 1, bottom - top + 1];
-  let scale = Math.max(1, Math.min(SCALE_MAX, Math.floor(side / Math.max(across, down)))) * ratio;
-  while (scale > 1 && across * down * scale * scale > PIXELS_MAX) scale -= 1;
-  if (across * down * scale * scale > PIXELS_MAX) throw new Error(`it is ${across} by ${down} cells, more than is drawn`);
+  if (across * down > PIXELS_MAX) throw new Error(`it is ${across} by ${down} cells, more than is drawn`);
 
   // The colour of each value a cell of the rank map can have: the less sure the robot was, the nearer to unseen.
   const shades = [];
@@ -214,23 +211,16 @@ export function paint(rank, real, places, palette, side, ratio) {
     shades.push(colour.map((full, n) => Math.round(palette.unseen[n] + (full - palette.unseen[n]) * share)));
   }
 
-  const line = across * scale * 4; // the bytes in a row of pixels
-  const rgba = new Uint8ClampedArray(line * down * scale);
-  for (let y = 0; y < down; y += 1) {
-    const start = y * scale * line;
-    let to = start;
-    for (let x = 0; x < across; x += 1) {
+  const rgba = new Uint8ClampedArray(across * down * 4);
+  for (let y = 0, to = 0; y < down; y += 1) {
+    for (let x = 0; x < across; x += 1, to += 4) {
       const at = (top + y) * width + left + x;
       const [red, green, blue] = isCleaned(at) ? palette.cleaned : shades[cells[at]];
-      for (let n = 0; n < scale; n += 1, to += 4) {
-        rgba[to] = red;
-        rgba[to + 1] = green;
-        rgba[to + 2] = blue;
-        rgba[to + 3] = 255;
-      }
+      rgba[to] = red;
+      rgba[to + 1] = green;
+      rgba[to + 2] = blue;
+      rgba[to + 3] = 255;
     }
-    // A cell is as many rows of pixels high as it is pixels wide.
-    for (let n = 1; n < scale; n += 1) rgba.copyWithin(start + n * line, start, start + line);
   }
 
   const odd = [];
@@ -238,10 +228,10 @@ export function paint(rank, real, places, palette, side, ratio) {
     if (count > 0 && ![0, 3, 4, 6].includes(value)) odd.push([value, count]);
   }
   return {
-    width: across * scale,
-    height: down * scale,
+    width: across,
+    height: down,
     rgba,
-    marks: spots.map(({ name, x, y, dir }) => ({ name, x: (x - left) * scale, y: (y - top) * scale, dir })),
+    marks: spots.map(({ name, x, y, dir }) => ({ name, x: x - left, y: y - top, dir })),
     cleaned: over === null ? null : counts[3] + counts[4],
     odd,
   };

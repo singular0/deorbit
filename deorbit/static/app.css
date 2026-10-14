@@ -1066,10 +1066,10 @@ td.cell-clock {
 
 /* ---- A map of one robot, opened ---- */
 
-/* The picture, and beside it what the robot said of the run. */
+/* What the robot said of the run, and the picture to the right of it, in half the width of the row. */
 .map-detail {
   display: grid;
-  grid-template-columns: auto minmax(260px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 50%;
   align-items: start;
   gap: 20px 32px;
 }
@@ -1078,13 +1078,62 @@ td.cell-clock {
   min-width: 0;
 }
 
-/* Drawn with its own ground, in the colours of the page as it was then. */
-.map-canvas {
-  display: block;
-  max-width: 100%;
-  height: auto;
+/* The window a map is shown in, of one size and shape whatever the map's. */
+.map-view {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 12px;
+  user-select: none;
+}
+
+/* Drawn with its own ground, in the colours of the page as it was then. */
+.map-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A map larger than its window is dragged about, which a finger on it does too, rather than scroll the page. */
+.map-view.pannable .map-canvas {
+  cursor: grab;
+  touch-action: none;
+}
+
+.map-view.dragging .map-canvas {
+  cursor: grabbing;
+}
+
+/* Drawn within the window, which hides what is outside it. */
+.map-canvas:focus-visible {
+  outline-offset: -2px;
+}
+
+.map-zoom {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Over the map, which would show through. */
+.map-zoom .button,
+.map-zoom .button[aria-disabled] {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.map-zoom .button:hover {
+  background: var(--raised);
+}
+
+.map-zoom .button[aria-disabled]:hover {
+  background: var(--surface);
 }
 
 .map-legend {
@@ -1182,12 +1231,12 @@ td.cell-clock {
 /*
   The form of an event: a line to each thing the event has, as a map has its facts, which a row of the
   schedule opens on. While the event is changed, or one is added, a line holds the field for what it says.
-  Beside the lines is the picture of the floor plan the event is on. It is after them and not before, as a
-  map's is, so that the fields stay where they are when a floor plan is chosen and its picture comes.
+  Beside the lines is the picture of the floor plan the event is on, after them as a map's is and in half the
+  width as a map's is, so that the fields stay where they are when a floor plan is chosen and its picture comes.
 */
 .slot-form {
   display: grid;
-  grid-template-columns: minmax(0, 32rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 50%;
   align-items: start;
   gap: 20px 32px;
 }

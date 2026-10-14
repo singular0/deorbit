@@ -19,7 +19,10 @@ const EVENTS_STEP = 25; // how many events a robot's page shows at first, and ho
 const EVENTS_MAX = 1000; // the most the server gives at once
 const MAPS_STEP = 10; // the same two numbers for its maps
 const MAPS_MAX = 100;
-const MAP_SIDE = 560; // about how long the longer side of a map's picture is
+const FIT_MOST = 8; // the most pixels of the page a cell of a small map is enlarged to, to be shown whole
+const CELL_MOST = 32; // the most a cell of a map is enlarged to by zooming in
+const ZOOM_STEP = 2; // how much a press of Zoom in enlarges a map, and one of Zoom out shrinks it
+const PAN_STEP = 48; // how far an arrow key moves a map that is larger than its window, in pixels of the page
 const NAME_MAX = 64; // the most characters the server takes for a robot's name
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -44,6 +47,10 @@ let clockOffset = 0;
 // way. Navigating makes a new one, and a fetch that returns to find its view
 // replaced drops the result.
 let view = null;
+
+// The canvas of a map that is being dragged about, which a new page would take
+// out of the document and so let go of.
+let dragged = null;
 
 // ---- Building nodes ----
 
@@ -839,8 +846,147 @@ function stamp(pen, { name, x, y, dir }, palette, ratio) {
   pen.stroke();
 }
 
+/** Hold a button back, or let it be pressed again. Held back, not disabled, it keeps the keyboard's focus. */
+function hold(button, held) {
+  if (held) button.setAttribute('aria-disabled', 'true');
+  else button.removeAttribute('aria-disabled');
+}
+
+// The arrow keys, and which way each moves what the window of a map shows.
+const PAN_KEYS = new Map([['ArrowLeft', [-1, 0]], ['ArrowRight', [1, 0]], ['ArrowUp', [0, -1]], ['ArrowDown', [0, 1]]]);
+
+/**
+ * The window a map is shown in, of one size and shape whatever the map's.
+ * `source` is the map at a pixel to a cell, and `marks` are the places on it,
+ * in cells. The map is shown whole at first. Zoom in and Zoom out enlarge and
+ * shrink it about the middle of the window, a step at a time, and while it is
+ * larger than the window it is dragged about, or moved with the arrow keys
+ * where the keyboard is on it. The canvas is as large as the window, in the
+ * screen's pixels, and is drawn anew at each change, so that the marks keep
+ * their size. `which` tells the buttons of one window from those of another.
+ */
+function viewer(source, marks, palette, which) {
+  const [across, down] = [source.width, source.height];
+  let [wide, high, ratio] = [0, 0, 1]; // the window in pixels of the page, once it is laid out, and the screen's to one of those
+  let scale = 0; // the pixels of the page to a cell
+  let fitted = true; // whether the map is shown whole, as it stays when the window changes size
+  let [middleX, middleY] = [across / 2, down / 2]; // the point of the map in the middle of the window, in cells
+  let drag = null; // the pointer that drags the map, and where it was last
+
+  // A whole number of the screen's pixels to a cell keeps the cells alike, where a cell is a pixel or more.
+  // The map shown whole is not held to that, which would leave much of the window empty around a large one.
+  const even = (cell) => (cell * ratio >= 1 ? Math.round(cell * ratio) / ratio : cell);
+  const whole = () => Math.min(wide / across, high / down, FIT_MOST);
+  const larger = () => across * scale > wide + 0.5 || down * scale > high + 0.5;
+  // Along a side the map is larger than, the window stays on the map; along one it is not, the map is in its middle.
+  const keep = (middle, cells, room) => {
+    const half = room / 2 / scale;
+    return cells * scale <= room + 0.5 ? cells / 2 : Math.min(cells - half, Math.max(half, middle));
+  };
+  const show = () => {
+    if (wide === 0) return;
+    const fit = whole();
+    // A step out that ends barely short of showing the map whole shows it whole.
+    fitted ||= scale < fit * 1.25;
+    scale = fitted ? fit : Math.min(CELL_MOST, scale);
+    middleX = keep(middleX, across, wide);
+    middleY = keep(middleY, down, high);
+    // Set only when it changes, which clears the canvas and makes it anew.
+    const [width, height] = [Math.round(wide * ratio), Math.round(high * ratio)];
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    const pen = canvas.getContext('2d');
+    pen.fillStyle = `rgb(${palette.unseen})`;
+    pen.fillRect(0, 0, canvas.width, canvas.height);
+    const cell = scale * ratio;
+    // The corner of the map on a whole pixel of the screen, so that its cells are alike there too.
+    const left = Math.round(canvas.width / 2 - middleX * cell);
+    const top = Math.round(canvas.height / 2 - middleY * cell);
+    // Shrunk, or barely enlarged, the map is smoothed, which keeps a wall of one cell from going missing
+    // or coming out twice as thick in places; enlarged further, its cells stay sharp.
+    pen.imageSmoothingEnabled = cell < 2;
+    pen.imageSmoothingQuality = 'high';
+    pen.drawImage(source, left, top, across * cell, down * cell);
+    for (const mark of marks) stamp(pen, { ...mark, x: left + mark.x * cell, y: top + mark.y * cell }, palette, ratio);
+    frame.classList.toggle('pannable', larger());
+    // The Tab key stops at the map only where the arrow keys move it.
+    if (larger()) canvas.tabIndex = 0;
+    else canvas.removeAttribute('tabindex');
+    hold(zoomIn, scale >= CELL_MOST);
+    hold(zoomOut, fitted);
+  };
+  const zoom = (by) => {
+    scale = Math.min(CELL_MOST, even(scale * by));
+    fitted = false;
+    show();
+  };
+  // By so many pixels of the page.
+  const move = (x, y) => {
+    middleX += x / scale;
+    middleY += y / scale;
+    show();
+  };
+  const letGo = (event) => {
+    if (drag?.pointer !== event.pointerId) return;
+    drag = null;
+    if (dragged === canvas) dragged = null;
+    frame.classList.remove('dragging');
+  };
+  const canvas = h('canvas', {
+    class: 'map-canvas',
+    role: 'img',
+    'aria-label': 'The map',
+    'data-focus': `map-view ${which}`,
+    onpointerdown: (event) => {
+      if (event.button !== 0 || !larger()) return;
+      // Nor does the drag select text, or move the keyboard's focus.
+      event.preventDefault();
+      canvas.setPointerCapture(event.pointerId);
+      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY };
+      dragged = canvas;
+      frame.classList.add('dragging');
+    },
+    onpointermove: (event) => {
+      if (drag?.pointer !== event.pointerId) return;
+      const [x, y] = [drag.x - event.clientX, drag.y - event.clientY];
+      [drag.x, drag.y] = [event.clientX, event.clientY];
+      move(x, y);
+    },
+    onpointerup: letGo,
+    onpointercancel: letGo,
+    onlostpointercapture: letGo,
+    onkeydown: (event) => {
+      const way = PAN_KEYS.get(event.key);
+      // With a modifier, a key is left to the browser.
+      if (!way || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !larger()) return;
+      event.preventDefault();
+      move(way[0] * PAN_STEP, way[1] * PAN_STEP);
+    },
+  });
+  const zoomButton = (label, glyph, focus, press) => h('button', {
+    class: 'button tool',
+    // Not to send the form of an event of the schedule, which shows the map of its floor plan.
+    type: 'button',
+    'aria-label': label,
+    title: label,
+    'data-focus': `${focus} ${which}`,
+    onclick: press,
+  }, icon(glyph));
+  const zoomIn = zoomButton('Zoom in', 'plus', 'zoom-in', () => zoom(ZOOM_STEP));
+  const zoomOut = zoomButton('Zoom out', 'minus', 'zoom-out', () => zoom(1 / ZOOM_STEP));
+  const frame = h('div', { class: 'map-view' }, canvas, h('div', { class: 'map-zoom' }, zoomIn, zoomOut));
+  // Drawn once the window is laid out, and again when its size changes. In a row that is shut it has none.
+  new ResizeObserver(([seen]) => {
+    const { width, height } = seen.contentRect;
+    if (width === 0 || height === 0) return;
+    [wide, high, ratio] = [width, height, devicePixelRatio || 1];
+    show();
+  }).observe(canvas);
+  return frame;
+}
+
 /** A map as a picture with its legend: what its two binaries hold, and where the robot and its base were. */
-async function picture(map) {
+async function picture(map, which) {
   const binaries = record(map.map);
   const places = record(map.robot);
   const notes = [];
@@ -858,15 +1004,10 @@ async function picture(map) {
     return null;
   });
   const palette = PALETTES[matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'];
-  // A whole number of the screen's pixels to each of the page's keeps the cells sharp.
-  const ratio = Math.min(3, Math.ceil(devicePixelRatio || 1));
   // The robot last, so that it is drawn over the base it stands on.
-  const made = paint(rank, real, { base: places.base, robot: places.pos }, palette, MAP_SIDE, ratio);
-  const canvas = h('canvas', { class: 'map-canvas', width: made.width, height: made.height, role: 'img', 'aria-label': 'The map' });
-  canvas.style.width = `${made.width / ratio}px`;
-  const pen = canvas.getContext('2d');
-  pen.putImageData(new ImageData(made.rgba, made.width, made.height), 0, 0);
-  for (const mark of made.marks) stamp(pen, mark, palette, ratio);
+  const made = paint(rank, real, { base: places.base, robot: places.pos }, palette);
+  const source = h('canvas', { width: made.width, height: made.height });
+  source.getContext('2d').putImageData(new ImageData(made.rgba, made.width, made.height), 0, 0);
 
   const key = (name, label) => {
     // Not a class of that name: `robot` is a card in the list.
@@ -883,7 +1024,7 @@ async function picture(map) {
     notes.push(`real_binary also holds ${held}, which this page has no meaning for.`);
   }
   return [
-    canvas,
+    viewer(source, made.marks, palette, which),
     h('ul', { class: 'map-legend' },
       key('floor', 'Floor'),
       key('wall', 'Wall'),
@@ -895,13 +1036,13 @@ async function picture(map) {
 }
 
 /** Fetch a map with its binaries and put its picture in `node`, or why there is none and a way to try again. */
-async function loadMap(mine, id, node) {
+async function loadMap(mine, id, node, which) {
   node.replaceChildren(h('p', { class: 'hint' }, 'Reading the map…'));
   const address = `api/map?${new URLSearchParams({ ...mine.robot, id })}`;
   const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS);
   try {
     if (status !== 200) throw new Error(answer?.error ?? 'no answer from the server');
-    node.replaceChildren(...await picture(record(parsed(record(answer.map).map_json))));
+    node.replaceChildren(...await picture(record(parsed(record(answer.map).map_json)), which));
   } catch (error) {
     node.replaceChildren(
       h('p', { class: 'map-failed' }, `Cannot show this map: ${error.message}.`),
@@ -909,7 +1050,7 @@ async function loadMap(mine, id, node) {
         class: 'button',
         type: 'button',
         'data-focus': `map-again-${id}`,
-        onclick: () => loadMap(mine, id, node),
+        onclick: () => loadMap(mine, id, node, which),
       }, 'Try again'));
   }
 }
@@ -927,7 +1068,7 @@ function drawing(mine, id, place = null) {
   if (!node) {
     node = h('div', { class: 'map-drawing' });
     mine.drawings.set(key, node);
-    loadMap(mine, id, node);
+    loadMap(mine, id, node, key);
   }
   return node;
 }
@@ -976,8 +1117,8 @@ function mapRow(row, mine, robot, plans) {
     tools: mapTools(mine, robot, plans, row.id, map, plan),
     note: floorQuestion(mine, robot, plans, row.id, map, plan) || floorSaid(mine, row.id),
     detail: () => [h('div', { class: 'map-detail' },
-      drawing(mine, row.id),
-      h('div', { class: 'map-facts' }, mapFacts(map, runs)))],
+      h('div', { class: 'map-facts' }, mapFacts(map, runs)),
+      drawing(mine, row.id))],
   };
 }
 
@@ -2076,10 +2217,15 @@ function entering() {
   return app.contains(at) && at.matches('input, select');
 }
 
+/** Whether the reader is dragging a map about, which a new page would let go of. */
+function dragging() {
+  return app.contains(dragged);
+}
+
 /** Put `build()` on screen unless `data`, which it is built from, is what is already there. */
 function draw(mine, data, build) {
   const drawn = JSON.stringify(data);
-  if (drawn === mine.drawn || selecting() || entering()) return;
+  if (drawn === mine.drawn || selecting() || entering() || dragging()) return;
   // Whatever had the keyboard's focus is replaced too, so hand it to its successor.
   // It is asked for first: building the page takes the pictures of the maps out of the old one.
   const focus = document.activeElement?.dataset?.focus;

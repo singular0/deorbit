@@ -82,7 +82,7 @@ robot · ❌ not there
 | Cancel a cleaning | 🟡 | Written; not yet tried on a real robot. |
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |
 | Add, change and delete scheduled cleanings | 🟡 | Time, days, mode, navigation and floor plan. Written; not yet tried on a real robot. |
-| Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. |
+| Maps of past cleanings | ✅ | Every map a robot uploads is kept and drawn: floor, walls, the area cleaned, the robot and its base. A map can be zoomed into and dragged about. |
 | Keep a map as a floor plan, replace a floor plan, delete one | 🟡 | On the Maps tab, with the buttons in a map's row, while the robot is connected. The page ticks the maps it had the robot keep as floor plans, not those the robot got from Neato's cloud. Written; not yet tried on a real robot. |
 | Clean by a floor plan | 🟡 | A scheduled cleaning can be put on one of the floor plans the page lists; Start always cleans without one. A scheduled cleaning on a floor plan that is not listed has a warning sign, because the robot may not have it. Written; not yet tried on a real robot. |
 | Zones and no-go lines | ❌ | None can be drawn or chosen. A scheduled cleaning of a zone is shown, and keeps its zone while it stays on its floor plan. |
