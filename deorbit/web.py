@@ -8,7 +8,6 @@ import socket
 import unicodedata
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
 from functools import partial
 from http import HTTPStatus
 from importlib import resources
@@ -341,10 +340,8 @@ class Web:
                 return 404, _JSON, _json({"error": "no such map in the database"})
             uploaded = row["map_json"]
         try:
-            # The time is one as the spec has a robot take it, to the second. It is checked whole, as an
-            # event of a schedule is, before anything is sent.
-            created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            ability, params = floorplan(action, rank_uuid, old, uploaded, created)
+            # The map is checked whole, as an event of a schedule is, before anything is sent.
+            ability, params = floorplan(action, rank_uuid, old, uploaded)
         except ValueError as exc:
             return 400, _JSON, _json({"error": str(exc)})
         # A robot cannot be asked which floor plans it has, so what it accepts here is all the server knows of them.

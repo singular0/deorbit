@@ -12,6 +12,7 @@ const EAGER_POLL_MS = 500; // how often instead, while the status that follows a
 const EAGER_FOR_MS = 10000; // how long after that command the page keeps asking that often
 const COMMAND_TIMEOUT_MS = 15000; // longer than the server gives a robot to answer a command
 const ACCEPTED_MS = 5000; // how long the page says that a robot accepted a command
+const START_WATCH_MS = 30000; // how long after a start the robot accepted the page looks for its failing to load what to clean on
 const ANSWER_LIMIT = 160; // how much of a robot's answer to a command is said under the buttons; the events hold all of it
 const SKELETON_MS = 180; // an answer quicker than this is drawn without a placeholder first
 // JSON longer than this is shown without colours, which cost a node per token.
@@ -1584,6 +1585,12 @@ async function askTracks(mine, label, more, map, back) {
   app.querySelector(`[data-focus="${back}"]`)?.focus();
   // The zones and the no-go lines come with the robot, and so do the events of this.
   refresh(mine);
+  // The robot gives the events of its schedule that clean a zone the cleaning mode the zone is given anew, and
+  // takes the zone out of those that clean one it drops (section 6.3), so the schedule on the page is not that.
+  const zone = more.action === 'nogo' ? null : more.track_uuid;
+  const shown = mine.schedule.shown;
+  const events = shown !== null && Array.isArray(shown.events) ? shown.events.map(record) : [];
+  if (zone && events.some((event) => runsOf(event).some((run) => zoneOf(run) === zone))) askSchedule(mine, 'show', 'Schedule');
 }
 
 /** Ask for what the form has drawn to be kept, or say what it lacks. */
@@ -2612,11 +2619,40 @@ function awaiting(mine) {
   return mine.accepted !== null && !(mine.body?.robot.state_at > mine.accepted.sent);
 }
 
+// The alert a robot raises when a start it accepted cannot load the floor plan, the zone or the no-go lines of its run.
+const LOAD_FAIL = 'pm_load_fail';
+
+/** Whether the robot's errors hold the alert of a floor plan that could not be loaded. */
+function loadFailing(robot) {
+  const value = parsed(robot?.errors);
+  return Array.isArray(value) && value.some((error) => error?.code === LOAD_FAIL);
+}
+
+/**
+ * Whether the robot has said, since it accepted the start the view's `started`
+ * is of, that it could not load what that start was to clean on. The spec has
+ * the 200 of a start acknowledge the command and no more, and the robot say
+ * this afterwards (section 6.1): in an event and a notification, which come
+ * when the alert is new, and in the errors of its status, which may still hold
+ * it from before the start, when they are not taken for it.
+ */
+function startFailed(started, body) {
+  const said = (event) => {
+    const told = record(parsed(event.body_json));
+    return (event.kind === 'event' && event.service === 'robots.error_codes' && told.code === LOAD_FAIL)
+      || (event.kind === 'request' && event.service === 'robots.notify' && told.message_code === LOAD_FAIL);
+  };
+  return body.events.some((event) => event.at > started.sent && said(event))
+    || (!started.had && body.robot.state_at > started.sent && loadFailing(body.robot));
+}
+
 /** Send the robot a command and say under the buttons how it went. A start may be given the `run` it is to clean. */
 async function send(mine, name, label, run = null) {
   if (mine.command?.waiting || awaiting(mine)) return;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
+  const had = loadFailing(mine.body?.robot);
+  mine.started = null;
   mine.command = { name, waiting: true };
   drawRobot(mine);
   const address = `api/command?${new URLSearchParams({ ...mine.robot, command: name, ...(run && { run: JSON.stringify(run) }) })}`;
@@ -2629,6 +2665,7 @@ async function send(mine, name, label, run = null) {
   mine.command = said;
   // Both times are the server's, as text that sorts by time. The browser's own is for how long to keep asking eagerly.
   if (said.tone === 'good') mine.accepted = { sent: answer.sent, at: Date.now() };
+  if (said.tone === 'good' && name === 'start') mine.started = { sent: answer.sent, at: Date.now(), had, label };
   if (mine !== view) return;
   drawRobot(mine);
   // The robot's new state and the events of this command are worth more now than at the next turn.
@@ -3266,6 +3303,18 @@ function show(mine, status, body) {
       const kept = plansOf(body).find((plan) => plan.rank_uuid === start.floor);
       if (!kept) start.floor = '';
       if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
+      // A start the robot accepted may still not clean, which the robot says only afterwards. That is said under the buttons
+      // in place of its having been accepted, and stays said until the next command, as a command that failed does.
+      const started = mine.started;
+      if (started && Date.now() - started.at > START_WATCH_MS) mine.started = null;
+      else if (started && startFailed(started, body)) {
+        mine.started = null;
+        mine.command = {
+          name: 'start',
+          tone: 'bad',
+          text: `${started.label}: the robot accepted it, then could not load the floor plan, the zone or the no-go lines to clean on (${LOAD_FAIL})`,
+        };
+      }
       // The schedule is asked for once of each connection the page sees, not at every turn: asking is a call to the robot.
       const since = body.robot.session?.since;
       if (since && mine.schedule.asked !== since) askSchedule(mine, 'show', 'Schedule');
@@ -3333,6 +3382,9 @@ function navigate() {
     naming: { draft: null, waiting: false, said: null },
     command: null,
     accepted: null,
+    // The start the robot last accepted from this view, while it may yet say that it could not load what to clean on:
+    // when it was sent, by the server's clock and by the browser's, whether its errors held that already, and its label.
+    started: null,
     // Whether the menu of the Start button is open, and the run it sets: the settings, the floor plan by what the robot
     // knows it by or nothing for none, its zone the same way or nothing for the whole of it, and whether it minds its no-go lines.
     start: { open: false, mode: MODES[0], navigation: NAVIGATION_MODES[0], floor: '', zone: '', nogo: false },

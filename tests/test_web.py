@@ -1601,13 +1601,11 @@ class FloorplanTests(WebTestCase):
         return {row["rank_uuid"]: row["map_id"] for row in (await self.api(self.ROBOT1))["floorplans"]}
 
     def made(self, request: dict) -> dict:
-        """What a robot was sent to make a floor plan of, without the time, which is checked to be the time it was sent."""
+        """What a robot was sent to make a floor plan of, without the time, which is checked to be when the map's run ended."""
         self.assertEqual(set(request), {"type", "id", "body"})
         body = dict(request["body"])
-        created = body.pop("date_created")
-        # A time as the spec has a robot take one, to the second.
-        self.assertRegex(created, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertLess(abs(datetime.now(timezone.utc) - datetime.fromisoformat(created)), timedelta(seconds=5))
+        # As a robot that promotes a map by itself sends it (section 7.3 of the spec), not when the robot was asked.
+        self.assertEqual(body.pop("date_created"), MAP["timing"]["end"])
         return body
 
     async def test_promote_sends_a_map_as_a_new_floor_plan(self) -> None:
@@ -1777,6 +1775,16 @@ class FloorplanTests(WebTestCase):
             "the map's robot.base.dir must be a number": [
                 {**MAP, "robot": {"base": {"x": 20, "y": 200}}}, *(base(dir=given) for given in ("45", True, None, [45.0], {})),
             ],
+            # The robot fails a promotion whose date_created it cannot read as a UTC timestamp.
+            "the map's timing.end must be a UTC time as YYYY-MM-DDTHH:MM:SSZ": [
+                less(MAP, "timing"), {**MAP, "timing": None}, {**MAP, "timing": MAP["timing"]["end"]},
+                {**MAP, "timing": less(MAP["timing"], "end")},
+                *({**MAP, "timing": {**MAP["timing"], "end": given}} for given in (
+                    None, "", 7, "2026-10-06T12:45:00", "2026-10-06T12:45:00.5Z", "2026-10-06 12:45:00Z", "2026-10-06T12:45Z",
+                    "2026-10-06T12:45:00+00:00", "2026-10-06T12:45:00z", " 2026-10-06T12:45:00Z", "2026-10-06T12:45:00Z\n",
+                    "2026-02-30T12:45:00Z", "2026-10-06T24:00:00Z", "２026-10-06T12:45:00Z",
+                )),
+            ],
         }
         for error, maps in unfit.items():
             for body in maps:
@@ -1872,7 +1880,7 @@ class FloorplanTests(WebTestCase):
                          [("response", None), ("call", None), ("login", None)])
         # The binaries are in the map the floor plan was made of, and here by their length alone.
         sent = json.loads(call["body_json"])
-        self.assertRegex(sent.pop("date_created"), r"Z$")
+        self.assertEqual(sent.pop("date_created"), MAP["timing"]["end"])
         self.assertEqual(sent, {"ability": "maps.promote_floorplan", **self.PLAN, "rank_binary": "<8 chars>",
                                 "real_binary": "<8 chars>", "old_rank_uuid": None, "nogo_track": None, "cleaning_tracks": []})
         self.assertEqual(json.loads(answer["body_json"]), {"ability": "maps.promote_floorplan", "code": 200, "body": {}})
@@ -1887,15 +1895,20 @@ class TrackTests(WebTestCase):
     DONE = {"code": 200, "body": {}}
     PLAN = MAP["rank_uuid"]
     ELSE = "fb7f8145-0615-4a32-8f0d-8d833cd51a5e"
-    # The PGM file of a floor plan of 20 by 10 cells, with a header as the maps of a robot have one.
-    HEADER = b"P5\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\n20 10\n255\r"
+    # The PGM files of a floor plan of 20 by 10 cells, with headers as the maps of a robot have them: its real_binary,
+    # and its rank_binary, which has the alignment that the real one has not.
+    HEADER = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\r\n20 10\r\n255\r"
+    RANK = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=1.535890\r\n20 10\r\n255\r"
     KITCHEN = {"name": "Kitchen", "cleaning_mode": "eco", "rect": [2, 1, 5, 3]}
     UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
     @staticmethod
-    def floor(file: bytes = HEADER + bytes([128]) * 200) -> dict:
-        """A map whose rank_binary is this file, zlib's and as Base64."""
-        return {**MAP, "map": {**MAP["map"], "rank_binary": base64.b64encode(zlib.compress(file)).decode()}}
+    def floor() -> dict:
+        """A map of such a floor plan, its two files zlib's and as Base64."""
+        def packed(file: bytes) -> str:
+            return base64.b64encode(zlib.compress(file)).decode()
+        binaries = {"rank_binary": packed(TrackTests.RANK + bytes([128]) * 200), "real_binary": packed(TrackTests.HEADER + bytes(200))}
+        return {**MAP, "map": {**MAP["map"], **binaries}}
 
     async def start(self, **overrides: object) -> Web:
         web = await super().start(**overrides)
@@ -1912,7 +1925,7 @@ class TrackTests(WebTestCase):
         return f"{self.BOARD1}&action=nogo&rank_uuid={plan}&lines={quote(json.dumps(lines))}"
 
     def drawn(self, sent: dict) -> list[str]:
-        """The cells of a track's binary, a line of text to each row: # for 255 and . for 0. Its header is the floor plan's."""
+        """The cells of a track's binary, a line of text to each row: # for 255 and . for 0. Its header is that of the floor plan's real_binary."""
         file = zlib.decompress(base64.b64decode(sent["track_binary"], validate=True))
         self.assertTrue(file.startswith(self.HEADER))
         cells = file[len(self.HEADER):]
@@ -2090,33 +2103,56 @@ class TrackTests(WebTestCase):
                 self.assertEqual(await self.command(self.zone(self.KITCHEN, given)),
                                  (404, {"error": "no such zone of that floor plan in the database"}))
 
-        # The floor plan's map has to say how large the floor plan is, which is in the header of its rank_binary.
-        def plan(rank_binary: object) -> str:
-            store.save_map(self.ROBOT, {**MAP, "map": {**MAP["map"], "rank_binary": rank_binary}})
+        # The floor plan's map has to say how large the floor plan is, which is in the header of its real_binary,
+        # the one a track is drawn on, and its rank_binary has to be as large.
+        def plan(**binaries: object) -> None:
+            store.save_map(self.ROBOT, {**MAP, "map": {**self.floor()["map"], **binaries}})
             store.save_floorplan(self.ROBOT, self.PLAN, store.maps(self.ROBOT, 1)[0]["id"])
-            return rank_binary
 
         def packed(file: bytes) -> str:
             return base64.b64encode(zlib.compress(file)).decode()
 
+        unreadable = (
+            "cmFuaw==", packed(b""), packed(b"P6\n20 10\n255\r" + bytes(600)), packed(b"P5\n20 10\n65535\r" + bytes(400)),
+            packed(b"P5\n20 10\n255"), packed(b"P5\n20 10 255#c\n" + bytes(200)), packed(b"P5\n0 10\n255\r"),
+            packed(b"P5\n20 x\n255\r" + bytes(200)), packed(b"P5\n20 10\n0\r" + bytes(200)), packed(b"P5 " + b"#" * 5000),
+            # And zlib data that ends within the header.
+            packed(b"P5\n-20 10\n255\r" + bytes(200)), base64.b64encode(zlib.compress(self.HEADER)[:44]).decode(),
+        )
         unfit = {
-            "the floor plan's map.rank_binary must be Base64 that is not empty": ["", "cmFuaw", None, 7],
-            "the floor plan's map.rank_binary must be zlib data of a binary PGM file of a byte to a cell": [
-                "cmFuaw==", packed(b""), packed(b"P6\n20 10\n255\r" + bytes(600)), packed(b"P5\n20 10\n65535\r" + bytes(400)),
-                packed(b"P5\n20 10\n255"), packed(b"P5\n20 10 255#c\n" + bytes(200)), packed(b"P5\n0 10\n255\r"),
-                packed(b"P5\n20 x\n255\r" + bytes(200)), packed(b"P5\n20 10\n0\r" + bytes(200)), packed(b"P5 " + b"#" * 5000),
-                packed(b"P5\n-20 10\n255\r" + bytes(200)), base64.b64encode(zlib.compress(self.HEADER))[:-8].decode(),
+            "the floor plan's map.real_binary must be Base64 that is not empty": [
+                {"real_binary": given} for given in ("", "cmFuaw", None, 7)
             ],
-            "the floor plan's map.rank_binary is a PGM file of more than 33554432 cells": [packed(b"P5 8193 4097 255\n")],
+            "the floor plan's map.real_binary must be zlib data of a binary PGM file of a byte to a cell": [
+                {"real_binary": given} for given in unreadable
+            ],
+            # The robot reads a file of a byte to a cell with no other maxval.
+            "the floor plan's map.real_binary must be a PGM file whose maxval is from 129 to 255": [
+                {"real_binary": packed(b"P5\n20 10\n" + most + b"\r" + bytes(200))} for most in (b"1", b"128")
+            ],
+            "the floor plan's map.real_binary is a PGM file of more than 33554432 cells": [
+                {"real_binary": packed(b"P5 8193 4097 255\n")}
+            ],
+            "the floor plan's map.rank_binary must be Base64 that is not empty": [{"rank_binary": None}],
+            "the floor plan's map.rank_binary must be zlib data of a binary PGM file of a byte to a cell": [
+                {"rank_binary": given} for given in unreadable[:3]
+            ],
+            "the floor plan's map.rank_binary must be a PGM file whose maxval is from 129 to 255": [
+                {"rank_binary": packed(b"P5\n20 10\n128\r" + bytes(200))}
+            ],
+            # A track is drawn in cells of the rank_binary, which the page shows, and sent in those of the real_binary.
+            "the floor plan's map.rank_binary and map.real_binary must be of one size": [
+                {"rank_binary": packed(given + bytes(200))} for given in (b"P5\n10 20\n255\r", b"P5\n20 11\n255\r")
+            ],
         }
-        for error, binaries in unfit.items():
-            for binary in binaries:
-                plan(binary)
+        for error, changes in unfit.items():
+            for binaries in changes:
+                plan(**binaries)
                 for target in (self.zone(self.KITCHEN), self.lines([[0, 0, 1, 1]])):
-                    with self.subTest(error=error, binary=str(binary)[:60], target=target[:60]):
+                    with self.subTest(error=error, binaries=str(binaries)[:80], target=target[:60]):
                         self.assertEqual(await self.command(target), (400, {"error": error}))
         # A header with comments wherever they may be, and a file that has fewer cells than it says, are drawn on.
-        plan(packed(b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes(5)))
+        plan(real_binary=packed(b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes(5)))
         request, _ = await self.answered(robot, self.lines([[0, 0, 1, 0]]), self.DONE)
         file = zlib.decompress(base64.b64decode(request["body"]["tracks"][0]["track_binary"]))
         self.assertEqual(file, b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes([255, 255]) + bytes(198))

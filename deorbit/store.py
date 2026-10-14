@@ -80,6 +80,9 @@ _TABLES = ("robots", "events", "maps", "names", "floorplans", "tracks")
 # but the two binaries. Those are most of a map, and only its picture needs them.
 _MAP = "id, at, vendor, serial, json_remove(map_json, '$.map.rank_binary', '$.map.real_binary') AS map_json"
 
+# What a map is known by, as an index and the query that goes by it both have to write it.
+_RANK_UUID = "json_extract(map_json, '$.rank_uuid')"
+
 _SCHEMA = (
     # A state is kept whole, as the JSON object the robot sent. SQLite has no
     # type for JSON, so the check is what makes the column one: a text its JSON
@@ -126,6 +129,8 @@ CREATE TABLE IF NOT EXISTS maps (
 """,
     # As for the events: one robot's maps are listed without going through the others'.
     "CREATE INDEX IF NOT EXISTS maps_by_robot ON maps (vendor, serial)",
+    # And one of them is found by its rank_uuid without reading every map whole.
+    f"CREATE INDEX IF NOT EXISTS maps_by_rank_uuid ON maps (vendor, serial, {_RANK_UUID})",
     # What a robot is called is nothing it sent, so it is not in its row: a
     # robot that was given a name has a row here, and one that goes by its
     # serial has none. As a table, it is also added to a file from before
@@ -326,6 +331,11 @@ class Store:
             "AND id IN (SELECT map_id FROM floorplans WHERE vendor = ? AND serial = ?) ORDER BY id DESC"
         )
         return self._select(sql, (*where, before, *where))
+
+    def has_map(self, robot: RobotId, rank_uuid: str) -> bool:
+        """Whether the robot has a map of this ``rank_uuid`` in the file."""
+        sql = f"SELECT 1 FROM maps WHERE vendor = ? AND serial = ? AND {_RANK_UUID} = ? LIMIT 1"
+        return bool(self._select(sql, (robot.vendor, robot.serial, rank_uuid)))
 
     def map(self, robot: RobotId, map_id: int) -> dict[str, object] | None:
         """The robot's map of that ``id``, whole, or ``None`` if it has no such map."""

@@ -415,8 +415,29 @@ class StorageTests(ServerTestCase):
             # Anything but 201 tells the robot that its upload failed, and it stays connected.
             self.assertEqual((unreadable["code"], unwritten["code"]), (500, 500))
             await self.handled(robot)
-        self.assertEqual(len(logs.output), 3)
-        self.assertIn("[n/board1] not saved to the database: no such table: maps", logs.output[2])
+        self.assertEqual(len(logs.output), 4)
+        # Whether it was stored already could not be read either, so it was to be stored.
+        self.assertIn("[n/board1] cannot read the database: no such table: maps", logs.output[2])
+        self.assertIn("[n/board1] not saved to the database: no such table: maps", logs.output[3])
+
+    async def test_map_sent_again_is_stored_once(self) -> None:
+        await self.start(keys=None)
+        robot, _ = await self.login()
+        other = await self.connect()
+        await other.send(signed_login(self.key, serial="BOARD2"))
+        self.assertEqual((await other.recv())["code"], 200)
+        first = {"rank_uuid": "r1", "cleaning_complete": True, "map": {"rank_binary": "cmFuaw==", "real_binary": "cmVhbA=="}}
+        # The robot sends an upload again under its rank_uuid when its connection dropped before the answer, and it
+        # is answered as it was the first time, whatever it holds. Another robot's of that rank_uuid is its own.
+        for sender, body in ((robot, first), (robot, {**first, "cleaning_complete": False}), (other, first)):
+            created = await sender.request("maps.create", body)
+            self.assertEqual((created["code"], created["body"]), (201, {"floorplan": False}))
+        # One without a rank_uuid, or with one that is no text, cannot be told from another, and is stored each time.
+        for body in ({"map": {}}, {"map": {}}, {"rank_uuid": 1}, {"rank_uuid": 1}):
+            self.assertEqual((await robot.request("maps.create", body))["code"], 201)
+        self.assertEqual(self.maps(), [("n", "board1", first), ("n", "board2", first), ("n", "board1", {"map": {}}),
+                                       ("n", "board1", {"map": {}}), ("n", "board1", {"rank_uuid": 1}),
+                                       ("n", "board1", {"rank_uuid": 1})])
 
 
 class EventLogTests(ServerTestCase):

@@ -7,6 +7,7 @@ import re
 import unicodedata
 import zlib
 from collections.abc import Callable
+from datetime import datetime
 
 # By the name a robot's state gives the command under ``available_commands``:
 # the ability to invoke and what is sent with it, which is nothing for all but
@@ -39,6 +40,8 @@ _TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 # plan by it, and what it does with any other text is not known, so nothing
 # else is sent for one.
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+# A UTC timestamp as the spec writes one, which is how a robot gives the end of a run.
+_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
 def _fields(given: object, where: str, *names: str) -> list:
@@ -200,7 +203,18 @@ def _base(given: object, where: str) -> dict:
     return {**base, "dir": heading}
 
 
-def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | None, created: str) -> tuple[str, dict]:
+def _ended(timing: object) -> str:
+    """The ``end`` of a map's ``timing``: a UTC timestamp as the spec has one, which is a time that is."""
+    end = timing.get("end") if isinstance(timing, dict) else None
+    try:
+        if isinstance(end, str) and _UTC.fullmatch(end) and datetime.strptime(end, "%Y-%m-%dT%H:%M:%SZ"):
+            return end
+    except ValueError:  # such as the 30th of February
+        pass
+    raise ValueError("the map's timing.end must be a UTC time as YYYY-MM-DDTHH:MM:SSZ")
+
+
+def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | None) -> tuple[str, dict]:
     """The ability for an action on a robot's floor plans and what is sent with it, or a ``ValueError`` that says what is wrong.
 
     ``demote`` has the robot drop the floor plan ``rank_uuid``. The other two
@@ -208,11 +222,13 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
     it: ``promote`` a new one, and ``update`` one that takes the place of
     ``old_rank_uuid``. The spec lets ``maps.promote_floorplan`` name a floor
     plan to supersede as well; here it never does, and ``maps.update_floorplan``
-    always does. ``created`` is the time the floor plan is to say it was made.
+    always does.
 
     A floor plan has the map's ``rank_uuid``, its two binaries and where the
     base was, each checked and nothing else of the map passed on: section 6.3
-    of the spec has a robot refuse a base with a field too many.
+    of the spec has a robot refuse a base with a field too many. It says it was
+    made when the map's run ended, which is what a robot sends when it promotes
+    a map by itself (section 7.3), and which it keeps as the floor plan's end.
     """
     if action == "demote":
         return "maps.demote_floorplan", {"rank_uuid": _uuid(rank_uuid, "rank_uuid")}
@@ -235,7 +251,7 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
         "real_binary": _binary(binaries.get("real_binary"), "the map's map.real_binary"),
         "old_rank_uuid": old,
         "base": _base(places.get("base"), "the map's robot.base"),
-        "date_created": created,
+        "date_created": _ended(given.get("timing")),
     }
     if action == "update":
         return "maps.update_floorplan", plan
@@ -249,29 +265,45 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
 # no-go lines, as ``maps.promote_floorplan`` has one ``nogo_track``, and a zone
 # is a cleaning track with a name and a cleaning mode.
 #
-# The spec does not say what such a binary holds. It is drawn here as a guess:
-# the PGM file of the floor plan's own ``rank_binary``, its header as it is, so
-# that a cell of the one is a cell of the other, with 255 in the cells of the
-# zone or of the lines and 0 in every other, compressed with zlib. A zone is a
-# rectangle of cells, and a line goes from cell to cell without a corner that
-# a diagonal step could pass through. These are this server's choices, and so
-# are the limits below.
+# Section 6.3.1 of the spec gives the file such a binary is: a PGM file of a
+# byte to a cell, compressed with zlib, as a robot's maps are; as large as the
+# floor plan, and placed against its ``real_binary``, whose header it should
+# have as it is. So that is the header it has here, and a cell of it is the
+# cell of the floor plan's maps that the page shows, the two being of one size
+# and lined up cell for cell. Every cell is 0 but those of the zone or of the
+# lines, which are 255. That value is a guess, which is mine: the spec does
+# not know which value marks a zone or a no-go cell, and says not to take 255
+# for it. A zone filled with 255 under the header of the ``rank_binary``,
+# whose alignment the real map does not have, made a real robot (firmware
+# 1.7.0) fail to load it. A zone is a rectangle of cells, and a line goes from
+# cell to cell without a corner that a diagonal step could pass through.
+# These are this server's choices, and so are the limits below.
 ZONE_NAME_MAX = 32  # the most characters a zone's name may have
 LINES_MAX = 100  # the most no-go lines a floor plan may have
 _MARKED = 255
-_HEADER_MAX = 4096  # how much of a floor plan's rank_binary is inflated to read its header
+_HEADER_MAX = 4096  # how much of a floor plan's binary is inflated to read its header
 _CELLS_MAX = 32 * 1024 * 1024  # the most cells a binary is drawn with; a robot's maps had 4 million
 
 
 def _grid(uploaded: str) -> tuple[bytes, int, int]:
-    """The header of the PGM file that the ``rank_binary`` of a map, as the robot uploaded it, inflates to, and the width and height of that file in cells."""
+    """The header of the PGM file that the ``real_binary`` of a map, as the robot uploaded it, inflates to, and the width and height of that file in cells, which are those of its ``rank_binary`` too."""
     try:
         given = json.loads(uploaded)
     except (ValueError, RecursionError):  # as for a floor plan
         raise ValueError("the floor plan's map must be JSON") from None
     binaries = given.get("map") if isinstance(given, dict) else None
-    binary = _binary(binaries.get("rank_binary") if isinstance(binaries, dict) else None, "the floor plan's map.rank_binary")
-    unreadable = ValueError("the floor plan's map.rank_binary must be zlib data of a binary PGM file of a byte to a cell")
+    binaries = binaries if isinstance(binaries, dict) else {}
+    header, width, height = _pgm(binaries.get("real_binary"), "the floor plan's map.real_binary")
+    _, *size = _pgm(binaries.get("rank_binary"), "the floor plan's map.rank_binary")
+    if size != [width, height]:
+        raise ValueError("the floor plan's map.rank_binary and map.real_binary must be of one size")
+    return header, width, height
+
+
+def _pgm(given: object, where: str) -> tuple[bytes, int, int]:
+    """The header of the PGM file that an encoded map inflates to, and the width and height of that file in cells."""
+    binary = _binary(given, where)
+    unreadable = ValueError(f"{where} must be zlib data of a binary PGM file of a byte to a cell")
     try:
         start = zlib.decompressobj().decompress(base64.b64decode(binary), _HEADER_MAX)
     except zlib.error:
@@ -295,8 +327,11 @@ def _grid(uploaded: str) -> tuple[bytes, int, int]:
     width, height, most = (int(word) for word in words[1:])
     if not (width and height and 0 < most < 256):
         raise unreadable
+    # What a robot reads a file of a byte to a cell with takes no other (section 6.3.1).
+    if most <= 128:
+        raise ValueError(f"{where} must be a PGM file whose maxval is from 129 to 255")
     if width * height > _CELLS_MAX:
-        raise ValueError(f"the floor plan's map.rank_binary is a PGM file of more than {_CELLS_MAX} cells")
+        raise ValueError(f"{where} is a PGM file of more than {_CELLS_MAX} cells")
     return start[: at + 1], width, height
 
 
