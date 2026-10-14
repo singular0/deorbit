@@ -284,26 +284,36 @@ function presence(robot) {
     h('span', { class: 'dot' }), robot.session ? 'Online' : 'Offline');
 }
 
-/**
- * The action to show behind the state, as the robot sent it, or null for none:
- * it sent none, or it is idle and its action is the `invalid` the spec has
- * among an action's values, which an idle robot gives.
- */
+// The tone and the icon of each state the spec lists, and the icon of each
+// action it lists but `invalid`, which is never shown. A state that is none of
+// these is quiet, with the icon of `busy`, and such an action has `route`.
+const STATES = new Map([
+  ['idle', ['quiet', 'idle']],
+  ['busy', ['accent', 'pulse']],
+  ['paused', ['warn', 'pause']],
+  ['error', ['bad', 'alert']],
+]);
+const ACTIONS = new Map([
+  ['cleaning', 'sparkle'],
+  ['cleaning_standby', 'hourglass'],
+  ['docking', 'dock'],
+  ['diagnostic_test', 'flask'],
+  ['updating_software', 'download'],
+]);
+
+/** The action to show behind the state, as the robot sent it, or null for none: it sent none, or `invalid`. */
 function actionShown(robot) {
-  if (robot.action == null || robot.action === '') return null;
-  return robot.state === 'idle' && robot.action === 'invalid' ? null : String(robot.action);
+  if (robot.action == null || robot.action === '' || robot.action === 'invalid') return null;
+  return String(robot.action);
 }
 
-/**
- * The state, in its tone, and behind a line the action where there is one to
- * show. Each wears one icon whatever it says, which tells the two words apart.
- */
+/** The state, in its tone and with its icon, and behind a line the action, with its own, where there is one to show. */
 function statePill(robot) {
   const doing = actionShown(robot);
-  const part = doing !== null && pillPart('route', doing);
+  const part = doing !== null && pillPart(ACTIONS.get(doing) ?? 'route', doing);
   if (robot.state == null) return pill('quiet', 'No state yet', 'pulse', part);
-  if (hasErrors(robot)) return pill('bad', String(robot.state), 'alert', part);
-  return pill(robot.state === 'idle' ? 'quiet' : 'accent', String(robot.state), 'pulse', part);
+  const [tone, glyph] = STATES.get(String(robot.state)) ?? ['quiet', 'pulse'];
+  return pill(tone, String(robot.state), glyph, part);
 }
 
 /**
