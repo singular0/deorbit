@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 # Signatures and map binaries stay out of the event log, and out of the console
 # unless the ``full`` setting is on.
-_REDACTED_KEYS = {"signature", "rank_binary", "real_binary"}
+_REDACTED_KEYS = {"signature", "rank_binary", "real_binary", "track_binary"}
 # Services whose messages are not added to the event log: the database already
 # holds each robot's latest state.
 _UNLOGGED = {"peer.state"}

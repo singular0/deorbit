@@ -1,4 +1,4 @@
-"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans, and deletes it."""
+"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it."""
 
 import asyncio
 import json
@@ -6,6 +6,7 @@ import logging
 import math
 import socket
 import unicodedata
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import partial
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 from .auth import RobotId
-from .commands import COMMANDS, floorplan, scheduling, settings
+from .commands import COMMANDS, floorplan, scheduling, settings, track
 from .session import describe
 from .store import StoreError, now
 
@@ -164,6 +165,7 @@ class Web:
             "/api/schedule": self._schedule,
             "/api/settings": self._settings,
             "/api/floorplan": self._floorplan,
+            "/api/track": self._track,
             "/api/name": self._rename,
             "/api/delete": self._delete,
         }
@@ -278,6 +280,7 @@ class Web:
                 # The page shows a floor plan as the map it was made of, so such a map comes with the
                 # robot however old it is: here if it is older than the maps that were asked for.
                 "floorplan_maps": self._store.floorplan_maps(robot, listed[-1]["id"]) if older else [],
+                "tracks": self._store.tracks(robot),
             }
             return 200, _JSON, _json(answer)
         if path == "/api/map":
@@ -346,6 +349,43 @@ class Web:
             noted = partial(self._store.delete_floorplan, robot, params["rank_uuid"])
         else:
             noted = partial(self._store.save_floorplan, robot, params["rank_uuid"], number, params["old_rank_uuid"])
+        return await self._call(robot, ability, params, noted)
+
+    async def _track(self, query: str) -> tuple[int, str, bytes]:
+        """Have a robot keep a zone of a floor plan or its no-go lines, or drop either, as the query says, and answer as for a command."""
+        asked = parse_qs(query)
+        robot = _named(asked)
+        action, rank_uuid, track_uuid = (asked.get(key, [""])[0] for key in ("action", "rank_uuid", "track_uuid"))
+        uploaded = None
+        if action in ("zone", "nogo"):
+            # A track is drawn on the map its floor plan was made of, so the floor plan has to be one the
+            # server had the robot keep, and the map one the database still has.
+            plan = next((row for row in self._store.floorplans(robot) if row["rank_uuid"] == rank_uuid), None)
+            row = None if plan is None else self._store.map(robot, plan["map_id"])
+            if row is None:
+                return 404, _JSON, _json({"error": "no such floor plan in the database"})
+            uploaded = row["map_json"]
+            kind = "cleaning" if action == "zone" else "no-go"
+            tracks = self._store.tracks(robot)
+            known = [each["track_uuid"] for each in tracks if each["rank_uuid"] == rank_uuid and each["type"] == kind]
+            if action == "nogo":
+                # A floor plan has one track of no-go lines, which a change replaces.
+                track_uuid = known[0] if known else str(uuid.uuid4())
+            elif not track_uuid:
+                track_uuid = str(uuid.uuid4())
+            elif track_uuid not in known:
+                return 404, _JSON, _json({"error": "no such zone of that floor plan in the database"})
+        try:
+            # The zone or the lines come as JSON in the query, as an event of a schedule does, and are checked whole before anything is sent.
+            given = asked.get("zone" if action == "zone" else "lines", [""])[0]
+            ability, params, kept = track(action, rank_uuid, track_uuid, given, uploaded)
+        except ValueError as exc:
+            return 400, _JSON, _json({"error": str(exc)})
+        # As with a floor plan, what the robot accepts here is all the server knows of the tracks it has.
+        if kept is None:
+            noted = partial(self._store.delete_tracks, robot, params["tracks"])
+        else:
+            noted = partial(self._store.save_track, robot, rank_uuid, track_uuid, *kept)
         return await self._call(robot, ability, params, noted)
 
     async def _rename(self, query: str) -> tuple[int, str, bytes]:

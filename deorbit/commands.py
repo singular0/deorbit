@@ -1,9 +1,11 @@
-"""What the web UI can send a robot: its commands and the changes to its schedule, its floor plans and its settings, each an ability invoked through ``Session.call``."""
+"""What the web UI can send a robot: its commands and the changes to its schedule, its floor plans, their zones and no-go lines and its settings, each an ability invoked through ``Session.call``."""
 
 import base64
 import json
 import math
 import re
+import unicodedata
+import zlib
 from collections.abc import Callable
 
 # By the name a robot's state gives the command under ``available_commands``:
@@ -216,6 +218,165 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
         return "maps.update_floorplan", plan
     # Without a no-go map and with no zones, which is how a robot promotes a map by itself (section 7.3).
     return "maps.promote_floorplan", {**plan, "nogo_track": None, "cleaning_tracks": []}
+
+
+# The zones and the no-go lines of a floor plan are tracks to the spec (section
+# 6.3): each is sent as a binary of its own, an "encoded map", with what the
+# robot knows it by and the floor plan it is of. A floor plan has one track of
+# no-go lines, as ``maps.promote_floorplan`` has one ``nogo_track``, and a zone
+# is a cleaning track with a name and a cleaning mode.
+#
+# The spec does not say what such a binary holds. It is drawn here as a guess:
+# the PGM file of the floor plan's own ``rank_binary``, its header as it is, so
+# that a cell of the one is a cell of the other, with 255 in the cells of the
+# zone or of the lines and 0 in every other, compressed with zlib. A zone is a
+# rectangle of cells, and a line goes from cell to cell without a corner that
+# a diagonal step could pass through. These are this server's choices, and so
+# are the limits below.
+ZONE_NAME_MAX = 32  # the most characters a zone's name may have
+LINES_MAX = 100  # the most no-go lines a floor plan may have
+_MARKED = 255
+_HEADER_MAX = 4096  # how much of a floor plan's rank_binary is inflated to read its header
+_CELLS_MAX = 32 * 1024 * 1024  # the most cells a binary is drawn with; a robot's maps had 4 million
+
+
+def _grid(uploaded: str) -> tuple[bytes, int, int]:
+    """The header of the PGM file that the ``rank_binary`` of a map, as the robot uploaded it, inflates to, and the width and height of that file in cells."""
+    try:
+        given = json.loads(uploaded)
+    except (ValueError, RecursionError):  # as for a floor plan
+        raise ValueError("the floor plan's map must be JSON") from None
+    binaries = given.get("map") if isinstance(given, dict) else None
+    binary = _binary(binaries.get("rank_binary") if isinstance(binaries, dict) else None, "the floor plan's map.rank_binary")
+    unreadable = ValueError("the floor plan's map.rank_binary must be zlib data of a binary PGM file of a byte to a cell")
+    try:
+        start = zlib.decompressobj().decompress(base64.b64decode(binary), _HEADER_MAX)
+    except zlib.error:
+        raise unreadable from None
+    # Its words, between white space and comments, which run from "#" to the end of a line.
+    words, at = [], 0
+    while len(words) < 4:
+        while at < len(start) and start[at] in b" \t\n\v\f\r":
+            at += 1
+        if at < len(start) and start[at] == ord("#"):
+            while at < len(start) and start[at] not in b"\n\r":
+                at += 1
+            continue
+        begin = at
+        while at < len(start) and start[at] not in b" \t\n\v\f\r#":
+            at += 1
+        words.append(start[begin:at])
+    # One byte of white space ends the header.
+    if at >= len(start) or start[at] not in b" \t\n\v\f\r" or words[0] != b"P5" or not all(w.isdigit() for w in words[1:]):
+        raise unreadable
+    width, height, most = (int(word) for word in words[1:])
+    if not (width and height and 0 < most < 256):
+        raise unreadable
+    if width * height > _CELLS_MAX:
+        raise ValueError(f"the floor plan's map.rank_binary is a PGM file of more than {_CELLS_MAX} cells")
+    return start[: at + 1], width, height
+
+
+def _drawn(header: bytes, width: int, height: int, zone: list[int] | None = None, lines: list[list[int]] = ()) -> str:
+    """A binary of the floor plan whose PGM file has this header and size: a zone, a rectangle of cells, or lines drawn on it."""
+    cells = bytearray(width * height)
+    if zone is not None:
+        left, top, right, bottom = zone
+        for row in range(top, bottom + 1):
+            cells[row * width + left : row * width + right + 1] = bytes([_MARKED]) * (right - left + 1)
+    for x, y, x1, y1 in lines:
+        # Bresenham's, with the cell at each corner of the line marked too, so that nothing goes through it on the diagonal.
+        dx, dy = abs(x1 - x), -abs(y1 - y)
+        sx, sy = (1 if x < x1 else -1), (1 if y < y1 else -1)
+        error = dx + dy
+        while True:
+            cells[y * width + x] = _MARKED
+            if x == x1 and y == y1:
+                break
+            twice = 2 * error
+            across = twice >= dy
+            if across:
+                error += dy
+                x += sx
+            if twice <= dx:
+                if across:
+                    cells[y * width + x] = _MARKED
+                error += dx
+                y += sy
+    return base64.b64encode(zlib.compress(header + cells)).decode("ascii")
+
+
+def _cells(given: object, width: int, height: int, where: str) -> list[int]:
+    """Four whole numbers that are cells of the floor plan's map: two across it and two down it, in that order, from 0."""
+    if not isinstance(given, list) or len(given) != 4:
+        raise ValueError(f"{where} must be a list of four whole numbers")
+    for n, (value, most) in enumerate(zip(given, (width, height) * 2)):
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value < most:
+            raise ValueError(f"{where}[{n}] must be a whole number from 0 to {most - 1}")
+    return list(given)
+
+
+def _zone_name(value: object) -> str:
+    """The name of a zone, as it is sent: one line, its words a space apart."""
+    name = " ".join(value.split()) if isinstance(value, str) else ""
+    if not 0 < len(name) <= ZONE_NAME_MAX:
+        raise ValueError(f"zone.name must be from 1 to {ZONE_NAME_MAX} characters")
+    # The second is a lone surrogate, which JSON can carry and UTF-8 cannot.
+    if any(unicodedata.category(character) in ("Cc", "Cs") for character in name):
+        raise ValueError("zone.name must not hold control characters")
+    return name
+
+
+def track(action: str, rank_uuid: str, track_uuid: str, given: str, uploaded: str | None = None) -> tuple[str, dict, tuple | None]:
+    """The ability for an action on the zones and no-go lines of a robot's floor plan, what is sent with it and what is noted once the robot accepts, or a ``ValueError`` that says what is wrong.
+
+    ``zone`` has the robot keep the zone ``given``, the JSON of its ``name``,
+    its ``cleaning_mode`` and its ``rect``, as the track ``track_uuid`` of the
+    floor plan ``rank_uuid``; ``nogo`` has it keep the lines ``given``, the
+    JSON of a list of them, as that floor plan's no-go lines. Both are drawn on
+    ``uploaded``, the JSON of the map the floor plan was made of, as the robot
+    uploaded it, and a rectangle and a line are each four cells of it: from the
+    left and from the top of the one corner, then of the other, which for a
+    rectangle are its top left and its bottom right. What is noted is the
+    track's type, its name and its mode, and what was drawn. ``delete`` has the
+    robot drop the track ``track_uuid``, and nothing is noted but that.
+    """
+    if action == "delete":
+        return "maps.delete_track", {"tracks": [_uuid(track_uuid, "track_uuid")]}, None
+    if action not in ("zone", "nogo"):
+        raise ValueError("action must be one of zone, nogo, delete")
+    header, width, height = _grid(uploaded)
+    try:
+        shape = json.loads(given)
+    except (ValueError, RecursionError):  # as for an event of a schedule
+        raise ValueError(f"{'zone' if action == 'zone' else 'lines'} must be JSON") from None
+    if action == "zone":
+        name, mode, rect = _fields(shape, "zone", "name", "cleaning_mode", "rect")
+        name, mode = _zone_name(name), _among(mode, MODES, "zone.cleaning_mode")
+        left, top, right, bottom = shape = _cells(rect, width, height, "zone.rect")
+        if left > right or top > bottom:
+            raise ValueError("zone.rect must give its top left corner before its bottom right one")
+        kept = ("cleaning", name, mode, shape)
+        binary = _drawn(header, width, height, zone=shape)
+    else:
+        if not isinstance(shape, list) or not 0 < len(shape) <= LINES_MAX:
+            raise ValueError(f"lines must be a list of from 1 to {LINES_MAX} lines")
+        shape = [_cells(line, width, height, f"lines[{n}]") for n, line in enumerate(shape)]
+        for n, line in enumerate(shape):
+            if line[:2] == line[2:]:
+                raise ValueError(f"lines[{n}] must not end where it starts")
+        # The spec has a no-go track go without a name and a mode, "conventionally".
+        kept = ("no-go", None, None, shape)
+        binary = _drawn(header, width, height, lines=shape)
+    sent = {
+        "rank_uuid": rank_uuid,
+        "track_uuid": track_uuid,
+        "track_name": kept[1],
+        "track_binary": binary,
+        "type": kept[0],
+        "cleaning_mode": kept[2],
+    }
+    return "maps.save_track", {"tracks": [sent]}, kept
 
 
 # What a robot's sounds may be set to (section 6.4 of the spec). To the spec a

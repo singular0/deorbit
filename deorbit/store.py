@@ -1,4 +1,4 @@
-"""SQLite database of what the server remembers about each robot: its state, its events, its maps, its floor plans and its name."""
+"""SQLite database of what the server remembers about each robot: its state, its events, its maps, its floor plans with their zones and no-go lines, and its name."""
 
 import json
 import logging
@@ -74,7 +74,7 @@ _ROBOTS = "robots LEFT JOIN names USING (vendor, serial)"
 
 # Every table. Each names the robot a row is of by its vendor and serial, which
 # is how ``delete`` finds all there is of one.
-_TABLES = ("robots", "events", "maps", "names", "floorplans")
+_TABLES = ("robots", "events", "maps", "names", "floorplans", "tracks")
 
 # A map as a list of maps gives it: its columns, with everything in the body
 # but the two binaries. Those are most of a map, and only its picture needs them.
@@ -152,6 +152,26 @@ CREATE TABLE IF NOT EXISTS floorplans (
     PRIMARY KEY (vendor, serial, rank_uuid)
 )
 """,
+    # A zone of a floor plan, or its no-go lines, is a track that the robot
+    # keeps with it, and no message of the spec has a robot say which it has
+    # either. So a row is what the server remembers of having had the robot
+    # keep one, and of what was drawn for it, which the robot was sent only as
+    # a picture.
+    """
+CREATE TABLE IF NOT EXISTS tracks (
+    vendor     TEXT NOT NULL,
+    serial     TEXT NOT NULL,
+    track_uuid TEXT NOT NULL,  -- what the robot knows the track by
+    rank_uuid  TEXT NOT NULL,  -- the floor plan it is of
+    type       TEXT NOT NULL,  -- cleaning, which is a zone, or no-go
+    name       TEXT,           -- a zone's name; NULL for no-go lines
+    mode       TEXT,           -- a zone's cleaning mode; NULL for no-go lines
+    shape_json TEXT NOT NULL,  -- what was drawn, in cells of the floor plan's map: a zone's rectangle, or the lines
+    at         TEXT NOT NULL,  -- when the robot accepted it
+    PRIMARY KEY (vendor, serial, track_uuid),
+    CONSTRAINT shape_json_is_json CHECK (json_valid(shape_json))
+)
+""",
 )
 
 
@@ -176,7 +196,7 @@ class Store:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # Autocommit: every write is a single statement, but for ``delete`` and
-            # ``save_floorplan``, which begin a transaction themselves.
+            # those that go through ``_change``, which begin a transaction themselves.
             db = sqlite3.connect(path, timeout=_BUSY_TIMEOUT, isolation_level=None)
             # What is deleted is written over with zeros, so a robot that was
             # deleted is gone from the file and not only from its tables.
@@ -227,27 +247,44 @@ class Store:
         return self._write(robot, sql, (robot.vendor, robot.serial, name))
 
     def save_floorplan(self, robot: RobotId, rank_uuid: str, map_id: int, replaced: str | None = None) -> bool:
-        """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so."""
+        """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so.
+
+        Either comes without zones and no-go lines: a floor plan is promoted with
+        none, and what a robot does with those of the one it replaces is not known.
+        """
         where = (robot.vendor, robot.serial)
-        try:
-            with self._db:  # as in ``delete``: the old one goes and the new one comes, or neither
-                self._db.execute("BEGIN IMMEDIATE")
-                if replaced is not None:
-                    self._db.execute("DELETE FROM floorplans WHERE vendor = ? AND serial = ? AND rank_uuid = ?", (*where, replaced))
-                self._db.execute(
-                    "INSERT INTO floorplans (vendor, serial, rank_uuid, map_id, at) VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT (vendor, serial, rank_uuid) DO UPDATE SET map_id = excluded.map_id, at = excluded.at",
-                    (*where, rank_uuid, map_id, now()),
-                )
-        except (sqlite3.Error, UnicodeError) as exc:
-            log.error("[%s] not saved to the database: %s", robot, exc)
-            return False
-        return True
+        # The old one goes and the new one comes, or neither.
+        return self._change(robot, [
+            *self._dropped(robot, rank_uuid),
+            *(self._dropped(robot, replaced) if replaced is not None else []),
+            (
+                "INSERT INTO floorplans (vendor, serial, rank_uuid, map_id, at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (vendor, serial, rank_uuid) DO UPDATE SET map_id = excluded.map_id, at = excluded.at",
+                (*where, rank_uuid, map_id, now()),
+            ),
+        ])
 
     def delete_floorplan(self, robot: RobotId, rank_uuid: str) -> bool:
-        """Note that the robot no longer keeps the floor plan ``rank_uuid``, and say whether the file now has it so, as it does of one it never held."""
-        sql = "DELETE FROM floorplans WHERE vendor = ? AND serial = ? AND rank_uuid = ?"
-        return self._write(robot, sql, (robot.vendor, robot.serial, rank_uuid))
+        """Note that the robot no longer keeps the floor plan ``rank_uuid`` and its zones and no-go lines, and say whether the file now has it so, as it does of one it never held."""
+        return self._change(robot, self._dropped(robot, rank_uuid))
+
+    def save_track(
+        self, robot: RobotId, rank_uuid: str, track_uuid: str, kind: str, name: str | None, mode: str | None, shape: object
+    ) -> bool:
+        """Note that the robot keeps the track ``track_uuid`` of the floor plan ``rank_uuid``: a zone, of the ``kind`` cleaning, or no-go lines, as ``shape`` has them drawn. Say whether the file now has it so."""
+        sql = (
+            "INSERT INTO tracks (vendor, serial, track_uuid, rank_uuid, type, name, mode, shape_json, at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (vendor, serial, track_uuid) DO UPDATE SET "
+            "rank_uuid = excluded.rank_uuid, type = excluded.type, name = excluded.name, mode = excluded.mode, "
+            "shape_json = excluded.shape_json, at = excluded.at"
+        )
+        values = (robot.vendor, robot.serial, track_uuid, rank_uuid, kind, name, mode, _json(shape), now())
+        return self._write(robot, sql, values)
+
+    def delete_tracks(self, robot: RobotId, track_uuids: list[str]) -> bool:
+        """Note that the robot no longer keeps these tracks, and say whether the file now has it so, as it does of one it never held."""
+        sql = f"DELETE FROM tracks WHERE vendor = ? AND serial = ? AND track_uuid IN ({', '.join('?' * len(track_uuids))})"
+        return self._write(robot, sql, (robot.vendor, robot.serial, *track_uuids))
 
     def delete(self, robot: RobotId) -> bool:
         """Delete the robot's rows from every table, all of them or none, and say whether they are gone."""
@@ -300,6 +337,31 @@ class Store:
         """The floor plans the robot is known to keep, the one it accepted last first."""
         sql = "SELECT * FROM floorplans WHERE vendor = ? AND serial = ? ORDER BY at DESC, rank_uuid"
         return self._select(sql, (robot.vendor, robot.serial))
+
+    def tracks(self, robot: RobotId) -> list[dict[str, object]]:
+        """The zones and no-go lines the robot is known to keep, by floor plan, the zones first, by name."""
+        sql = "SELECT * FROM tracks WHERE vendor = ? AND serial = ? ORDER BY rank_uuid, type, name COLLATE NOCASE, track_uuid"
+        return self._select(sql, (robot.vendor, robot.serial))
+
+    @staticmethod
+    def _dropped(robot: RobotId, rank_uuid: str) -> list[tuple[str, tuple[object, ...]]]:
+        """What deletes the floor plan ``rank_uuid`` of the robot's, and its tracks with it."""
+        return [
+            (f"DELETE FROM {table} WHERE vendor = ? AND serial = ? AND rank_uuid = ?", (robot.vendor, robot.serial, rank_uuid))
+            for table in ("floorplans", "tracks")
+        ]
+
+    def _change(self, robot: RobotId, statements: list[tuple[str, tuple[object, ...]]]) -> bool:
+        """Run these statements in one transaction, all of them or none, and say whether they were."""
+        try:
+            with self._db:  # as in ``delete``: commits the transaction begun in it, or rolls it back
+                self._db.execute("BEGIN IMMEDIATE")
+                for sql, parameters in statements:
+                    self._db.execute(sql, parameters)
+        except (sqlite3.Error, UnicodeError) as exc:
+            log.error("[%s] not saved to the database: %s", robot, exc)
+            return False
+        return True
 
     def _select(self, sql: str, parameters: tuple[object, ...] = ()) -> list[dict[str, object]]:
         # Unlike a failed write, a failed read is raised: without the rows the caller has nothing to show.

@@ -1108,6 +1108,12 @@ td.cell-clock {
   cursor: grabbing;
 }
 
+/* While a zone or no-go lines are drawn on it, a drag draws, with a finger too. */
+.map-view.drawing .map-canvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+
 /* Drawn within the window, which hides what is outside it. */
 .map-canvas:focus-visible {
   outline-offset: -2px;
@@ -1135,6 +1141,13 @@ td.cell-clock {
 
 .map-zoom .button[aria-disabled]:hover {
   background: var(--surface);
+}
+
+/* Move the map, while it is pressed: a drag moves the map rather than draw on it. */
+.map-zoom .button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
 }
 
 .map-legend {
@@ -1181,6 +1194,90 @@ td.cell-clock {
 /* What the robot said of the run. */
 .map-facts {
   min-width: 0;
+}
+
+/* The zones and no-go lines of a map that is a floor plan, under what the robot said of the run. */
+.tracks {
+  margin-top: 24px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.tracks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  margin: 14px 0 6px;
+}
+
+.tracks h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.track-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A zone, or how many no-go lines there are: the colour it has on the map, then what it is. */
+.track {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  margin: 0;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.track-list > .track + .track {
+  border-top: 1px solid var(--line);
+}
+
+.track-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.track-mode {
+  color: var(--muted);
+}
+
+.track-none {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* What a press on a zone's Delete asks, under it. */
+.track-ask {
+  padding: 2px 0 10px;
+}
+
+.track-form {
+  margin-top: 8px;
+}
+
+.track-form > .hint {
+  margin: 12px 0 0;
+}
+
+.track-form > .slot-tools {
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.tracks .command-said {
+  margin: 12px 0 0;
 }
 
 /* ---- The schedule of one robot ---- */
@@ -1276,6 +1373,8 @@ td.cell-clock {
 .slot-form dd > input,
 .slot-form dd > select,
 .setting-form dd > select,
+.track-form dd > input,
+.track-form dd > select,
 .name-form > input {
   height: 34px;
   padding: 0 10px;
@@ -1288,11 +1387,17 @@ td.cell-clock {
   font-variant-numeric: tabular-nums;
 }
 
-/* A floor plan is a longer line than a narrow screen is wide, and a language may be. */
+/* A floor plan is a longer line than a narrow screen is wide, and a language or a zone's name may be. */
 .slot-form dd > select,
-.setting-form dd > select {
+.setting-form dd > select,
+.track-form dd > input {
   min-width: 0;
   max-width: 100%;
+}
+
+/* A choice that a run on no floor plan does not have. */
+.slot-form dd > select:disabled {
+  color: var(--faint);
 }
 
 .picks {

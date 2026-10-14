@@ -149,6 +149,12 @@ class StoreTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.path)) as db:
             return db.execute("SELECT vendor, serial, rank_uuid, map_id FROM floorplans ORDER BY serial, rank_uuid").fetchall()
 
+    def tracked(self) -> list[tuple]:
+        """Every track in the file but for when it was noted, read the way another process would."""
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            sql = "SELECT vendor, serial, track_uuid, rank_uuid, type, name, mode, shape_json FROM tracks ORDER BY serial, track_uuid"
+            return db.execute(sql).fetchall()
+
     def assertJustNow(self, stamp: str) -> None:
         self.assertRegex(stamp, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
         self.assertLess(abs(datetime.now(timezone.utc) - datetime.fromisoformat(stamp)), timedelta(seconds=5))
@@ -600,6 +606,103 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.plans(), [("n", "board1", MAP["rank_uuid"], 1)])
         self.assertEqual((self.rows(), self.logged(), self.maps(), self.names()), before)
 
+    def test_track_is_noted_with_what_was_drawn(self) -> None:
+        store = self.open()
+        self.assertEqual(store.tracks(ROBOT), [])
+        self.assertTrue(store.save_track(ROBOT, "first", "lines", "no-go", None, None, [[0, 0, 5, 5], [1, 2, 3, 4]]))
+        self.assertTrue(store.save_track(ROBOT, "first", "zone-b", "cleaning", "hall", "turbo", [1, 2, 3, 4]))
+        self.assertTrue(store.save_track(ROBOT, "first", "zone-a", "cleaning", "Kitchen", "eco", [5, 6, 7, 8]))
+        self.assertTrue(store.save_track(ROBOT, "else", "zone-c", "cleaning", "Attic", "max", [0, 0, 0, 0]))
+        self.assertTrue(store.save_track(OTHER, "first", "zone-a", "cleaning", "Kitchen", "eco", [5, 6, 7, 8]))
+        # By floor plan, its zones first by name whatever the case, then its no-go lines; each as the row is stored.
+        listed = store.tracks(ROBOT)
+        self.assertEqual([row["track_uuid"] for row in listed], ["zone-c", "zone-b", "zone-a", "lines"])
+        zone, lines = listed[2:]
+        self.assertEqual(zone, {"vendor": "n", "serial": "board1", "track_uuid": "zone-a", "rank_uuid": "first",
+                                "type": "cleaning", "name": "Kitchen", "mode": "eco", "shape_json": "[5,6,7,8]", "at": zone["at"]})
+        self.assertJustNow(zone["at"])
+        self.assertEqual((lines["type"], lines["name"], lines["mode"], lines["shape_json"]),
+                         ("no-go", None, None, "[[0,0,5,5],[1,2,3,4]]"))
+        self.assertEqual([row["track_uuid"] for row in store.tracks(OTHER)], ["zone-a"])
+        # A track alone makes no robot and no floor plan.
+        self.assertEqual((self.rows(), self.plans()), ({}, []))
+        # One that is saved again is the same track, as it was last drawn.
+        self.assertTrue(store.save_track(ROBOT, "first", "zone-a", "cleaning", "Pantry", "max", [1, 1, 2, 2]))
+        again = {row["track_uuid"]: row for row in store.tracks(ROBOT)}
+        self.assertEqual(len(again), 4)
+        self.assertEqual([again["zone-a"][name] for name in ("name", "mode", "shape_json")], ["Pantry", "max", "[1,1,2,2]"])
+        # One that is dropped is gone, and one that was never held is dropped as well as any.
+        for _ in range(2):
+            self.assertTrue(store.delete_tracks(ROBOT, ["zone-b"]))
+            self.assertEqual([row["track_uuid"] for row in store.tracks(ROBOT)], ["zone-c", "zone-a", "lines"])
+        self.assertEqual([row["track_uuid"] for row in store.tracks(OTHER)], ["zone-a"])
+        store.close()
+        self.assertEqual(len(self.open().tracks(ROBOT)), 3)
+
+    def test_tracks_go_with_their_floor_plan(self) -> None:
+        store = self.open()
+        for robot in (ROBOT, OTHER):
+            store.save_floorplan(robot, "first", 1)
+            store.save_floorplan(robot, "second", 2)
+            for plan in ("first", "second", "third"):
+                store.save_track(robot, plan, f"{plan}-zone", "cleaning", "Hall", "eco", [0, 0, 1, 1])
+                store.save_track(robot, plan, f"{plan}-lines", "no-go", None, None, [[0, 0, 1, 1]])
+
+        def kept(robot: RobotId = ROBOT) -> list[str]:
+            return [row["track_uuid"] for row in store.tracks(robot)]
+
+        # A floor plan that is dropped takes its zones and its no-go lines with it.
+        self.assertTrue(store.delete_floorplan(ROBOT, "first"))
+        self.assertEqual(kept(), ["second-zone", "second-lines", "third-zone", "third-lines"])
+        # So does one that another takes the place of, and the other comes without any.
+        self.assertTrue(store.save_floorplan(ROBOT, "fourth", 3, "second"))
+        self.assertEqual(kept(), ["third-zone", "third-lines"])
+        # A floor plan is made without them, even where the robot kept it before.
+        self.assertTrue(store.save_floorplan(ROBOT, "third", 4))
+        self.assertEqual(kept(), [])
+        self.assertEqual(len(kept(OTHER)), 6)
+
+    def test_track_that_cannot_be_noted(self) -> None:
+        with mock.patch("deorbit.store._BUSY_TIMEOUT", 0.05):
+            store = self.open()
+        store.save_floorplan(ROBOT, "first", 1)
+        store.save_track(ROBOT, "first", "zone", "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        before = self.plans(), self.tracked()
+        with contextlib.closing(sqlite3.connect(self.path)) as db, self.assertLogs("deorbit", "ERROR") as logs:
+            self.assertFalse(store.save_track(ROBOT, "first", "zone", "cleaning", "\ud800", "eco", [0, 0, 1, 1]))
+            # A shape that JSON cannot read back, which a page could not draw.
+            self.assertFalse(store.save_track(ROBOT, "first", "zone", "cleaning", "Hall", "eco", [float("inf")]))
+            # Another program has the file for longer than the store waits for it.
+            db.execute("BEGIN IMMEDIATE")
+            self.assertFalse(store.save_track(ROBOT, "first", "zone", "cleaning", "Kitchen", "eco", [0, 0, 1, 1]))
+            self.assertFalse(store.delete_tracks(ROBOT, ["zone"]))
+            db.execute("ROLLBACK")
+            # A floor plan is not dropped without its tracks.
+            db.execute("CREATE TRIGGER no_delete BEFORE DELETE ON tracks BEGIN SELECT RAISE(ABORT, 'full'); END")
+            self.assertFalse(store.delete_floorplan(ROBOT, "first"))
+            self.assertEqual((self.plans(), self.tracked()), before)
+            db.execute("DROP TRIGGER no_delete")
+        self.assertEqual(len(logs.output), 5)
+        for line, why in zip(logs.output[1:], ("CHECK constraint failed: shape_json_is_json", "database is locked",
+                                               "database is locked", "full")):
+            self.assertIn(f"[n/board1] not saved to the database: {why}", line)
+        self.assertTrue(store.delete_floorplan(ROBOT, "first"))
+        self.assertEqual((self.plans(), self.tracked()), ([], []))
+
+    def test_file_without_a_tracks_table_gets_one(self) -> None:
+        store = self.open()
+        store.save_state(ROBOT, STATE)
+        store.save_floorplan(ROBOT, MAP["rank_uuid"], 1)
+        store.close()
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TABLE tracks")  # as in a file from before zones were drawn
+        before = self.rows(), self.plans()
+        store = self.open()
+        self.assertEqual(store.tracks(ROBOT), [])
+        self.assertTrue(store.save_track(ROBOT, MAP["rank_uuid"], "zone", "cleaning", "Hall", "eco", [0, 0, 1, 1]))
+        self.assertEqual(len(self.tracked()), 1)
+        self.assertEqual((self.rows(), self.plans()), before)
+
     def fill(self, store: Store) -> None:
         """Give both robots something in every table."""
         for robot in (ROBOT, OTHER):
@@ -610,15 +713,16 @@ class StoreTests(unittest.TestCase):
             store.save_map(robot, MAP)
             store.save_name(robot, "Rosie")
             store.save_floorplan(robot, MAP["rank_uuid"], 1)
+            store.save_track(robot, MAP["rank_uuid"], "zone", "cleaning", "Kitchen", "eco", [1, 2, 3, 4])
 
     def held(self) -> tuple:
         """All that the file holds, table by table."""
-        return self.rows(), self.logged(), self.maps(), self.names(), self.plans()
+        return self.rows(), self.logged(), self.maps(), self.names(), self.plans(), self.tracked()
 
     def test_robot_is_deleted_from_every_table(self) -> None:
         store = self.open()
         self.fill(store)
-        rows, logged, maps, names, plans = self.held()
+        rows, logged, maps, names, plans, tracked = self.held()
         self.assertTrue(store.delete(ROBOT))
         # The other robot has all it had, and this one nothing.
         self.assertEqual(self.held(), (
@@ -627,10 +731,12 @@ class StoreTests(unittest.TestCase):
             [row for row in maps if row["serial"] == "board2"],
             {OTHER: "Rosie"},
             [("n", "board2", MAP["rank_uuid"], 1)],
+            [("n", "board2", "zone", MAP["rank_uuid"], "cleaning", "Kitchen", "eco", "[1,2,3,4]")],
         ))
-        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1, 1])
+        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1, 1, 1])
         self.assertIsNone(store.robot(ROBOT))
-        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10), store.floorplans(ROBOT)), ([], [], []))
+        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10), store.floorplans(ROBOT), store.tracks(ROBOT)),
+                         ([], [], [], []))
         # A robot the file has nothing of is deleted as well as any.
         self.assertTrue(store.delete(ROBOT))
         self.assertTrue(store.delete(RobotId("3", "board2")))
@@ -650,7 +756,8 @@ class StoreTests(unittest.TestCase):
         store.save_map(gone, {"map": {"rank_binary": "map-of-the-deleted" * 5000}})
         store.save_name(gone, "name-of-the-deleted")
         store.save_floorplan(gone, "plan-of-the-deleted", 1)
-        for what in (b"serial", b"state", b"event", b"map", b"name", b"plan"):
+        store.save_track(gone, "plan-of-the-deleted", "track-of-the-deleted", "cleaning", "zone-of-the-deleted", "eco", [])
+        for what in (b"serial", b"state", b"event", b"map", b"name", b"plan", b"track", b"zone"):
             self.assertIn(what + b"-of-the-deleted", self.path.read_bytes())
         before = self.held()
         self.assertTrue(store.delete(gone))
@@ -695,10 +802,11 @@ class StoreTests(unittest.TestCase):
             db.execute("DROP TABLE events")
             db.execute("DROP TABLE maps")
             db.execute("DROP TABLE floorplans")
+            db.execute("DROP TABLE tracks")
         for table, read in (("robots", store.robots), ("robots", lambda: store.robot(ROBOT)),
                             ("events", lambda: store.events(ROBOT, 10)), ("maps", lambda: store.maps(ROBOT, 10)),
                             ("maps", lambda: store.map(ROBOT, 1)), ("maps", lambda: store.floorplan_maps(ROBOT, 9)),
-                            ("floorplans", lambda: store.floorplans(ROBOT))):
+                            ("floorplans", lambda: store.floorplans(ROBOT)), ("tracks", lambda: store.tracks(ROBOT))):
             with self.assertRaisesRegex(StoreError, f"^cannot read the database: no such table: {table}$"):
                 read()
 

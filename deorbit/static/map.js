@@ -26,7 +26,9 @@ const VALUES = 256; // how many values a cell can have
 const COMMENT_MAX = 1024; // how much of a comment in a file's header is read
 
 // The colours of a picture, for a dark page and for a light one, as red, green
-// and blue. A canvas cannot take them from the stylesheet.
+// and blue. A canvas cannot take them from the stylesheet. The last three are
+// what the page draws over the picture of a floor plan: its zones, the one that
+// is being drawn or that is chosen, and its no-go lines.
 export const PALETTES = {
   dark: {
     unseen: [26, 30, 38],
@@ -35,6 +37,9 @@ export const PALETTES = {
     cleaned: [46, 150, 110],
     robot: [124, 157, 255],
     base: [243, 185, 78],
+    zone: [92, 200, 230],
+    chosen: [195, 162, 255],
+    nogo: [255, 114, 114],
   },
   light: {
     unseen: [226, 229, 236],
@@ -43,6 +48,9 @@ export const PALETTES = {
     cleaned: [140, 216, 182],
     robot: [52, 87, 227],
     base: [200, 126, 6],
+    zone: [8, 132, 168],
+    chosen: [125, 69, 214],
+    nogo: [208, 58, 58],
   },
 };
 
@@ -150,7 +158,8 @@ function sameGrid(one, other) {
  * a cell. Whoever shows it enlarges it. `real` may be null. `places` are
  * positions the map gives, by name.
  *
- * It is `width` by `height` pixels, as `rgba`. `marks` are the places that are
+ * It is `width` by `height` pixels, as `rgba`, and starts at the cell `left`
+ * across `rank` and `top` down it. `marks` are the places that are
  * on the map, each with where it is in the picture, in cells, and its heading. `cleaned`
  * is how many cells were, or null when `real` could not be laid over `rank`.
  * `odd` are the values in `real` that nothing here has a meaning for, each
@@ -230,6 +239,8 @@ export function paint(rank, real, places, palette) {
   return {
     width: across,
     height: down,
+    left,
+    top,
     rgba,
     marks: spots.map(({ name, x, y, dir }) => ({ name, x: x - left, y: y - top, dir })),
     cleaned: over === null ? null : counts[3] + counts[4],

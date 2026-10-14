@@ -1,12 +1,14 @@
 """Web UI tests: a real ``Web`` beside a real ``Server``, asked over HTTP the way a browser would."""
 
 import asyncio
+import base64
 import contextlib
 import json
 import math
 import re
 import socket
 import sqlite3
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -15,7 +17,7 @@ from urllib.parse import quote
 from deorbit import __main__ as cli
 from deorbit import web
 from deorbit.auth import RobotId
-from deorbit.commands import COMMANDS, DAYS, MODES, NAVIGATION_MODES, SETTINGS, VOICES, VOLUME_MAX
+from deorbit.commands import COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, VOICES, VOLUME_MAX, ZONE_NAME_MAX
 from deorbit.config import Config
 from deorbit.server import Server
 from deorbit.web import Web, WebError
@@ -627,8 +629,8 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps"})
-        self.assertEqual((answer["events"], answer["more"]), ([], False))
+        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps", "tracks"})
+        self.assertEqual((answer["events"], answer["more"], answer["tracks"]), ([], False, []))
 
     async def test_events_newest_first_as_stored(self) -> None:
         await self.start()
@@ -1808,6 +1810,323 @@ class FloorplanTests(WebTestCase):
         self.assertEqual(sent, {"ability": "maps.promote_floorplan", **self.PLAN, "rank_binary": "<8 chars>",
                                 "real_binary": "<8 chars>", "old_rank_uuid": None, "nogo_track": None, "cleaning_tracks": []})
         self.assertEqual(json.loads(answer["body_json"]), {"ability": "maps.promote_floorplan", "code": 200, "body": {}})
+
+
+class TrackTests(WebTestCase):
+    """``POST /api/track``, which is what has a robot keep the zones and the no-go lines of a floor plan, or drop them."""
+
+    OTHER = RobotId("n", "board0")
+    ROBOT1 = "/api/robot?vendor=n&serial=board1"
+    BOARD1 = "/api/track?vendor=n&serial=board1"
+    DONE = {"code": 200, "body": {}}
+    PLAN = MAP["rank_uuid"]
+    ELSE = "fb7f8145-0615-4a32-8f0d-8d833cd51a5e"
+    # The PGM file of a floor plan of 20 by 10 cells, with a header as the maps of a robot have one.
+    HEADER = b"P5\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\n20 10\n255\r"
+    KITCHEN = {"name": "Kitchen", "cleaning_mode": "eco", "rect": [2, 1, 5, 3]}
+    UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+
+    @staticmethod
+    def floor(file: bytes = HEADER + bytes([128]) * 200) -> dict:
+        """A map whose rank_binary is this file, zlib's and as Base64."""
+        return {**MAP, "map": {**MAP["map"], "rank_binary": base64.b64encode(zlib.compress(file)).decode()}}
+
+    async def start(self, **overrides: object) -> Web:
+        web = await super().start(**overrides)
+        self.server.store.save_heartbeat(self.ROBOT)
+        self.server.store.save_map(self.ROBOT, self.floor())
+        self.server.store.save_floorplan(self.ROBOT, self.PLAN, 1)
+        return web
+
+    def zone(self, zone: object, track_uuid: str | None = None, plan: str = PLAN) -> str:
+        given = f"&track_uuid={track_uuid}" if track_uuid else ""
+        return f"{self.BOARD1}&action=zone&rank_uuid={plan}&zone={quote(json.dumps(zone))}{given}"
+
+    def lines(self, lines: object, plan: str = PLAN) -> str:
+        return f"{self.BOARD1}&action=nogo&rank_uuid={plan}&lines={quote(json.dumps(lines))}"
+
+    def drawn(self, sent: dict) -> list[str]:
+        """The cells of a track's binary, a line of text to each row: # for 255 and . for 0. Its header is the floor plan's."""
+        file = zlib.decompress(base64.b64decode(sent["track_binary"], validate=True))
+        self.assertTrue(file.startswith(self.HEADER))
+        cells = file[len(self.HEADER):]
+        self.assertEqual(len(cells), 200)
+        self.assertLessEqual(set(cells), {0, 255})
+        return ["".join("#" if cell else "." for cell in cells[row * 20:(row + 1) * 20]) for row in range(10)]
+
+    def sent(self, request: dict) -> dict:
+        """The one track a robot was sent to keep, without its binary, which ``drawn`` reads."""
+        self.assertEqual(set(request), {"type", "id", "body"})
+        self.assertEqual(set(request["body"]), {"ability", "tracks"})
+        self.assertEqual(request["body"]["ability"], "maps.save_track")
+        (sent,) = request["body"]["tracks"]
+        return {key: value for key, value in sent.items() if key != "track_binary"}
+
+    async def tracks(self) -> list[tuple]:
+        """The tracks that come with the robot's page, each as what it is and what was drawn."""
+        rows = (await self.api(self.ROBOT1))["tracks"]
+        return [(row["track_uuid"], row["rank_uuid"], row["type"], row["name"], row["mode"], json.loads(row["shape_json"]))
+                for row in rows]
+
+    async def test_zone_is_drawn_on_its_floor_plan_and_kept(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        request, told = await self.answered(robot, self.zone(self.KITCHEN), self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.save_track", "code": 200, "body": {}}))
+        made = self.sent(request)
+        self.assertRegex(made["track_uuid"], self.UUID4)
+        self.assertEqual(made, {"rank_uuid": self.PLAN, "track_uuid": made["track_uuid"], "track_name": "Kitchen",
+                                "type": "cleaning", "cleaning_mode": "eco"})
+        self.assertEqual(self.drawn(request["body"]["tracks"][0]), [
+            "." * 20,
+            "..####" + "." * 14,
+            "..####" + "." * 14,
+            "..####" + "." * 14,
+            *["." * 20] * 6,
+        ])
+        kitchen = made["track_uuid"]
+        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Kitchen", "eco", [2, 1, 5, 3])])
+        # Changed, it is the same track, its name made one line; as large as the floor plan, it is all of it.
+        whole = {"name": " Pantry\t corner\n", "cleaning_mode": "max", "rect": [0, 0, 19, 9]}
+        request, _ = await self.answered(robot, self.zone(whole, kitchen), self.DONE)
+        self.assertEqual((self.sent(request)["track_uuid"], self.sent(request)["track_name"]), (kitchen, "Pantry corner"))
+        self.assertEqual(self.drawn(request["body"]["tracks"][0]), ["#" * 20] * 10)
+        # Another is one more, as small as a cell.
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "name": "Hall", "rect": [19, 9, 19, 9]}), self.DONE)
+        hall = self.sent(request)["track_uuid"]
+        self.assertNotEqual(hall, kitchen)
+        self.assertEqual(self.drawn(request["body"]["tracks"][0])[9], "." * 19 + "#")
+        self.assertEqual(await self.tracks(), [(hall, self.PLAN, "cleaning", "Hall", "eco", [19, 9, 19, 9]),
+                                               (kitchen, self.PLAN, "cleaning", "Pantry corner", "max", [0, 0, 19, 9])])
+
+    async def test_no_go_lines_are_one_track_of_their_floor_plan(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        request, told = await self.answered(robot, self.lines([[0, 0, 4, 0], [0, 2, 3, 5]]), self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.save_track", "code": 200, "body": {}}))
+        made = self.sent(request)
+        self.assertRegex(made["track_uuid"], self.UUID4)
+        # Without a name and a mode, as the spec has a no-go track conventionally go.
+        self.assertEqual(made, {"rank_uuid": self.PLAN, "track_uuid": made["track_uuid"], "track_name": None,
+                                "type": "no-go", "cleaning_mode": None})
+        # A line on the diagonal has no corner that a step on the diagonal passes through.
+        self.assertEqual(self.drawn(request["body"]["tracks"][0])[:7], [
+            "#####" + "." * 15,
+            "." * 20,
+            "##" + "." * 18,
+            ".##" + "." * 17,
+            "..##" + "." * 16,
+            "...#" + "." * 16,
+            "." * 20,
+        ])
+        lines = made["track_uuid"]
+        self.assertEqual(await self.tracks(), [(lines, self.PLAN, "no-go", None, None, [[0, 0, 4, 0], [0, 2, 3, 5]])])
+        # Drawn again, from right to left and up, they are the same track, whatever the page names.
+        target = self.lines([[19, 9, 0, 0]]) + f"&track_uuid={self.ELSE}"
+        request, _ = await self.answered(robot, target, self.DONE)
+        self.assertEqual(self.sent(request)["track_uuid"], lines)
+        self.assertEqual(sum(row.count("#") for row in self.drawn(request["body"]["tracks"][0])), 20 + 10 - 1)
+        self.assertEqual(await self.tracks(), [(lines, self.PLAN, "no-go", None, None, [[19, 9, 0, 0]])])
+        # As many as there may be.
+        request, _ = await self.answered(robot, self.lines([[0, 0, 1, 1]] * LINES_MAX), self.DONE)
+        self.assertEqual(self.sent(request)["track_uuid"], lines)
+
+    async def test_delete_names_the_track(self) -> None:
+        await self.start()
+        store = self.server.store
+        store.save_track(self.ROBOT, self.PLAN, self.ELSE, "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        store.save_track(self.ROBOT, self.PLAN, self.PLAN, "no-go", None, None, [[0, 0, 1, 1]])
+        store.save_track(self.OTHER, self.PLAN, self.ELSE, "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        robot, _ = await self.login()
+        request, told = await self.answered(robot, f"{self.BOARD1}&action=delete&track_uuid={self.ELSE}&rank_uuid=x", self.DONE)
+        self.assertEqual(told, (200, {"ability": "maps.delete_track", "code": 200, "body": {}}))
+        self.assertEqual(request["body"], {"ability": "maps.delete_track", "tracks": [self.ELSE]})
+        self.assertEqual([row[0] for row in await self.tracks()], [self.PLAN])
+        self.assertEqual(len(store.tracks(self.OTHER)), 1)
+        # One the server never had the robot keep is asked of the robot all the same.
+        upper = self.ELSE.upper()
+        request, _ = await self.answered(robot, f"{self.BOARD1}&action=delete&track_uuid={upper}", self.DONE)
+        self.assertEqual(request["body"]["tracks"], [upper])
+        # A floor plan that the robot drops takes its tracks with it.
+        await self.answered(robot, f"/api/floorplan?vendor=n&serial=board1&action=demote&rank_uuid={self.PLAN}", self.DONE)
+        self.assertEqual(await self.tracks(), [])
+
+    async def test_what_is_not_sent_to_a_robot(self) -> None:
+        await self.start()
+        store = self.server.store
+        robot, _ = await self.login()
+        store.save_track(self.ROBOT, self.PLAN, self.PLAN, "no-go", None, None, [[0, 0, 1, 1]])
+        # A floor plan whose map the database has no more, and a zone of another floor plan.
+        store.save_floorplan(self.ROBOT, self.ELSE, 99)
+        store.save_track(self.ROBOT, self.ELSE, self.ELSE, "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        not_one = ("first", "1", "..%2F..%2Fetc", self.ELSE[:-1], self.ELSE + "0", "%20" + self.ELSE, self.ELSE.replace("-", ""))
+        refused = {
+            "action must be one of zone, nogo, delete": [
+                self.BOARD1, *(f"{self.BOARD1}&action={action}&rank_uuid={self.PLAN}&track_uuid={self.ELSE}"
+                               for action in ("", "ZONE", "maps.save_track", "update", "zone%20", "lines")),
+            ],
+            "track_uuid must be a UUID": [
+                f"{self.BOARD1}&action=delete", f"{self.BOARD1}&action=delete&rank_uuid={self.PLAN}",
+                *(f"{self.BOARD1}&action=delete&track_uuid={given}" for given in not_one),
+            ],
+            "zone must be JSON": [
+                f"{self.BOARD1}&action=zone&rank_uuid={self.PLAN}", self.zone(self.KITCHEN)[:-3],
+                f"{self.BOARD1}&action=zone&rank_uuid={self.PLAN}&zone=" + "%5B" * 5000,
+            ],
+            "lines must be JSON": [f"{self.BOARD1}&action=nogo&rank_uuid={self.PLAN}", self.lines([[0, 0, 1, 1]])[:-3]],
+            "zone must be an object of name, cleaning_mode, rect and nothing else": [
+                self.zone(given) for given in ({}, [], "Kitchen", None, {"name": "Kitchen", "rect": [0, 0, 1, 1]},
+                                               {**self.KITCHEN, "track_uuid": self.ELSE}, {**self.KITCHEN, "Rect": [0, 0, 1, 1]})
+            ],
+            f"zone.name must be from 1 to {ZONE_NAME_MAX} characters": [
+                self.zone({**self.KITCHEN, "name": given}) for given in ("", " \t\n", "k" * (ZONE_NAME_MAX + 1), 7, None, ["Hall"])
+            ],
+            "zone.name must not hold control characters": [
+                self.zone({**self.KITCHEN, "name": given}) for given in ("Hall\u0000", "a\u0007b", "\u007f", "\ud800")
+            ],
+            "zone.cleaning_mode must be one of eco, turbo, auto, max": [
+                self.zone({**self.KITCHEN, "cleaning_mode": given}) for given in ("ECO", "", None, "normal", ["eco"])
+            ],
+            "zone.rect must be a list of four whole numbers": [
+                self.zone({**self.KITCHEN, "rect": given}) for given in ([1, 2, 3], [1, 2, 3, 4, 5], "1,2,3,4", None, {"x": 1})
+            ],
+            "zone.rect[0] must be a whole number from 0 to 19": [
+                self.zone({**self.KITCHEN, "rect": [given, 0, 1, 1]}) for given in (-1, 20, 1.0, True, "1", None)
+            ],
+            "zone.rect[1] must be a whole number from 0 to 9": [self.zone({**self.KITCHEN, "rect": [0, 10, 1, 1]})],
+            "zone.rect[2] must be a whole number from 0 to 19": [self.zone({**self.KITCHEN, "rect": [0, 0, 2 ** 64, 1]})],
+            "zone.rect[3] must be a whole number from 0 to 9": [self.zone({**self.KITCHEN, "rect": [0, 0, 1, 1.5]})],
+            "zone.rect must give its top left corner before its bottom right one": [
+                self.zone({**self.KITCHEN, "rect": given}) for given in ([5, 1, 2, 3], [2, 3, 5, 1], [19, 9, 0, 0])
+            ],
+            f"lines must be a list of from 1 to {LINES_MAX} lines": [
+                self.lines(given) for given in ([], {}, "0,0,1,1", None, [[0, 0, 1, 1]] * (LINES_MAX + 1))
+            ],
+            "lines[0] must be a list of four whole numbers": [self.lines(given) for given in ([[0, 0, 1]], [None], [[[0, 0, 1, 1]]])],
+            "lines[1][2] must be a whole number from 0 to 19": [self.lines([[0, 0, 1, 1], [0, 0, 20, 1]])],
+            "lines[0][3] must be a whole number from 0 to 9": [self.lines([[0, 0, 1, -1]])],
+            "lines[1] must not end where it starts": [self.lines([[0, 0, 1, 1], [3, 4, 3, 4]])],
+        }
+        for error, targets in refused.items():
+            for target in targets:
+                with self.subTest(error=error, target=target[:160]):
+                    self.assertEqual(await self.command(target), (400, {"error": error}))
+
+        # A track is drawn on a floor plan this server had the robot keep, of a map the database has.
+        for target in (self.zone(self.KITCHEN, plan=""), self.zone(self.KITCHEN, plan=self.PLAN.upper()),
+                       self.zone(self.KITCHEN, plan=self.ELSE), self.lines([[0, 0, 1, 1]], plan="x"),
+                       self.lines([[0, 0, 1, 1]], plan=self.ELSE), self.lines([[0, 0, 1, 1]]).replace("board1", "board2")):
+            with self.subTest(target=target):
+                self.assertEqual(await self.command(target), (404, {"error": "no such floor plan in the database"}))
+        # And a zone that is changed is one of that floor plan's.
+        for given in ("x", self.PLAN, self.ELSE, self.PLAN.upper()):
+            with self.subTest(given=given):
+                self.assertEqual(await self.command(self.zone(self.KITCHEN, given)),
+                                 (404, {"error": "no such zone of that floor plan in the database"}))
+
+        # The floor plan's map has to say how large the floor plan is, which is in the header of its rank_binary.
+        def plan(rank_binary: object) -> str:
+            store.save_map(self.ROBOT, {**MAP, "map": {**MAP["map"], "rank_binary": rank_binary}})
+            store.save_floorplan(self.ROBOT, self.PLAN, store.maps(self.ROBOT, 1)[0]["id"])
+            return rank_binary
+
+        def packed(file: bytes) -> str:
+            return base64.b64encode(zlib.compress(file)).decode()
+
+        unfit = {
+            "the floor plan's map.rank_binary must be Base64 that is not empty": ["", "cmFuaw", None, 7],
+            "the floor plan's map.rank_binary must be zlib data of a binary PGM file of a byte to a cell": [
+                "cmFuaw==", packed(b""), packed(b"P6\n20 10\n255\r" + bytes(600)), packed(b"P5\n20 10\n65535\r" + bytes(400)),
+                packed(b"P5\n20 10\n255"), packed(b"P5\n20 10 255#c\n" + bytes(200)), packed(b"P5\n0 10\n255\r"),
+                packed(b"P5\n20 x\n255\r" + bytes(200)), packed(b"P5\n20 10\n0\r" + bytes(200)), packed(b"P5 " + b"#" * 5000),
+                packed(b"P5\n-20 10\n255\r" + bytes(200)), base64.b64encode(zlib.compress(self.HEADER))[:-8].decode(),
+            ],
+            "the floor plan's map.rank_binary is a PGM file of more than 33554432 cells": [packed(b"P5 8193 4097 255\n")],
+        }
+        for error, binaries in unfit.items():
+            for binary in binaries:
+                plan(binary)
+                for target in (self.zone(self.KITCHEN), self.lines([[0, 0, 1, 1]])):
+                    with self.subTest(error=error, binary=str(binary)[:60], target=target[:60]):
+                        self.assertEqual(await self.command(target), (400, {"error": error}))
+        # A header with comments wherever they may be, and a file that has fewer cells than it says, are drawn on.
+        plan(packed(b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes(5)))
+        request, _ = await self.answered(robot, self.lines([[0, 0, 1, 0]]), self.DONE)
+        file = zlib.decompress(base64.b64decode(request["body"]["tracks"][0]["track_binary"]))
+        self.assertEqual(file, b"P5 #a\n#b\r20#c\n 10\t# d\n255 " + bytes([255, 255]) + bytes(198))
+
+    async def test_robot_that_is_not_connected(self) -> None:
+        await self.start()
+        for target in (self.zone(self.KITCHEN), self.lines([[0, 0, 1, 1]]), f"{self.BOARD1}&action=delete&track_uuid={self.ELSE}",
+                       f"/api/track?action=delete&track_uuid={self.ELSE}"):
+            with self.subTest(target):
+                self.assertEqual(await self.command(target), (409, {"error": "the robot is not connected"}))
+        self.assertEqual(await self.tracks(), [])
+
+    async def test_only_this_server_s_own_page_may_ask(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        told = (403, {"error": "a command is taken only from this server's own page"})
+        for sent in (("Host: localhost:8080",), ("Host: localhost:8080", "Origin: http://elsewhere.example"), ()):
+            for target in (self.zone(self.KITCHEN), "/api/track"):
+                with self.subTest(sent=sent, target=target):
+                    self.assertEqual(await self.command(target, sent), told)
+        for method in ("GET", "HEAD", "PUT"):
+            with self.subTest(method):
+                status, headers, _ = await self.fetch(self.zone(self.KITCHEN), method, self.PAGE)
+                self.assertEqual((status, headers["Allow"]), (405, "POST"))
+        # None of those reached the robot: the first thing it is sent is this one.
+        request, _ = await self.answered(robot, f"{self.BOARD1}&action=delete&track_uuid={self.ELSE}", self.DONE)
+        self.assertEqual(request["body"], {"ability": "maps.delete_track", "tracks": [self.ELSE]})
+
+    async def test_what_the_robot_does_not_accept_is_not_noted(self) -> None:
+        await self.start()
+        self.server.store.save_track(self.ROBOT, self.PLAN, self.ELSE, "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        before = await self.tracks()
+        robot, _ = await self.login()
+        for answer, told in (({"code": 422, "body": {}}, {"code": 422, "body": {}}), ({"code": 400}, {"code": 400, "body": None}),
+                             ({}, {"code": None, "body": None})):
+            for target, ability in ((self.zone(self.KITCHEN, self.ELSE), "save"), (self.lines([[0, 0, 1, 1]]), "save"),
+                                    (f"{self.BOARD1}&action=delete&track_uuid={self.ELSE}", "delete")):
+                with self.subTest(answer=answer, target=target):
+                    self.assertEqual((await self.answered(robot, target, answer))[1], (200, {"ability": f"maps.{ability}_track", **told}))
+                    self.assertEqual(await self.tracks(), before)
+
+    async def test_track_that_cannot_be_noted(self) -> None:
+        await self.start()
+        self.server.store.save_track(self.ROBOT, self.PLAN, self.ELSE, "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        before = await self.tracks()
+        robot, _ = await self.login()
+        told = (503, {"error": "the robot accepted it, but that could not be saved to the database"})
+        with contextlib.closing(sqlite3.connect(self.server.config.database)) as db:
+            for change in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"CREATE TRIGGER no_{change} BEFORE {change} ON tracks BEGIN SELECT RAISE(ABORT, 'full'); END")
+            for target in (self.zone(self.KITCHEN), self.zone(self.KITCHEN, self.ELSE), self.lines([[0, 0, 1, 1]]),
+                           f"{self.BOARD1}&action=delete&track_uuid={self.ELSE}"):
+                with self.subTest(target), self.assertLogs("deorbit", "ERROR") as logs:
+                    self.assertEqual((await self.answered(robot, target, self.DONE))[1], told)
+                    self.assertIn("[n/board1] not saved to the database: full", logs.output[0])
+            self.assertEqual(await self.tracks(), before)
+
+    async def test_change_and_its_answer_are_among_the_events(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        request, _ = await self.answered(robot, self.zone(self.KITCHEN), self.DONE)
+        answer, call, login = (await self.api(self.ROBOT1))["events"]
+        self.assertEqual([(event["kind"], event["service"]) for event in (answer, call, login)],
+                         [("response", None), ("call", None), ("login", None)])
+        # The binary is drawn anew from what is noted, and here by its length alone.
+        (made,) = request["body"]["tracks"]
+        self.assertEqual(json.loads(call["body_json"]), {
+            "ability": "maps.save_track", "tracks": [{**made, "track_binary": f"<{len(made['track_binary'])} chars>"}],
+        })
+        self.assertEqual(json.loads(answer["body_json"]), {"ability": "maps.save_track", "code": 200, "body": {}})
+
+    async def test_page_offers_what_the_server_takes(self) -> None:
+        await self.start()
+        _, _, script = await self.fetch("/app.js")
+        self.assertRegex(script.decode(), rf"(?m)^const ZONE_NAME_MAX = {ZONE_NAME_MAX};")
+        self.assertRegex(script.decode(), rf"(?m)^const LINES_MAX = {LINES_MAX};")
 
 
 class ServeTests(ServerTestCase):

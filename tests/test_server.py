@@ -584,7 +584,7 @@ class EventLogTests(ServerTestCase):
 class DeleteTests(ServerTestCase):
     """``Server.delete``, which is what deleting a robot in the web UI comes to."""
 
-    NOTHING = {"robots": 0, "events": 0, "maps": 0, "names": 0, "floorplans": 0}
+    NOTHING = {"robots": 0, "events": 0, "maps": 0, "names": 0, "floorplans": 0, "tracks": 0}
 
     def held(self, serial: str = "board1") -> dict[str, int]:
         """How many rows of a robot each table of the database file has."""
@@ -604,8 +604,9 @@ class DeleteTests(ServerTestCase):
         self.assertEqual((await robot.request("maps.create", {"rank_uuid": "r1"}))["code"], 201)
         self.server.store.save_name(self.ROBOT, "Rosie")
         self.server.store.save_floorplan(self.ROBOT, "r1", 1)
+        self.server.store.save_track(self.ROBOT, "r1", "t1", "cleaning", "Hall", "eco", [0, 0, 1, 1])
         self.server.store.save_heartbeat(RobotId("n", "board2"))
-        self.assertEqual(self.held(), {"robots": 1, "events": 2, "maps": 1, "names": 1, "floorplans": 1})
+        self.assertEqual(self.held(), {"robots": 1, "events": 2, "maps": 1, "names": 1, "floorplans": 1, "tracks": 1})
         with self.assertLogs("deorbit", "INFO") as logs:
             self.assertTrue(await self.server.delete(self.ROBOT))
         self.assertIn("[n/board1] disconnected: robot deleted", logs.output[-1])

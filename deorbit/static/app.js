@@ -1,6 +1,7 @@
 // The web UI: the robots in the server's database as a list, and a page for
-// each with its name, its schedule, its maps and floor plans, its settings, its
-// events, the commands it takes and the way to delete it.
+// each with its name, its schedule, its maps and floor plans with their zones
+// and no-go lines, its settings, its events, the commands it takes and the way
+// to delete it.
 // Whatever a robot sent reaches the page as text nodes, never as markup.
 
 import { PALETTES, paint, readBinary } from './map.js';
@@ -24,6 +25,8 @@ const CELL_MOST = 32; // the most a cell of a map is enlarged to by zooming in
 const ZOOM_STEP = 2; // how much a press of Zoom in enlarges a map, and one of Zoom out shrinks it
 const PAN_STEP = 48; // how far an arrow key moves a map that is larger than its window, in pixels of the page
 const NAME_MAX = 64; // the most characters the server takes for a robot's name
+const ZONE_NAME_MAX = 32; // the same for the name of a zone of a floor plan
+const LINES_MAX = 100; // and the most no-go lines a floor plan may have
 const SVG = 'http://www.w3.org/2000/svg';
 
 const app = document.getElementById('app');
@@ -42,14 +45,15 @@ let clockOffset = 0;
 // of them are open, the pictures of the maps that have been, the name being
 // entered for it, the command last sent from it and when the robot last accepted one,
 // the robot's schedule and its settings and what is being done to them, what is
-// being asked of the robot about a floor plan, whether the robot is being deleted, the server's
+// being asked of the robot about a floor plan, what is being drawn of the zones
+// and no-go lines of one, whether the robot is being deleted, the server's
 // last answer, what was last drawn and the fetch under
 // way. Navigating makes a new one, and a fetch that returns to find its view
 // replaced drops the result.
 let view = null;
 
-// The canvas of a map that is being dragged about, which a new page would take
-// out of the document and so let go of.
+// The canvas of a map that is being dragged about or drawn on, which a new page
+// would take out of the document and so let go of.
 let dragged = null;
 
 // ---- Building nodes ----
@@ -847,6 +851,11 @@ function mapFacts(map, runs) {
   ]);
 }
 
+/** The colours of the pictures of maps for the page's scheme as it is now. */
+function schemePalette() {
+  return PALETTES[matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'];
+}
+
 /** Mark a place on a map's picture: the robot as a disc with a line the way it faces, its base as a square. */
 function stamp(pen, { name, x, y, dir }, palette, ratio) {
   const size = 6 * ratio;
@@ -889,14 +898,21 @@ const PAN_KEYS = new Map([['ArrowLeft', [-1, 0]], ['ArrowRight', [1, 0]], ['Arro
  * where the keyboard is on it. The canvas is as large as the window, in the
  * screen's pixels, and is drawn anew at each change, so that the marks keep
  * their size. `which` tells the buttons of one window from those of another.
+ *
+ * `layer`, where there is one, is what is drawn over the map, between it and
+ * the marks: the zones and the no-go lines of a floor plan (`trackLayer`).
+ * While it is being drawn on, a drag draws rather than moves the map, until
+ * the button beside the zoom buttons is pressed. What is returned is the
+ * window and what draws it anew, for when what the layer draws has changed.
  */
-function viewer(source, marks, palette, which) {
+function viewer(source, marks, palette, which, layer = null) {
   const [across, down] = [source.width, source.height];
   let [wide, high, ratio] = [0, 0, 1]; // the window in pixels of the page, once it is laid out, and the screen's to one of those
   let scale = 0; // the pixels of the page to a cell
   let fitted = true; // whether the map is shown whole, as it stays when the window changes size
   let [middleX, middleY] = [across / 2, down / 2]; // the point of the map in the middle of the window, in cells
-  let drag = null; // the pointer that drags the map, and where it was last
+  let drag = null; // the pointer that drags the map or draws on it, and where it was last
+  let shown = { left: 0, top: 0, cell: 1 }; // where the map was last drawn on the canvas, in the screen's pixels
 
   // A whole number of the screen's pixels to a cell keeps the cells alike, where a cell is a pixel or more.
   // The map shown whole is not held to that, which would leave much of the window empty around a large one.
@@ -932,13 +948,21 @@ function viewer(source, marks, palette, which) {
     pen.imageSmoothingEnabled = cell < 2;
     pen.imageSmoothingQuality = 'high';
     pen.drawImage(source, left, top, across * cell, down * cell);
+    layer?.paint(pen, (x, y) => [left + x * cell, top + y * cell], cell, ratio);
     for (const mark of marks) stamp(pen, { ...mark, x: left + mark.x * cell, y: top + mark.y * cell }, palette, ratio);
-    frame.classList.toggle('pannable', larger());
+    shown = { left, top, cell };
+    const drawing = layer !== null && layer.draws();
+    frame.classList.toggle('drawing', drawing);
+    frame.classList.toggle('pannable', larger() && !drawing);
     // The Tab key stops at the map only where the arrow keys move it.
     if (larger()) canvas.tabIndex = 0;
     else canvas.removeAttribute('tabindex');
     hold(zoomIn, scale >= CELL_MOST);
     hold(zoomOut, fitted);
+    if (moveButton) {
+      moveButton.hidden = !layer.editing();
+      moveButton.setAttribute('aria-pressed', String(layer.editing() && !drawing));
+    }
   };
   const zoom = (by) => {
     scale = Math.min(CELL_MOST, even(scale * by));
@@ -951,11 +975,22 @@ function viewer(source, marks, palette, which) {
     middleY += y / scale;
     show();
   };
+  // Where a pointer is on the map, in its cells from the left and from the top, which need not be whole.
+  const cellAt = (event) => {
+    const box = canvas.getBoundingClientRect();
+    return [
+      ((event.clientX - box.left) * ratio - shown.left) / shown.cell,
+      ((event.clientY - box.top) * ratio - shown.top) / shown.cell,
+    ];
+  };
   const letGo = (event) => {
     if (drag?.pointer !== event.pointerId) return;
+    const drew = drag.drawing;
     drag = null;
     if (dragged === canvas) dragged = null;
     frame.classList.remove('dragging');
+    // What was drawn is kept where the pointer was let go, and not where the drag was cut short.
+    if (drew) layer.end(event.type === 'pointerup');
   };
   const canvas = h('canvas', {
     class: 'map-canvas',
@@ -963,16 +998,27 @@ function viewer(source, marks, palette, which) {
     'aria-label': 'The map',
     'data-focus': `map-view ${which}`,
     onpointerdown: (event) => {
-      if (event.button !== 0 || !larger()) return;
+      const drawing = layer !== null && layer.draws();
+      if (event.button !== 0 || (!drawing && !larger())) return;
       // Nor does the drag select text, or move the keyboard's focus.
       event.preventDefault();
       canvas.setPointerCapture(event.pointerId);
-      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY };
+      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, drawing };
       dragged = canvas;
-      frame.classList.add('dragging');
+      if (drawing) {
+        layer.begin(...cellAt(event));
+        show();
+      } else {
+        frame.classList.add('dragging');
+      }
     },
     onpointermove: (event) => {
       if (drag?.pointer !== event.pointerId) return;
+      if (drag.drawing) {
+        layer.extend(...cellAt(event));
+        show();
+        return;
+      }
       const [x, y] = [drag.x - event.clientX, drag.y - event.clientY];
       [drag.x, drag.y] = [event.clientX, event.clientY];
       move(x, y);
@@ -999,7 +1045,13 @@ function viewer(source, marks, palette, which) {
   }, icon(glyph));
   const zoomIn = zoomButton('Zoom in', 'plus', 'zoom-in', () => zoom(ZOOM_STEP));
   const zoomOut = zoomButton('Zoom out', 'minus', 'zoom-out', () => zoom(1 / ZOOM_STEP));
-  const frame = h('div', { class: 'map-view' }, canvas, h('div', { class: 'map-zoom' }, zoomIn, zoomOut));
+  // While the layer is drawn on: pressed, a drag moves the map, as it does otherwise; let go, a drag draws.
+  const moveButton = layer && zoomButton('Move the map', 'move', 'map-move', () => {
+    layer.move();
+    show();
+  });
+  if (moveButton) moveButton.hidden = true;
+  const frame = h('div', { class: 'map-view' }, canvas, h('div', { class: 'map-zoom' }, zoomIn, zoomOut, moveButton));
   // Drawn once the window is laid out, and again when its size changes. In a row that is shut it has none.
   new ResizeObserver(([seen]) => {
     const { width, height } = seen.contentRect;
@@ -1007,11 +1059,17 @@ function viewer(source, marks, palette, which) {
     [wide, high, ratio] = [width, height, devicePixelRatio || 1];
     show();
   }).observe(canvas);
-  return frame;
+  return [frame, show];
 }
 
-/** A map as a picture with its legend: what its two binaries hold, and where the robot and its base were. */
-async function picture(map, which) {
+/**
+ * A map as a picture with its legend: what its two binaries hold, and where
+ * the robot and its base were. `layer`, where there is one, makes what is drawn
+ * over the picture of the cells of `rank_binary` that it is told of: where the
+ * picture starts among them, how many there are and the colours. What is
+ * returned is the nodes of the picture and what draws it anew.
+ */
+async function picture(map, which, layer = null) {
   const binaries = record(map.map);
   const places = record(map.robot);
   const notes = [];
@@ -1028,7 +1086,7 @@ async function picture(map, which) {
     notes.push(`The cleaned cells are not shown: ${error.message}.`);
     return null;
   });
-  const palette = PALETTES[matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'];
+  const palette = schemePalette();
   // The robot last, so that it is drawn over the base it stands on.
   const made = paint(rank, real, { base: places.base, robot: places.pos }, palette);
   const source = h('canvas', { width: made.width, height: made.height });
@@ -1048,8 +1106,10 @@ async function picture(map, which) {
     const held = made.odd.map(([value, count]) => `${value} in ${count} cells`).join(', ');
     notes.push(`real_binary also holds ${held}, which this page has no meaning for.`);
   }
-  return [
-    viewer(source, made.marks, palette, which),
+  const over = layer && layer({ left: made.left, top: made.top, width: rank.width, height: rank.height, palette });
+  const [frame, redraw] = viewer(source, made.marks, palette, which, over);
+  const nodes = [
+    frame,
     h('ul', { class: 'map-legend' },
       key('floor', 'Floor'),
       key('wall', 'Wall'),
@@ -1058,16 +1118,21 @@ async function picture(map, which) {
       marked.has('base') && key('base', 'Base')),
     ...notes.map((note) => h('p', { class: 'hint' }, note)),
   ].filter(Boolean);
+  return { nodes, repaint: redraw };
 }
 
-/** Fetch a map with its binaries and put its picture in `node`, or why there is none and a way to try again. */
-async function loadMap(mine, id, node, which) {
+/** Fetch a map with its binaries and put its picture in the node of `pictured`, or why there is none and a way to try again. */
+async function loadMap(mine, id, pictured, which, editable) {
+  const node = pictured.node;
   node.replaceChildren(h('p', { class: 'hint' }, 'Reading the map…'));
   const address = `api/map?${new URLSearchParams({ ...mine.robot, id })}`;
   const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS);
   try {
     if (status !== 200) throw new Error(answer?.error ?? 'no answer from the server');
-    node.replaceChildren(...await picture(record(parsed(record(answer.map).map_json)), which));
+    const layer = (grid) => trackLayer(mine, id, pictured, editable, grid);
+    const { nodes, repaint: redraw } = await picture(record(parsed(record(answer.map).map_json)), which, layer);
+    node.replaceChildren(...nodes);
+    pictured.repaint = redraw;
   } catch (error) {
     node.replaceChildren(
       h('p', { class: 'map-failed' }, `Cannot show this map: ${error.message}.`),
@@ -1075,7 +1140,7 @@ async function loadMap(mine, id, node, which) {
         class: 'button',
         type: 'button',
         'data-focus': `map-again-${id}`,
-        onclick: () => loadMap(mine, id, node, which),
+        onclick: () => loadMap(mine, id, pictured, which, editable),
       }, 'Try again'));
   }
 }
@@ -1085,17 +1150,29 @@ async function loadMap(mine, id, node, which) {
  * once, when it is first opened, however often the page is drawn again. A node
  * is in one place of a page, so a picture that is shown elsewhere than in the
  * row of its map, as that of a floor plan is in the schedule, is kept by that
- * `place` as well, and is fetched once for it.
+ * `place` as well, and is fetched once for it. The zones and the no-go lines of
+ * a floor plan are drawn over its picture, and are drawn on only in the row of
+ * its map. Elsewhere `chosen` is the zone that is shown as chosen.
  */
-function drawing(mine, id, place = null) {
+function drawing(mine, id, place = null, chosen = null) {
   const key = place === null ? id : `${place} ${id}`;
-  let node = mine.drawings.get(key);
-  if (!node) {
-    node = h('div', { class: 'map-drawing' });
-    mine.drawings.set(key, node);
-    loadMap(mine, id, node, key);
+  let pictured = mine.drawings.get(key);
+  if (!pictured) {
+    // With what draws the picture anew once there is one, and the zone it shows as chosen.
+    pictured = { node: h('div', { class: 'map-drawing' }), repaint: null, chosen };
+    mine.drawings.set(key, pictured);
+    loadMap(mine, id, pictured, key, place === null);
   }
-  return node;
+  if (pictured.chosen !== chosen) {
+    pictured.chosen = chosen;
+    pictured.repaint?.();
+  }
+  return pictured.node;
+}
+
+/** Draw the pictures of the view's maps anew, for what is drawn over them. */
+function repaint(mine) {
+  for (const pictured of mine.drawings.values()) pictured.repaint?.();
 }
 
 // The columns of the maps: when the run of one started, how it went, what it cleaned
@@ -1119,7 +1196,12 @@ function kept(plan) {
   return h('span', { class: plan ? 'tick on' : 'tick', role: 'img', 'aria-label': text, title: text }, plan && icon('check'));
 }
 
-/** A map as a row of the table. */
+/**
+ * A map as a row of the table. Opened, it has what the map says of its run
+ * and its picture; and, for a map that is a floor plan, its zones and no-go
+ * lines under the first, which are drawn on the second. It stays open while
+ * one of those is being drawn.
+ */
 function mapRow(row, mine, robot, plans) {
   const map = record(parsed(row.map_json));
   const runs = (Array.isArray(map.runs) ? map.runs : []).map(record);
@@ -1131,6 +1213,7 @@ function mapRow(row, mine, robot, plans) {
   return {
     id: row.id,
     focus: `map-${row.id}`,
+    pinned: plan !== null && mine.tracks.edit?.map === row.id,
     cells: [
       // When the robot says the run began, which every map of one run says alike.
       dated(record(map.timing).start),
@@ -1142,7 +1225,7 @@ function mapRow(row, mine, robot, plans) {
     tools: mapTools(mine, robot, plans, row.id, map, plan),
     note: floorQuestion(mine, robot, plans, row.id, map, plan) || floorSaid(mine, row.id),
     detail: () => [h('div', { class: 'map-detail' },
-      h('div', { class: 'map-facts' }, mapFacts(map, runs)),
+      h('div', { class: 'map-facts' }, mapFacts(map, runs), plan && trackPanel(mine, robot, row.id, plan)),
       drawing(mine, row.id))],
   };
 }
@@ -1151,7 +1234,9 @@ function mapRow(row, mine, robot, plans) {
  * The maps the robot uploaded: at the top those it keeps as floor plans, however
  * old they are, the one it accepted last first, and then the others, newest first.
  */
-function mapList(mine, { robot, maps, more_maps: more, floorplans: plans, floorplan_maps: old }) {
+function mapList(mine, body) {
+  const { robot, maps, more_maps: more, floorplan_maps: old } = body;
+  const plans = plansOf(body);
   const all = [...maps, ...old];
   if (all.length === 0) return none('Nothing yet.');
   const made = plans.map((plan) => plan.map_id);
@@ -1271,9 +1356,15 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
   // Nothing is asked of a map that the buttons would no longer ask it of.
   if (demoting ? plan === null : plan !== null || others.length === 0) return null;
   const back = demoting ? `floor-drop-${id}` : `floor-swap-${id}`;
-  const question = demoting ? `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones.`
-    : others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.`
-    : 'Replace which floor plan with this map? The robot keeps the map in its place.';
+  // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
+  const drawn = others.some((old) => {
+    const known = plans.find((each) => each.rank_uuid === old);
+    return known && (known.zones.length > 0 || known.nogo !== null);
+  });
+  const forgotten = drawn ? ' What it does with the zones and no-go lines drawn here is not known, and this page forgets them.' : '';
+  const question = demoting ? `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones and no-go lines.`
+    : others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.${forgotten}`
+    : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`;
   const again = demoting
     ? [robotButton(floors, robot, 'Demote it', 'floor-again',
       () => askFloor(mine, 'Demote', { action: 'demote', rank_uuid: plan.rank_uuid }, id, back))]
@@ -1290,6 +1381,367 @@ function floorQuestion(mine, robot, plans, id, map, plan) {
 function floorSaid(mine, map) {
   const said = mine.floors.said;
   return said !== null && said.map === map && h('p', { class: `command-said ${said.tone}`, role: 'status' }, said.text);
+}
+
+// ---- The zones and no-go lines of a floor plan ----
+//
+// A zone is a part of a floor plan that the robot can be told to clean alone,
+// and the no-go lines are where it is not to go. The spec calls both tracks.
+// The robot keeps them with the floor plan and cannot be asked which it has, so
+// they are those the server had it keep, each with what was drawn for it. They
+// are drawn on the picture of the map the floor plan was made of, in that map's
+// row: a zone as a rectangle, and the lines one at a time, all of them one
+// track. What is drawn is in cells of the map's rank_binary, from its left and
+// from its top, which is what the server draws a track's binary on.
+
+const isCells = (value) => Array.isArray(value) && value.length === 4 && value.every(Number.isInteger);
+
+/** The rectangle of a zone, as its top left cell and its bottom right one, or null where the server has none. */
+function rectOf(zone) {
+  const rect = parsed(zone.shape_json);
+  return isCells(rect) ? rect : null;
+}
+
+/** The no-go lines of a floor plan, each from one cell to another, or none for a floor plan that has no track of them. */
+function linesOf(track) {
+  const lines = track ? parsed(track.shape_json) : [];
+  return Array.isArray(lines) ? lines.filter(isCells) : [];
+}
+
+/** The rectangle between two cells, as its top left cell and its bottom right one. */
+function corners([x0, y0, x1, y1]) {
+  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+}
+
+/** Draw a zone on a map's picture: the rectangle `rect`, with its name in its top left corner, dashed while it is drawn. */
+function paintZone(pen, at, rect, name, colour, palette, ratio, dashed = false) {
+  const [x0, y0] = at(rect[0], rect[1]);
+  const [x1, y1] = at(rect[2] + 1, rect[3] + 1);
+  pen.save();
+  pen.fillStyle = `rgba(${colour}, 0.22)`;
+  pen.fillRect(x0, y0, x1 - x0, y1 - y0);
+  pen.strokeStyle = `rgb(${colour})`;
+  pen.lineWidth = 1.5 * ratio;
+  pen.setLineDash(dashed ? [5 * ratio, 4 * ratio] : []);
+  pen.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  if (name) {
+    // Within the zone, and readable over whatever is under it.
+    pen.beginPath();
+    pen.rect(x0, y0, x1 - x0, y1 - y0);
+    pen.clip();
+    pen.setLineDash([]);
+    pen.font = `600 ${12 * ratio}px ui-sans-serif, system-ui, sans-serif`;
+    pen.textBaseline = 'top';
+    pen.lineJoin = 'round';
+    pen.lineWidth = 3 * ratio;
+    pen.strokeStyle = `rgb(${palette.unseen})`;
+    pen.strokeText(name, x0 + 5 * ratio, y0 + 4 * ratio);
+    pen.fillStyle = `rgb(${colour})`;
+    pen.fillText(name, x0 + 5 * ratio, y0 + 4 * ratio);
+  }
+  pen.restore();
+}
+
+/** Draw a no-go line on a map's picture, from the middle of one cell to the middle of the other, no thinner than a cell. */
+function paintLine(pen, at, [x0, y0, x1, y1], colour, size, ratio) {
+  pen.save();
+  pen.strokeStyle = `rgb(${colour})`;
+  pen.lineWidth = Math.max(3 * ratio, size);
+  pen.lineCap = 'round';
+  pen.beginPath();
+  pen.moveTo(...at(x0 + 0.5, y0 + 0.5));
+  pen.lineTo(...at(x1 + 0.5, y1 + 0.5));
+  pen.stroke();
+  pen.restore();
+}
+
+/**
+ * What is drawn over the picture of the map of that `id` while it is a floor
+ * plan: its zones and its no-go lines. `grid` says where the picture starts
+ * among the cells of the map and how many cells there are, and has the
+ * colours. In the row of the map, where it is `editable`, it is drawn on while
+ * the view's `tracks.edit` is about that map: a drag draws the zone in place of
+ * what it was, or one more line. Elsewhere the zone `pictured.chosen` is shown as
+ * chosen. All of it is read from the view as it is drawn, since the picture
+ * outlives every page it is put on.
+ */
+function trackLayer(mine, id, pictured, editable, { left, top, width, height, palette }) {
+  let stroke = null; // what is being drawn: the cell the pointer went down on, and the one it is on
+  const clamp = (value, most) => Math.min(most - 1, Math.max(0, value));
+  const cellAt = (x, y) => [clamp(Math.floor(x) + left, width), clamp(Math.floor(y) + top, height)];
+  const editing = () => {
+    const edit = mine.tracks.edit;
+    return editable && edit !== null && edit.map === id ? edit : null;
+  };
+  return {
+    editing: () => editing() !== null,
+    draws: () => editing() !== null && !editing().moving,
+    move: () => {
+      const edit = editing();
+      if (edit) edit.moving = !edit.moving;
+    },
+    begin: (x, y) => {
+      const at = cellAt(x, y);
+      stroke = [...at, ...at];
+    },
+    extend: (x, y) => {
+      if (stroke) stroke = [stroke[0], stroke[1], ...cellAt(x, y)];
+    },
+    end: (keep) => {
+      const [edit, drawn] = [editing(), stroke];
+      stroke = null;
+      pictured.repaint?.();
+      // A press that does not leave its cell draws nothing.
+      if (!keep || edit === null || drawn === null || (drawn[0] === drawn[2] && drawn[1] === drawn[3])) return;
+      if (edit.kind === 'zone') edit.rect = corners(drawn);
+      else if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
+      // The form says what has been drawn.
+      drawRobot(mine);
+    },
+    paint: (pen, plot, size, ratio) => {
+      const plan = mine.body && plansOf(mine.body).find((known) => known.map_id === id);
+      if (!plan) return;
+      const edit = editing();
+      const at = (x, y) => plot(x - left, y - top);
+      for (const zone of plan.zones) {
+        const rect = rectOf(zone);
+        // The zone that is being drawn is where it is drawn now.
+        if (!rect || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) continue;
+        const colour = zone.track_uuid === pictured.chosen ? palette.chosen : palette.zone;
+        paintZone(pen, at, rect, zone.name, colour, palette, ratio);
+      }
+      const lines = edit?.kind === 'nogo' ? [...edit.lines, ...(stroke ? [stroke] : [])] : linesOf(plan.nogo);
+      for (const line of lines) paintLine(pen, at, line, palette.nogo, size, ratio);
+      const rect = edit?.kind === 'zone' && (stroke ? corners(stroke) : edit.rect);
+      if (rect) paintZone(pen, at, rect, edit.name.trim(), palette.chosen, palette, ratio, true);
+    },
+  };
+}
+
+/** A zone, or the no-go lines, as the colour they are drawn in on a map. */
+function trackSwatch(colour) {
+  const swatch = h('span', { class: 'swatch' });
+  swatch.style.background = `rgb(${colour})`;
+  return swatch;
+}
+
+/**
+ * Open the form that draws a zone of the floor plan `plan`, which is made of
+ * the map of that `id`: the zone `zone`, or a new one where there is none. Of
+ * the `kind` nogo, the form draws the floor plan's no-go lines. The row of the
+ * map stays open while the form is.
+ */
+function drawTracks(mine, id, plan, kind, zone = null) {
+  const job = mine.tracks;
+  const where = { map: id, rank: plan.rank_uuid, kind, moving: false };
+  job.edit = kind === 'zone'
+    ? { ...where, track: zone?.track_uuid ?? null, name: zone?.name ?? '', mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
+      rect: zone ? rectOf(zone) : null }
+    : { ...where, track: plan.nogo?.track_uuid ?? null, lines: linesOf(plan.nogo) };
+  job.dropping = null;
+  job.said = null;
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${kind === 'zone' ? 'zone-name' : 'track-save'}"]`)?.focus();
+}
+
+/** Shut the form, and put the keyboard back on the button that opened it, which `back` names. */
+function endTracks(mine, back) {
+  mine.tracks.edit = null;
+  mine.tracks.said = null;
+  // A selection would hold the page as it is, and so would the field for the name while the keyboard is in it.
+  getSelection().removeAllRanges();
+  if (entering()) document.activeElement.blur();
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${back}"]`)?.focus();
+}
+
+/**
+ * Ask the robot, through the server, to keep a zone or the no-go lines of a
+ * floor plan, or to drop a track, as `more` says. The view's `tracks` holds
+ * whether an answer is waited for, and how the last request went, with the map
+ * it was about. One is asked at a time. Once the robot accepts, the form is
+ * shut and the keyboard goes to the button `back` names.
+ */
+async function askTracks(mine, label, more, map, back) {
+  const job = mine.tracks;
+  if (job.waiting) return;
+  job.waiting = true;
+  job.said = null;
+  drawRobot(mine);
+  const address = `api/track?${new URLSearchParams({ ...mine.robot, ...more })}`;
+  const [status, answer] = await ask(address, new AbortController(), COMMAND_TIMEOUT_MS, 'POST');
+  job.waiting = false;
+  if (mine !== view) return;
+  const went = outcome(label, status, answer);
+  job.said = { ...went, map };
+  if (went.tone !== 'good') {
+    drawRobot(mine);
+    return;
+  }
+  job.edit = null;
+  job.dropping = null;
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${back}"]`)?.focus();
+  // The zones and the no-go lines come with the robot, and so do the events of this.
+  refresh(mine);
+}
+
+/** Ask for what the form has drawn to be kept, or say what it lacks. */
+function saveTracks(mine, back) {
+  const job = mine.tracks;
+  const edit = job.edit;
+  const lacks = (text) => {
+    job.said = { tone: 'bad', text: `Save: ${text}`, map: edit.map };
+    drawRobot(mine);
+  };
+  if (edit.kind === 'zone') {
+    // As the server keeps it: one line, its words a space apart.
+    const name = edit.name.split(/\s+/).filter(Boolean).join(' ');
+    if (name === '') return lacks('give the zone a name');
+    if (edit.rect === null) return lacks('draw the zone on the map');
+    const zone = JSON.stringify({ name, cleaning_mode: edit.mode, rect: edit.rect });
+    return askTracks(mine, 'Save', { action: 'zone', rank_uuid: edit.rank, zone, ...(edit.track && { track_uuid: edit.track }) },
+      edit.map, back);
+  }
+  if (edit.lines.length > 0) {
+    return askTracks(mine, 'Save', { action: 'nogo', rank_uuid: edit.rank, lines: JSON.stringify(edit.lines) }, edit.map, back);
+  }
+  // With no line left, the floor plan's are dropped, where it has any.
+  if (edit.track) return askTracks(mine, 'Save', { action: 'delete', track_uuid: edit.track }, edit.map, back);
+  return endTracks(mine, back);
+}
+
+/**
+ * The form that draws a zone, or the no-go lines: for a zone its name and its
+ * mode, and what is to be drawn on the map beside it, then Save and Cancel; for
+ * the lines how many there are, and the buttons that take back the last and
+ * all of them. `back` names the button that opened it.
+ */
+function trackForm(mine, robot, edit, back) {
+  const job = mine.tracks;
+  const zone = edit.kind === 'zone';
+  const button = h('button', {
+    class: 'command',
+    type: 'submit',
+    disabled: !robot.session,
+    'aria-disabled': robot.session && job.waiting && 'true',
+    title: !robot.session ? 'Save: the robot is not connected' : job.waiting && 'Save: waiting for the robot to answer',
+    'data-focus': 'track-save',
+  }, 'Save');
+  const count = zone ? 0 : edit.lines.length;
+  // Held back, not disabled, so that the keyboard stays on one that takes back the last line.
+  const takeBack = (label, focus, press) => h('button', {
+    class: 'button',
+    type: 'button',
+    'aria-disabled': count === 0 && 'true',
+    title: count === 0 ? `${label}: there is no line` : null,
+    'data-focus': focus,
+    onclick: () => {
+      if (edit.lines.length === 0) return;
+      getSelection().removeAllRanges();
+      press();
+      drawRobot(mine);
+    },
+  }, label);
+  const said = zone ? (edit.rect ? 'Drag on the map to draw the zone again.' : 'Drag on the map to draw the zone.')
+    : count === 0 ? (edit.track ? 'No lines: saving deletes them from the robot.' : 'Drag on the map to draw a line.')
+    : count < LINES_MAX ? `${count} ${count === 1 ? 'line' : 'lines'}. Drag on the map to draw another.`
+    : `${count} lines, the most there may be.`;
+  return h('form', {
+    class: 'track-form',
+    onsubmit: (submit) => {
+      submit.preventDefault();
+      // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
+      button.focus();
+      getSelection().removeAllRanges();
+      if (!job.waiting) saveTracks(mine, back);
+    },
+  },
+  zone && rows([
+    ['Name', h('input', {
+      type: 'text',
+      value: edit.name,
+      maxlength: ZONE_NAME_MAX,
+      autocomplete: 'off',
+      'aria-label': 'Name',
+      'data-focus': 'zone-name',
+      oninput: ({ target }) => { edit.name = target.value; },
+    })],
+    ['Mode', h('select', {
+      'aria-label': 'Mode',
+      'data-focus': 'zone-mode',
+      onchange: ({ target }) => { edit.mode = target.value; },
+    }, MODES.map((mode) => h('option', { value: mode, selected: mode === edit.mode }, mode)))],
+  ]),
+  h('p', { class: 'hint' }, said, ' To move an enlarged map instead, press the button with the arrows beside it.'),
+  h('div', { class: 'slot-tools' },
+    button,
+    !zone && takeBack('Undo', 'track-undo', () => edit.lines.pop()),
+    !zone && takeBack('Clear', 'track-clear', () => { edit.lines = []; }),
+    h('button', { class: 'button', type: 'button', 'data-focus': 'track-cancel', onclick: () => endTracks(mine, back) }, 'Cancel')));
+}
+
+/** Ask whether the zone `uuid` is to go from the robot, or with null take that back, and put the keyboard on the button `focus` names. */
+function askDropZone(mine, uuid, focus) {
+  mine.tracks.dropping = uuid;
+  mine.tracks.said = null;
+  // A selection would hold the page as it is, and the press has to show.
+  getSelection().removeAllRanges();
+  drawRobot(mine);
+  app.querySelector(`[data-focus="${focus}"]`)?.focus();
+}
+
+/**
+ * The zones and the no-go lines of the floor plan `plan`, which is made of the
+ * map of that `id`, under what the map says of its run: a line to each zone,
+ * with the buttons that draw it again and that ask whether to delete it, and
+ * how many no-go lines there are, with the button that draws them; and under
+ * either the form that draws them while it is open. Deleting a zone is asked
+ * twice, the second time under it and with the keyboard put on Keep, as a
+ * map's Demote is. One thing is drawn at a time, in the whole page.
+ */
+function trackPanel(mine, robot, id, plan) {
+  const job = mine.tracks;
+  const edit = job.edit !== null && job.edit.map === id ? job.edit : null;
+  const colours = schemePalette();
+  const why = job.edit !== null ? 'a zone or no-go lines are being drawn' : null;
+  const lines = linesOf(plan.nogo);
+  const zoneLine = (zone) => {
+    const focus = `zone-${zone.track_uuid}`;
+    const name = word(zone.name) ?? 'Unnamed';
+    return [
+      h('li', { class: 'track' },
+        trackSwatch(colours.zone),
+        h('span', { class: 'track-name' }, name),
+        h('span', { class: 'track-mode' }, plain(zone.mode)),
+        h('div', { class: 'entry-tools' },
+          robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawTracks(mine, id, plan, 'zone', zone),
+            { why: why ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
+          robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone.track_uuid, 'zone-keep'),
+            { why, glyph: 'trash', alone: true }))),
+      job.dropping === zone.track_uuid && h('li', { class: 'entry-ask track-ask' },
+        h('p', null, `Delete the zone ${name}? The robot deletes it.`),
+        h('div', { class: 'slot-tools' },
+          // No button of the robot's, so it also takes the question back while the robot is away.
+          h('button', { class: 'button', type: 'button', 'data-focus': 'zone-keep', onclick: () => askDropZone(mine, null, `${focus}-drop`) },
+            'Keep'),
+          robotButton(job, robot, 'Delete it', 'zone-again',
+            () => askTracks(mine, 'Delete', { action: 'delete', track_uuid: zone.track_uuid }, id, `zone-add-${id}`)))),
+    ];
+  };
+  return h('section', { class: 'tracks' },
+    h('div', { class: 'tracks-head' },
+      h('h3', null, 'Zones'),
+      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawTracks(mine, id, plan, 'zone'), { why, glyph: 'plus' })),
+    plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.flatMap(zoneLine)) : h('p', { class: 'track-none' }, none('No zones.')),
+    edit?.kind === 'zone' && trackForm(mine, robot, edit, edit.track ? `zone-${edit.track}-edit` : `zone-add-${id}`),
+    h('div', { class: 'tracks-head' },
+      h('h3', null, 'No-go lines'),
+      robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawTracks(mine, id, plan, 'nogo'), { why, glyph: 'pencil' })),
+    edit?.kind === 'nogo' ? trackForm(mine, robot, edit, `nogo-edit-${id}`)
+      : lines.length > 0 ? h('p', { class: 'track' }, trackSwatch(colours.nogo), `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`)
+      : h('p', { class: 'track-none' }, none('None.')),
+    job.said?.map === id && h('p', { class: `command-said ${job.said.tone}`, role: 'status' }, job.said.text));
 }
 
 // ---- The schedule of one robot ----
@@ -1323,6 +1775,25 @@ function floorOf(run) {
   return typeof uuid === 'string' && uuid !== '' ? uuid : null;
 }
 
+/** What the robot knows the zone a run cleans by, or null for a run of a whole floor plan, or of none. */
+function zoneOf(run) {
+  return word(record(run.map).track_id);
+}
+
+/**
+ * The zone of a run, as a few words for a line: its name where the server had
+ * the robot keep it, which is among the `zones` of one of `plans`, or else how
+ * what the robot knows it by begins, the rest of which is told to a pointer
+ * that rests on it, or the whole of it where it is `whole`.
+ */
+function zoneShown(run, plans, whole = false) {
+  const track = zoneOf(run);
+  if (track === null) return null;
+  const zone = plans.find((plan) => plan.rank_uuid === floorOf(run))?.zones.find((known) => known.track_uuid === track);
+  if (zone && word(zone.name)) return zone.name;
+  return whole ? `zone ${track}` : h('span', { title: track }, `zone ${short(track)}`);
+}
+
 /**
  * Those of the floor plans `uuids` that are not among `plans`, the ones the
  * server had the robot keep. A robot cannot be asked which it has, so one of
@@ -1350,13 +1821,21 @@ function sign(text = null) {
 /**
  * The floor plans the server had the robot keep, each with the `start` of the
  * map it was made of: when the robot says that map's run began, which is what
- * the table of the maps shows of it, or null where the server has the map no more.
+ * the table of the maps shows of it, or null where the server has the map no
+ * more. Each has as well the `zones` the server had the robot keep of it, by
+ * name, and as `nogo` the track of its no-go lines, or null.
  */
-function startsOf({ maps, floorplans, floorplan_maps: old }) {
+function plansOf({ maps, floorplans, floorplan_maps: old, tracks }) {
   const all = [...maps, ...old];
   return floorplans.map((plan) => {
     const row = all.find((map) => map.id === plan.map_id);
-    return { ...plan, start: row ? record(record(parsed(row.map_json)).timing).start ?? null : null };
+    const own = tracks.filter((track) => track.rank_uuid === plan.rank_uuid);
+    return {
+      ...plan,
+      start: row ? record(record(parsed(row.map_json)).timing).start ?? null : null,
+      zones: own.filter((track) => track.type === 'cleaning'),
+      nogo: own.find((track) => track.type === 'no-go') ?? null,
+    };
   });
 }
 
@@ -1381,11 +1860,13 @@ function floorShown(runs, plans, whole = false) {
   const uuid = place && word(place.rank_id);
   const start = uuid && startOf(uuid, plans);
   const lost = strays(runs.map(floorOf), plans);
+  const zone = !whole && runs.length === 1 && zoneShown(runs[0], plans);
   return [
     lost.length > 0 && sign(strayed(lost)),
     place === null ? none() : uuid === null ? none('Unnamed') : start ? dated(start)
       : whole ? uuid : h('span', { title: uuid }, short(uuid)),
-    !whole && (runs.length > 1 ? ` · ${runs.length} runs` : place && named(' · zone', place.track_id)),
+    !whole && runs.length > 1 && ` · ${runs.length} runs`,
+    ...(zone ? [' · ', zone] : []),
   ];
 }
 
@@ -1447,22 +1928,22 @@ function draftOf(event) {
     time: event && typeof event.time === 'string' ? event.time : '',
     mode: among(MODES, settings.mode),
     navigation: among(NAVIGATION_MODES, settings.navigation_mode),
-    // The floor plan of the event's only run, by what the robot knows it by, or nothing for none.
+    // The floor plan of the event's only run, by what the robot knows it by, or nothing for none; the zone of it
+    // that the run cleans, or nothing for the whole of it; and whether the run minds the floor plan's no-go lines.
     floor: (runs.length === 1 && floorOf(runs[0])) || '',
+    zone: (runs.length === 1 && floorOf(runs[0]) && zoneOf(runs[0])) || '',
+    nogo: runs.length === 1 && record(runs[0].map).nogo_enabled === true,
     runs,
   };
 }
 
 /**
  * The map of a run that is to be on the floor plan `floor`, or on none where
- * that is empty. A run that stays on its floor plan keeps its map as the robot
- * gave it, with its zone. On another it cleans the whole of it and is not told
- * to mind a no-go map: a floor plan this server had the robot make has no
- * zones and no such map.
+ * that is empty: of the whole of it, or of its zone `zone` where that is not
+ * empty, and minding its no-go lines or not as `nogo` says.
  */
-function placed(run, floor) {
-  if (floor === '') return null;
-  return floor === floorOf(run) ? run.map : { rank_id: floor, track_id: null, nogo_enabled: false };
+function placed(floor, zone, nogo) {
+  return floor === '' ? null : { rank_id: floor, track_id: zone === '' ? null : zone, nogo_enabled: nogo };
 }
 
 /**
@@ -1483,16 +1964,16 @@ function edit(mine, event) {
 /** Ask for the event in the form to be added, or to be put in place of the one the form was opened on. */
 function save(mine) {
   const plan = mine.schedule;
-  const { id, enabled, time, mode, navigation, floor, runs } = plan.form;
+  const { id, enabled, time, mode, navigation, floor, zone, nogo, runs } = plan.form;
   const days = DAYS.map(([name]) => name).filter((name) => plan.form.days.includes(name));
   if (days.length === 0) {
     plan.said = { tone: 'bad', text: 'Save: choose at least one day' };
     drawRobot(mine);
     return;
   }
-  // The form has the settings and the floor plan of an event's only run. The runs of an event with more go back as the robot gave them.
+  // The form has the settings, the floor plan and the zone of an event's only run. The runs of an event with more go back as the robot gave them.
   const changed = runs.length === 1
-    ? [{ ...runs[0], settings: { mode, navigation_mode: navigation }, map: placed(runs[0], floor) }]
+    ? [{ ...runs[0], settings: { mode, navigation_mode: navigation }, map: placed(floor, zone, nogo) }]
     : runs;
   const event = sent({ id, enabled, days, time, runs: changed });
   askSchedule(mine, id === null ? 'add' : 'update', 'Save', { event: JSON.stringify(event) });
@@ -1503,7 +1984,7 @@ function save(mine) {
  * settings and of the floor plans do. It can be pressed while the robot is
  * connected, unless there is another reason `why` not, and does nothing while
  * the robot has yet to answer the last one pressed, which `job.waiting` says:
- * `job` is the view's `schedule`, its `settings` or its `floors`. `glyph` is an icon that stands before its
+ * `job` is the view's `schedule`, its `settings`, its `floors` or its `tracks`. `glyph` is an icon that stands before its
  * label, or `alone` on it, as on a button of a row, which then says what it
  * does to a pointer that rests on it. One that is `lit` shows that what it
  * turns off is on.
@@ -1565,15 +2046,18 @@ function floorLabel(plan) {
  * keep, which an event of one run can be put on, and `back` names the button
  * that opens the form on its draft, which Cancel returns the keyboard to.
  * Beside the lines is the picture of the floor plan the event is on, where the
- * server had the robot keep that one and so knows the map it was made of.
+ * server had the robot keep that one and so knows the map it was made of, with
+ * the zone the event cleans shown as chosen.
  */
 function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
   const plan = mine.schedule;
   const runs = draft ? draft.runs : runsOf(event);
   const single = runs.length === 1;
   const own = single ? floorOf(runs[0]) : null;
-  const zone = own === null ? null : word(record(runs[0].map).track_id);
-  // The settings and the floor plan of a run have a field where the event has one run to set them for.
+  // The zone of that floor plan the run cleans, and whether it minds the floor plan's no-go lines, as the robot gave them.
+  const ownZone = own === null ? null : zoneOf(runs[0]);
+  const ownNogo = own !== null && record(runs[0].map).nogo_enabled === true;
+  // The settings, the floor plan and the zone of a run have a field where the event has one run to set them for.
   const set = draft !== null && single;
   // The floor plans the robot is not known to have: of an event of one run the one it is on and the one last chosen here.
   const lost = draft === null ? [] : strays(single ? [own, draft.floor] : runs.map(floorOf), plans);
@@ -1584,15 +2068,53 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     ...lost.map((uuid) => [uuid, `⚠ ${short(uuid)} · not listed`]),
     ...plans.map((known) => [known.rank_uuid, floorLabel(known)]),
   ]);
-  // The picture follows the floor plan that is chosen as it is chosen, since no field draws the page again.
+  // The picture follows the floor plan and the zone that are chosen as they are chosen, since no field draws the page again.
   // Each form keeps a picture of its own, which is what `back` tells one form from another by.
   const picture = h('div', { class: 'slot-picture' });
   const depict = () => {
     const uuid = set ? draft.floor : runs.length > 0 ? floorOf(runs[0]) : null;
+    const chosen = set ? draft.zone || null : single ? zoneOf(runs[0]) : null;
     const made = plans.find((known) => known.rank_uuid === uuid);
-    picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back)] : []));
+    picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back, chosen)] : []));
   };
   depict();
+  // The zones to choose from are those of the floor plan that is chosen, so they change with it, in place.
+  const zoneField = set && h('select', {
+    'aria-label': 'Zone',
+    'data-focus': 'plan-zone',
+    onchange: ({ target }) => {
+      draft.zone = target.value;
+      depict();
+    },
+  });
+  const nogoField = set && yesNo('No-go lines', 'plan-nogo', draft.nogo, (on) => { draft.nogo = on; });
+  const zoning = () => {
+    const zones = plans.find((known) => known.rank_uuid === draft.floor)?.zones ?? [];
+    // The one the run cleans stays to choose while its floor plan is chosen, though the server did not have the robot
+    // keep it, and so does the one last chosen once it is gone: a select whose value is none of its options shows another.
+    const unlisted = [...new Set([draft.floor === own ? ownZone : null, draft.zone])]
+      .filter((track) => track && !zones.some((known) => known.track_uuid === track));
+    const choices = [
+      ['', 'Whole floor plan'],
+      ...unlisted.map((track) => [track, `⚠ ${short(track)} · not listed`]),
+      ...zones.map((known) => [known.track_uuid, word(known.name) ?? short(known.track_uuid)]),
+    ];
+    zoneField.replaceChildren(...choices.map(([value, label]) => h('option', { value, selected: value === draft.zone }, label)));
+    // On no floor plan, a run has neither.
+    zoneField.disabled = draft.floor === '';
+    nogoField.disabled = draft.floor === '';
+    nogoField.value = draft.nogo ? 'yes' : 'no';
+  };
+  // On the floor plan the run is on, its zone and its no-go lines are as the robot gave them; on another, the whole
+  // of it is cleaned, minding its no-go lines where the server had the robot keep some.
+  const chooseFloor = () => {
+    const same = draft.floor === own;
+    draft.zone = same ? ownZone ?? '' : '';
+    draft.nogo = same ? ownNogo : Boolean(plans.find((known) => known.rank_uuid === draft.floor)?.nogo);
+    zoning();
+    depict();
+  };
+  if (set) zoning();
   // A line names its field to the eye, and this to a screen reader.
   const choice = (name, label, values, said = (value) => value, then = () => {}) => h('select', {
     'aria-label': label,
@@ -1621,13 +2143,21 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     ['Mode', set ? choice('mode', 'Mode', MODES) : setting(runs, 'mode')],
     ['Navigation', set ? choice('navigation', 'Navigation', NAVIGATION_MODES) : setting(runs, 'navigation_mode')],
     ['Floor plan', set
-      ? choice('floor', 'Floor plan', [...offered.keys()], (uuid) => offered.get(uuid), depict)
+      ? choice('floor', 'Floor plan', [...offered.keys()], (uuid) => offered.get(uuid), chooseFloor)
       : floorShown(runs, plans, true)],
-    ...(zone !== null ? [['Zone', zone]] : []),
+    ...(set ? [['Zone', zoneField], ['No-go lines', nogoField]] : [
+      ...(ownZone !== null ? [['Zone', zoneShown(runs[0], plans, true)]] : []),
+      ...(own !== null ? [['No-go lines', flag(record(runs[0].map).nogo_enabled)]] : []),
+    ]),
     // The columns of an event of more runs than one have what its runs are set to between them.
     ...(runs.length > 1 ? runs.map((run, n) => {
       const settings = record(run.settings);
-      const said = [word(settings.mode), word(settings.navigation_mode), named('zone', record(run.map).track_id)].filter(Boolean);
+      const said = [
+        word(settings.mode),
+        word(settings.navigation_mode),
+        zoneShown(run, plans, true),
+        record(run.map).nogo_enabled === true && 'minding no-go lines',
+      ].filter(Boolean);
       return [`Run ${n + 1}`, said.length > 0 ? said.join(' · ') : none()];
     }) : []),
     ['Enabled', draft === null ? flag(event.enabled)
@@ -1643,9 +2173,7 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     title: !robot.session ? 'Save: the robot is not connected' : waiting && 'Save: waiting for the robot to answer',
     'data-focus': 'plan-save',
   }, 'Save');
-  const kept = !single ? `Its ${runs.length} runs stay as they are.`
-    : zone !== null ? `It cleans the zone ${zone} of its floor plan. Another floor plan is cleaned whole.`
-    : null;
+  const kept = !single && `Its ${runs.length} runs stay as they are.`;
   return h('form', {
     class: 'slot-form',
     onsubmit: (submit) => {
@@ -1761,7 +2289,7 @@ function slot(mine, robot, event, n, plans) {
  */
 function schedulePanel(mine, body) {
   const { robot } = body;
-  const plans = startsOf(body);
+  const plans = plansOf(body);
   const plan = mine.schedule;
   const shown = plan.shown;
   const events = shown !== null && Array.isArray(shown.events) ? shown.events.map(record) : [];
@@ -2551,10 +3079,12 @@ function drawRobot(mine) {
   const body = mine.body;
   if (mine !== view || !body) return;
   const data = [
-    body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, mine.tab,
-    mine.naming, mine.command, mine.accepted, mine.schedule, mine.settings, mine.floors, mine.deleting,
+    body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, body.tracks,
+    mine.tab, mine.naming, mine.command, mine.accepted, mine.schedule, mine.settings, mine.floors, mine.tracks, mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
+  // The pictures of the maps are no part of what is drawn, and what is drawn over them may have changed.
+  repaint(mine);
 }
 
 function show(mine, status, body) {
@@ -2581,6 +3111,9 @@ function show(mine, status, body) {
     if (mine.robot) {
       mine.body = body;
       document.title = `${nameOf(body.robot)} · deorbit`;
+      // What was being drawn on a floor plan that is one no more, of that map, has nothing to be drawn on.
+      const edit = mine.tracks.edit;
+      if (edit && !body.floorplans.some((plan) => plan.rank_uuid === edit.rank && plan.map_id === edit.map)) mine.tracks.edit = null;
       // The schedule is asked for once of each connection the page sees, not at every turn: asking is a call to the robot.
       const since = body.robot.session?.since;
       if (since && mine.schedule.asked !== since) askSchedule(mine, 'show', 'Schedule');
@@ -2657,6 +3190,10 @@ function navigate() {
     // Whether the robot has yet to answer what was asked of it about a floor plan; the map whose button awaits
     // its second press, with what that would do; and how the last request went, with the map it was pressed on.
     floors: { waiting: false, asking: null, said: null },
+    // The same for the zones and no-go lines of a floor plan: whether an answer is waited for; what the form
+    // that draws them has, while it is open; the zone whose Delete awaits its second press; and how the last
+    // request went, with the map it was about.
+    tracks: { waiting: false, edit: null, dropping: null, said: null },
     // Whether deleting the robot has been asked for and awaits its second press; whether the server has yet to answer; and how it failed.
     deleting: { asked: false, waiting: false, said: null },
     // The add-robot dialog, over the list: null while shut, else the log lines, whether it is running or done,
