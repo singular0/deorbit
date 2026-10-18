@@ -1496,7 +1496,7 @@ td.cell-clock {
   justify-content: flex-end;
 }
 
-.slot-form dd > input,
+.slot-form dd > input:not(.switch),
 .slot-form dd > select,
 .setting-form dd > select,
 .track-form dd > input,
@@ -1578,6 +1578,41 @@ td.cell-clock {
 .pick input:focus-visible + span {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+/*
+  A choice of Yes and No as a switch: a checkbox drawn as a track with a knob at its start while it is off, which
+  slides to its end, the track lit, while it is on. The knob is a gradient, since the page takes no image but its own.
+*/
+.switch {
+  flex: none;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised) radial-gradient(circle closest-side, var(--muted) 70%, transparent 76%) no-repeat left center / 20px 20px;
+  vertical-align: middle;
+  cursor: pointer;
+  appearance: none;
+  transition: background-position 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.switch:hover:enabled {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.switch:checked {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  background-image: radial-gradient(circle closest-side, var(--surface) 70%, transparent 76%);
+  background-position: right center;
+}
+
+/* One that a run on no floor plan does not have. */
+.switch:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* ---- The settings of one robot ---- */

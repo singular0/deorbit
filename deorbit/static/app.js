@@ -2100,13 +2100,17 @@ function planButton(mine, ...rest) {
   return robotButton(mine.schedule, ...rest);
 }
 
-/** A field of a form that is a choice of Yes and No, which `set` is told of as true or false. `label` names it to a screen reader. */
+/** A field of a form that is a choice of Yes and No, as a switch, which `set` is told of as true or false. `label` names it to a screen reader. */
 function yesNo(label, focus, on, set) {
-  return h('select', {
+  return h('input', {
+    type: 'checkbox',
+    role: 'switch',
+    class: 'switch',
+    checked: on,
     'aria-label': label,
     'data-focus': focus,
-    onchange: ({ target }) => set(target.value === 'yes'),
-  }, h('option', { value: 'yes', selected: on }, 'Yes'), h('option', { value: 'no', selected: !on }, 'No'));
+    onchange: ({ target }) => set(target.checked),
+  });
 }
 
 /**
@@ -2188,7 +2192,7 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     // On no floor plan, a run has neither.
     zoneField.disabled = draft.floor === '';
     nogoField.disabled = draft.floor === '';
-    nogoField.value = draft.nogo ? 'yes' : 'no';
+    nogoField.checked = draft.nogo;
   };
   // On the floor plan the run is on, its zone and its no-go lines are as the robot gave them; on another, the whole
   // of it is cleaned, minding its no-go lines where the server had the robot keep some.
@@ -2832,7 +2836,7 @@ function startMenu(mine, plans, why, hold) {
     // On no floor plan, a run has neither.
     zoneField.disabled = start.floor === '';
     nogoField.disabled = start.floor === '';
-    nogoField.value = start.nogo ? 'yes' : 'no';
+    nogoField.checked = start.nogo;
   };
   zoning();
   const floorField = h('select', {
