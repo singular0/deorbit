@@ -447,13 +447,6 @@ def track(action: str, rank_uuid: str, track_uuid: str, given: str, uploaded: st
     return "maps.save_track", {"tracks": [sent]}, kept
 
 
-# What a robot's sounds may be set to (section 6.4 of the spec). To the spec a
-# volume is "conventionally" 0 to 100, and nothing else is sent. The page's
-# script lists the same.
-VOICES = ("on", "off")
-VOLUME_MAX = 100
-
-
 def _flag(value: object, where: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{where} must be true or false")
@@ -466,14 +459,6 @@ def _language(given: object) -> dict:
     if not isinstance(language, str) or not language:
         raise ValueError("value.language must be a string that is not empty")
     return {"language": language}
-
-
-def _sounds(given: object) -> dict:
-    # The spec has only enabled required, and a volume left out set to 100, so a change says all three.
-    enabled, voice, volume = _fields(given, "value", "enabled", "voice", "volume")
-    if not isinstance(volume, int) or isinstance(volume, bool) or not 0 <= volume <= VOLUME_MAX:
-        raise ValueError(f"value.volume must be a whole number from 0 to {VOLUME_MAX}")
-    return {"enabled": _flag(enabled, "value.enabled"), "voice": _among(voice, VOICES, "value.voice"), "volume": volume}
 
 
 def _switch(name: str) -> Callable[[object], dict]:
@@ -491,10 +476,10 @@ def _switch(name: str) -> Callable[[object], dict]:
 # is the same name after ``set_``. The spec has the one field of
 # ``settings.set_cleaning_options`` optional; it is never left out here, since
 # a change that sets nothing is none. The group has ``settings.factory_reset``
-# too, which is no setting and cannot be undone, so it is not among these.
+# too, which is no setting and cannot be undone, so it is not among these, and
+# ``settings.sounds`` and ``settings.set_sounds``, which are not sent either.
 _SETTERS = {
     "robot_language": _language,
-    "sounds": _sounds,
     "cleaning_options": _switch("force_floorplan"),
     "ota_updates": _switch("auto"),
 }

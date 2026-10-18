@@ -2778,15 +2778,13 @@ function schedulePanel(mine, body) {
 // The robot keeps its settings and the server none of them, so they are read
 // from a connected robot, as its schedule is: each with the action of its name,
 // and changed with that name after `set_`. The answer to a change says nothing
-// of the setting, so it is read again after one. Reading them all is four calls
-// to the robot, and eight events, so they are asked for only once the Settings
-// tab is shown, and then once for each connection.
+// of the setting, so it is read again after one. Reading them all is three
+// calls to the robot, and six events, so they are asked for only once the
+// Settings tab is shown, and then once for each connection. They are one form,
+// always open on what the robot last gave, whose Save sends those that were changed.
 
-// The settings, under the names the server knows them by, in the order of their
-// panels, and what the server takes for the sounds.
-const SETTINGS = ['robot_language', 'sounds', 'cleaning_options', 'ota_updates'];
-const VOICES = ['on', 'off'];
-const VOLUME_MAX = 100; // the loudest; the quietest is 0
+// The settings, under the names the server knows them by, in the order of their lines.
+const SETTINGS = ['robot_language', 'cleaning_options', 'ota_updates'];
 
 /** The languages a robot lists to choose from, those of them that are text. */
 function languages(given) {
@@ -2809,85 +2807,53 @@ function languageName(language) {
 }
 
 /** How a setting that is one field of true or false is shown and changed, as `SETTING_WAYS` has each: `field` is that field, and `label` its line. */
-function switchWays(title, field, label) {
+function switchWays(field, label) {
   return {
-    title,
-    lines: (given) => [[label, flag(given[field])]],
+    title: label,
     draft: (given) => ({ [field]: given[field] === true }),
-    fields: (draft) => [[label, yesNo(label, `setting-${field}`, draft[field], (on) => { draft[field] = on; })]],
+    lines: (given, draft, changed) => [[label, yesNo(label, `setting-${field}`, draft[field], (on) => {
+      draft[field] = on;
+      changed();
+    })]],
     value: (draft) => ({ [field]: draft[field] }),
   };
 }
 
-// How each setting is shown and changed: the heading of its panel; the lines
-// that say what the robot gave for it; the draft its form starts from, or null
-// where the robot gave nothing to choose from; the lines of that form, each
-// with its field, which writes to the draft; and what the server is sent, made
-// of the draft.
+// How each setting is shown and changed: what it is called, in its line while
+// the robot has not given it and in a toast; the draft its field starts from,
+// or null where the robot gave nothing to choose from; its lines, of what the
+// robot gave and the draft, each with its field, which writes to the draft and
+// tells `changed` so, or with what the robot gave where there is no draft; and
+// what the server is sent, made of the draft.
 const SETTING_WAYS = new Map([
   ['robot_language', {
     title: 'Language',
-    lines: (given) => [
-      ['Language', typeof given.language === 'string' && given.language !== '' ? languageName(given.language) : plain(given.language)],
-      // Which only some robots give.
-      ...(Object.hasOwn(given, 'gender') ? [['Gender', plain(given.gender)]] : []),
-    ],
     draft: (given) => {
       const offered = languages(given);
       // The robot matches a language in whatever case, and may give its own in another than its list's.
       const own = typeof given.language === 'string' ? given.language.toLowerCase() : null;
       return offered.length === 0 ? null : { language: offered.find((one) => one.toLowerCase() === own) ?? offered[0], offered };
     },
-    fields: (draft) => [['Language', h('select', {
-      'aria-label': 'Language',
-      'data-focus': 'setting-language',
-      onchange: ({ target }) => { draft.language = target.value; },
-    }, draft.offered.map((language) => h('option', { value: language, selected: language === draft.language }, languageName(language))))]],
+    lines: (given, draft, changed) => [
+      ['Language', draft !== null
+        ? h('select', {
+          'aria-label': 'Language',
+          'data-focus': 'setting-language',
+          onchange: ({ target }) => {
+            draft.language = target.value;
+            changed();
+          },
+        }, draft.offered.map((language) => h('option', { value: language, selected: language === draft.language }, languageName(language))))
+        : typeof given.language === 'string' && given.language !== '' ? languageName(given.language)
+        : plain(given.language)],
+      // Which only some robots give, and none is told.
+      ...(Object.hasOwn(given, 'gender') ? [['Gender', plain(given.gender)]] : []),
+    ],
     value: ({ language }) => ({ language }),
   }],
-  ['sounds', {
-    title: 'Sounds',
-    lines: (given) => [
-      ['Sounds', flag(given.enabled)],
-      ['Voice', flag(given.voice === 'on' ? true : given.voice === 'off' ? false : given.voice)],
-      ['Volume', plain(given.volume)],
-    ],
-    // A volume the server would not take starts at the loudest, which is what the robot sets where it is told none.
-    draft: (given) => ({
-      enabled: given.enabled === true,
-      voice: VOICES.includes(given.voice) ? given.voice : 'on',
-      volume: Number.isInteger(given.volume) && given.volume >= 0 && given.volume <= VOLUME_MAX ? given.volume : VOLUME_MAX,
-    }),
-    fields: (draft) => [
-      ['Sounds', yesNo('Sounds', 'setting-enabled', draft.enabled, (on) => { draft.enabled = on; })],
-      ['Voice', yesNo('Voice', 'setting-voice', draft.voice === 'on', (on) => { draft.voice = on ? 'on' : 'off'; })],
-      ['Volume', volumeField(draft)],
-    ],
-    value: ({ enabled, voice, volume }) => ({ enabled, voice, volume }),
-  }],
-  ['cleaning_options', switchWays('Cleaning options', 'force_floorplan', 'Force floor plan')],
-  ['ota_updates', switchWays('Software updates', 'auto', 'Automatic updates')],
+  ['cleaning_options', switchWays('force_floorplan', 'Force floor plan')],
+  ['ota_updates', switchWays('auto', 'Automatic updates')],
 ]);
-
-/** The volume as a slider, with the number it is at beside it. */
-function volumeField(draft) {
-  const said = h('output', null, String(draft.volume));
-  return h('span', { class: 'volume' },
-    h('input', {
-      type: 'range',
-      min: 0,
-      max: VOLUME_MAX,
-      step: 1,
-      value: draft.volume,
-      'aria-label': 'Volume',
-      'data-focus': 'setting-volume',
-      oninput: ({ target }) => {
-        draft.volume = Number(target.value);
-        said.textContent = target.value;
-      },
-    }),
-    said);
-}
 
 /** Ask the robot, through the server, for one of its settings, or to change one: the status and the answer. */
 function askSetting(mine, action, more = {}) {
@@ -2897,8 +2863,9 @@ function askSetting(mine, action, more = {}) {
 
 /**
  * Read the settings `names` from the robot, one after the other. The view's
- * `settings` keeps what the robot gave for each, and holds the buttons back
- * until the last has been read. A toast says why the robot did not give one.
+ * `settings` keeps what the robot gave for each, and sets its field to that,
+ * and holds the buttons and the fields back until the last has been read. A
+ * toast says why the robot did not give one.
  */
 async function readSettings(mine, names) {
   const job = mine.settings;
@@ -2906,10 +2873,14 @@ async function readSettings(mine, names) {
   drawRobot(mine);
   for (const [n, name] of names.entries()) {
     const [status, answer] = await askSetting(mine, name);
-    const went = outcome(SETTING_WAYS.get(name).title, status, answer);
+    const ways = SETTING_WAYS.get(name);
+    const went = outcome(ways.title, status, answer);
     if (went.tone !== 'good') report(mine, `setting-${name}`, went);
     if (mine !== view) return;
-    if (went.tone === 'good') job.shown[name] = record(answer.body);
+    if (went.tone === 'good') {
+      job.shown[name] = record(answer.body);
+      job.drafts[name] = ways.draft(job.shown[name]);
+    }
     // What is still to be read, or nothing once all of it has been.
     job.waiting = n + 1 < names.length ? names.slice(n + 1) : null;
     drawRobot(mine);
@@ -2926,95 +2897,101 @@ function settingsDue(mine) {
   readSettings(mine, SETTINGS);
 }
 
-/** Open the form on a setting, starting from what the robot last gave for it, and put the keyboard in it. */
-function editSetting(mine, name) {
-  const job = mine.settings;
-  job.form = { name, draft: SETTING_WAYS.get(name).draft(job.shown[name]) };
-  drawRobot(mine);
-  app.querySelector('.setting-form :is(input, select)')?.focus();
-}
-
-/** Shut the form on a setting, and put the keyboard back on the button that opened it. */
-function endSetting(mine, name) {
-  mine.settings.form = null;
-  // A selection would hold the page as it is, and the press has to show.
-  getSelection().removeAllRanges();
-  drawRobot(mine);
-  app.querySelector(`[data-focus="setting-edit-${name}"]`)?.focus();
-}
-
-/** Ask the robot to take what the form on a setting holds, say in a toast how that went, and once it has, read the setting again. */
-async function saveSetting(mine, name) {
-  const job = mine.settings;
+/** Whether the field of the setting `name` holds other than what the robot last gave for it. */
+function edited(job, name) {
   const ways = SETTING_WAYS.get(name);
-  const value = ways.value(job.form.draft);
-  job.waiting = [name];
-  drawRobot(mine);
-  const [status, answer] = await askSetting(mine, `set_${name}`, { value: JSON.stringify(value) });
-  job.waiting = null;
-  const went = outcome(`Save ${ways.title.toLowerCase()}`, status, answer);
-  report(mine, `setting-${name}`, went);
-  if (mine !== view) return;
-  if (went.tone !== 'good') {
-    drawRobot(mine);
-    return;
-  }
-  endSetting(mine, name);
-  readSettings(mine, [name]);
+  const draft = job.drafts[name] ?? null;
+  // The draft was made of what the robot gave, so one made of that again is what the field started at.
+  return draft !== null && JSON.stringify(ways.value(draft)) !== JSON.stringify(ways.value(ways.draft(job.shown[name])));
 }
 
-/** The form that changes a setting: a line to each of its fields, as the panel has a line to each value, and Save and Cancel under them. */
-function settingForm(mine, robot, name, draft) {
+/**
+ * Ask the robot to take each setting whose field was changed, one after the
+ * other, and stop at the first it does not take. A toast says how that went,
+ * and those it took are read again. The fields of the others keep what was
+ * chosen, so Save sends them again.
+ */
+async function saveSettings(mine) {
+  const job = mine.settings;
+  const names = SETTINGS.filter((name) => edited(job, name));
+  if (names.length === 0) return;
+  // What is sent is what the fields held when Save was pressed; they are held back from then on.
+  const values = names.map((name) => JSON.stringify(SETTING_WAYS.get(name).value(job.drafts[name])));
+  job.waiting = names;
+  drawRobot(mine);
+  const saved = [];
+  let went = null;
+  for (const [n, name] of names.entries()) {
+    const [status, answer] = await askSetting(mine, `set_${name}`, { value: values[n] });
+    went = outcome(`Save ${SETTING_WAYS.get(name).title.toLowerCase()}`, status, answer);
+    if (went.tone !== 'good') break;
+    saved.push(name);
+  }
+  job.waiting = null;
+  report(mine, 'settings', went.tone === 'good' && names.length > 1 ? { tone: 'good', text: 'Save settings: the robot accepted them' } : went);
+  if (mine !== view) return;
+  if (saved.length > 0) readSettings(mine, saved);
+  else drawRobot(mine);
+}
+
+/**
+ * The settings as one panel, which is a form always open: a line to each, with
+ * its field once the robot has given it, and Save under them, which is held
+ * back until a field holds other than what the robot gave. Beside the heading,
+ * Refresh reads them all again, which sets the fields to what the robot gives.
+ */
+function settingsPanel(mine, robot) {
   const job = mine.settings;
   const waiting = job.waiting !== null;
-  const button = h('button', {
-    class: 'command',
-    type: 'submit',
-    disabled: !robot.session,
-    'aria-disabled': robot.session && waiting && 'true',
-    title: !robot.session ? 'Save: the robot is not connected' : waiting && 'Save: waiting for the robot to answer',
-    'data-focus': 'setting-save',
-  }, 'Save');
-  return h('form', {
+  const tools = h('div', { class: 'panel-tools' },
+    robotButton(job, robot, 'Refresh', 'settings-read', () => readSettings(mine, SETTINGS), { glyph: 'refresh' }));
+  if (!SETTINGS.some((name) => Object.hasOwn(job.shown, name))) {
+    return panel('Settings', h('p', { class: 'plan-note' }, none(!robot.session ? 'The robot is not connected.'
+      : waiting ? 'Asking the robot…'
+      : 'Not read from the robot.')), { tools });
+  }
+  const button = h('button', { class: 'command', type: 'submit', disabled: !robot.session, 'data-focus': 'setting-save' }, 'Save');
+  // Told by a field as it changes, which draws nothing anew, as no field of a form does; held back, not disabled,
+  // since the keyboard is on Save while the robot answers it.
+  const changed = () => {
+    if (!robot.session) {
+      button.title = 'Save: the robot is not connected';
+      return;
+    }
+    const why = job.waiting ? 'waiting for the robot to answer'
+      : !SETTINGS.some((name) => edited(job, name)) ? 'nothing has been changed'
+      : null;
+    if (why) {
+      button.setAttribute('aria-disabled', 'true');
+      button.title = `Save: ${why}`;
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('title');
+    }
+  };
+  changed();
+  const lines = SETTINGS.flatMap((name) => {
+    const ways = SETTING_WAYS.get(name);
+    if (!Object.hasOwn(job.shown, name)) {
+      return [[ways.title, none(job.waiting?.includes(name) ? 'Asking the robot…' : 'Not read from the robot.')]];
+    }
+    return ways.lines(job.shown[name], job.drafts[name] ?? null, changed);
+  });
+  const form = h('form', {
     class: 'setting-form',
     onsubmit: (submit) => {
       submit.preventDefault();
       // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
       button.focus();
       getSelection().removeAllRanges();
-      if (!job.waiting) saveSetting(mine, name);
+      if (!job.waiting) saveSettings(mine);
     },
   },
-  rows(SETTING_WAYS.get(name).fields(draft)),
-  h('div', { class: 'slot-tools' },
-    button,
-    h('button', { class: 'button', type: 'button', 'data-focus': 'setting-cancel', onclick: () => endSetting(mine, name) }, 'Cancel')));
-}
-
-/**
- * A setting as a panel of its own: what the robot last gave for it, or the
- * form that changes it while that is open, and beside the heading the buttons
- * that open the form and that read the setting again. One form is open at a time.
- */
-function settingPanel(mine, robot, name) {
-  const job = mine.settings;
-  const ways = SETTING_WAYS.get(name);
-  const given = job.shown[name] ?? null;
-  const form = job.form !== null && job.form.name === name ? job.form : null;
-  const why = given === null ? 'the robot has not given this setting'
-    : form !== null ? 'it is being changed below'
-    : ways.draft(given) === null ? 'the robot gave nothing to choose from'
-    : null;
-  const tools = h('div', { class: 'panel-tools' },
-    robotButton(job, robot, 'Edit', `setting-edit-${name}`, () => editSetting(mine, name), { why, glyph: 'pencil' }),
-    robotButton(job, robot, 'Refresh', `setting-read-${name}`, () => readSettings(mine, [name]), { glyph: 'refresh' }));
-  return panel(ways.title, [
-    form !== null ? settingForm(mine, robot, name, form.draft)
-      : given !== null ? rows(ways.lines(given))
-      : h('p', { class: 'plan-note' }, none(!robot.session ? 'The robot is not connected.'
-        : job.waiting?.includes(name) ? 'Asking the robot…'
-        : 'Not read from the robot.')),
-  ], { tools });
+  rows(lines),
+  h('div', { class: 'slot-tools' }, button));
+  // Nothing is changed while the robot is asked, which would be lost when what it gives is read.
+  for (const field of form.querySelectorAll('input, select')) field.disabled = waiting;
+  return panel('Settings', form, { tools });
 }
 
 // ---- One robot ----
@@ -3494,7 +3471,7 @@ const TABS = [
   ['status', 'Status', (mine, { robot }) => statusPanels(robot)],
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
   ['maps', 'Maps', (mine, body) => mapPanels(mine, body)],
-  ['settings', 'Settings', (mine, { robot }) => SETTINGS.map((name) => settingPanel(mine, robot, name))],
+  ['settings', 'Settings', (mine, { robot }) => settingsPanel(mine, robot)],
   ['events', 'Events', (mine, body) => panel('Events', eventLog(mine, body), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
     wide: true,
@@ -3777,8 +3754,8 @@ function navigate() {
     // and the form, when one is open.
     schedule: { asked: null, waiting: null, shown: null, form: null },
     // The connection the settings were last asked of; those that are being read or saved, while any is; what
-    // the robot gave for each, by name; and the form, when one is open.
-    settings: { asked: null, waiting: null, shown: {}, form: null },
+    // the robot gave for each, by name; and what the field of each holds, by name, which is null for one that has none.
+    settings: { asked: null, waiting: null, shown: {}, drafts: {} },
     // Whether the robot has yet to answer what was asked of it about a floor plan.
     floors: { waiting: false },
     // The same for the zones and no-go lines of a floor plan, and what the form that draws them has, while it is open.

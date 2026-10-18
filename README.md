@@ -88,7 +88,7 @@ it reports is kept in a database file on your machine.
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
 | Name a robot, and its maps | ✅ | Kept by the server; the robot is not told. A map without a name goes by when its run began. |
 | Delete a robot with everything kept of it | ✅ | |
-| Robot settings: language, sounds, cleaning options, automatic updates | 🟡 | On the Settings tab, read from the robot, so only while it is connected. A factory reset is not offered. A robot may answer with an error of its own instead of giving its sounds, which then cannot be changed. |
+| Robot settings: language, cleaning options, automatic updates | 🟡 | On the Settings tab, read from the robot, so only while it is connected. The sounds and a factory reset are not offered. |
 | Find the robot by sound | ❌ | |
 | Firmware updates | ❌ | A robot that asks is told there is no update. |
 | MyNeato app, Alexa, Google Assistant | ❌ | The web page takes the app's place. |

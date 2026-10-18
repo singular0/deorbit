@@ -4,7 +4,6 @@ import asyncio
 import base64
 import contextlib
 import json
-import math
 import re
 import socket
 import sqlite3
@@ -19,7 +18,7 @@ from deorbit import __main__ as cli
 from deorbit import web
 from deorbit.auth import RobotId
 from deorbit.commands import (
-    COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, VOICES, VOLUME_MAX, ZONE_NAME_MAX, ZONES_MAX,
+    COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, ZONE_NAME_MAX, ZONES_MAX,
 )
 from deorbit.config import Config
 from deorbit.server import Server
@@ -1557,7 +1556,6 @@ class SettingsTests(WebTestCase):
 
     BOARD1 = "/api/settings?vendor=n&serial=board1"
     DONE = {"code": 200, "body": {}}
-    SOUNDS = {"enabled": True, "voice": "on", "volume": 70}
 
     def change(self, setting: str, value: object, robot: str = BOARD1) -> str:
         """The address that asks for ``setting`` to be changed to ``value``, or to whatever is given for one."""
@@ -1570,7 +1568,6 @@ class SettingsTests(WebTestCase):
         # As the spec has a robot give each, the language as a Vorwerk robot does.
         given = {
             "robot_language": {"language": "en", "available_languages": ["en", "de", "fr"], "gender": None},
-            "sounds": self.SOUNDS,
             "cleaning_options": {"force_floorplan": False},
             "ota_updates": {"auto": True},
         }
@@ -1591,8 +1588,6 @@ class SettingsTests(WebTestCase):
             ("robot_language", {"language": "de"}),
             # The robot matches it in whatever case, so it goes as it is.
             ("robot_language", {"language": "EN-us"}),
-            ("sounds", {"enabled": False, "voice": "off", "volume": 0}),
-            ("sounds", {"enabled": True, "voice": "on", "volume": VOLUME_MAX}),
             ("cleaning_options", {"force_floorplan": True}),
             ("cleaning_options", {"force_floorplan": False}),
             ("ota_updates", {"auto": False}),
@@ -1609,28 +1604,24 @@ class SettingsTests(WebTestCase):
         self.assertEqual(told, (200, {"ability": "settings.set_ota_updates", "code": 400, "body": {}}))
         # What a robot answers for an ability it does not have.
         unknown = {"errors": {"ability": ["invalid"]}}
-        _, told = await self.answered(robot, self.BOARD1 + "&action=sounds", {"code": 422, "body": unknown})
-        self.assertEqual(told, (200, {"ability": "settings.sounds", "code": 422, "body": unknown}))
+        _, told = await self.answered(robot, self.BOARD1 + "&action=robot_language", {"code": 422, "body": unknown})
+        self.assertEqual(told, (200, {"ability": "settings.robot_language", "code": 422, "body": unknown}))
 
     async def test_what_is_not_sent_to_a_robot(self) -> None:
         await self.start()
         robot, _ = await self.login()
-
-        def sounds(**changes: object) -> dict:
-            return {**self.SOUNDS, **changes}
-
-        actions = ("action must be one of robot_language, set_robot_language, sounds, set_sounds, "
+        actions = ("action must be one of robot_language, set_robot_language, "
                    "cleaning_options, set_cleaning_options, ota_updates, set_ota_updates")
         refused = {
-            # A factory reset is of the spec's settings too, and is not sent.
+            # A factory reset and the sounds are of the spec's settings too, and are not sent.
             actions: [
                 self.BOARD1, *(f"{self.BOARD1}&action={action}&value={quote(json.dumps({'auto': True}))}" for action in (
-                    "", "factory_reset", "set_factory_reset", "settings.sounds", "SOUNDS", "set_", "set_set_sounds",
-                    "show", "sounds%20", "set_Sounds",
+                    "", "factory_reset", "set_factory_reset", "sounds", "set_sounds", "settings.ota_updates",
+                    "OTA_UPDATES", "set_", "set_set_ota_updates", "show", "ota_updates%20", "set_Ota_updates",
                 )),
             ],
             "value must be JSON": [
-                self.BOARD1 + "&action=set_sounds",
+                self.BOARD1 + "&action=set_ota_updates",
                 *(self.change(name, text) for name in SETTINGS for text in ("", "nonsense", "{'auto': true}", "[" * 5000)),
             ],
             "value must be an object of language and nothing else": [
@@ -1638,18 +1629,6 @@ class SettingsTests(WebTestCase):
             ],
             "value.language must be a string that is not empty": [
                 self.change("robot_language", {"language": given}) for given in ("", None, 7, ["de"])
-            ],
-            # A volume left out is set to 100, so none of the three may be.
-            "value must be an object of enabled, voice, volume and nothing else": [
-                self.change("sounds", given) for given in (
-                    None, {}, {"enabled": True}, {"enabled": True, "voice": "on"}, {"enabled": True, "volume": 50},
-                    sounds(language="de"),
-                )
-            ],
-            "value.enabled must be true or false": [self.change("sounds", sounds(enabled=given)) for given in (1, 0, "true", None)],
-            "value.voice must be one of on, off": [self.change("sounds", sounds(voice=given)) for given in ("ON", "loud", "", None, True)],
-            f"value.volume must be a whole number from 0 to {VOLUME_MAX}": [
-                self.change("sounds", sounds(volume=given)) for given in (-1, VOLUME_MAX + 1, 50.0, 50.5, "50", None, True, math.inf)
             ],
             "value must be an object of force_floorplan and nothing else": [
                 self.change("cleaning_options", given) for given in (None, {}, {"force_floorplan": True, "auto": True}, {"auto": True})
@@ -1675,8 +1654,8 @@ class SettingsTests(WebTestCase):
     async def test_robot_that_is_not_connected(self) -> None:
         await self.start()
         self.server.store.save_state(self.ROBOT, STATE)  # in the database, as one that has been here
-        for target in (self.BOARD1 + "&action=sounds", self.change("sounds", self.SOUNDS),
-                       "/api/settings?vendor=n&serial=board2&action=sounds", "/api/settings?action=ota_updates"):
+        for target in (self.BOARD1 + "&action=robot_language", self.change("ota_updates", {"auto": True}),
+                       "/api/settings?vendor=n&serial=board2&action=robot_language", "/api/settings?action=ota_updates"):
             with self.subTest(target):
                 self.assertEqual(await self.command(target), (409, {"error": "the robot is not connected"}))
 
@@ -1686,12 +1665,12 @@ class SettingsTests(WebTestCase):
         told = (403, {"error": "a command is taken only from this server's own page"})
         for sent in (("Host: localhost:8080",), ("Host: localhost:8080", "Origin: http://elsewhere.example"), ()):
             # Reading a setting is asked of the robot too, so that is refused like a change to it.
-            for target in (self.BOARD1 + "&action=sounds", self.change("ota_updates", {"auto": False}), "/api/settings"):
+            for target in (self.BOARD1 + "&action=robot_language", self.change("ota_updates", {"auto": False}), "/api/settings"):
                 with self.subTest(sent=sent, target=target):
                     self.assertEqual(await self.command(target, sent), told)
         for method in ("GET", "HEAD", "PUT", "DELETE"):
             with self.subTest(method):
-                status, headers, _ = await self.fetch(self.BOARD1 + "&action=sounds", method, self.PAGE)
+                status, headers, _ = await self.fetch(self.BOARD1 + "&action=robot_language", method, self.PAGE)
                 self.assertEqual((status, headers["Allow"]), (405, "POST"))
         # None of those reached the robot: the first thing it is sent is this one.
         request, _ = await self.answered(robot, self.change("cleaning_options", {"force_floorplan": True}), self.DONE)
@@ -1701,19 +1680,17 @@ class SettingsTests(WebTestCase):
         await self.start()
         robot, _ = await self.login()
         await robot.send_bytes(b"\x06")  # a robot has a page once it is in the database
-        await self.answered(robot, self.change("sounds", self.SOUNDS), self.DONE)
+        await self.answered(robot, self.change("robot_language", {"language": "de"}), self.DONE)
         answer, call, login = (await self.api("/api/robot?vendor=n&serial=board1"))["events"]
         self.assertEqual([(event["kind"], event["service"]) for event in (answer, call, login)],
                          [("response", None), ("call", None), ("login", None)])
-        self.assertEqual(json.loads(call["body_json"]), {"ability": "settings.set_sounds", **self.SOUNDS})
-        self.assertEqual(json.loads(answer["body_json"]), {"ability": "settings.set_sounds", "code": 200, "body": {}})
+        self.assertEqual(json.loads(call["body_json"]), {"ability": "settings.set_robot_language", "language": "de"})
+        self.assertEqual(json.loads(answer["body_json"]), {"ability": "settings.set_robot_language", "code": 200, "body": {}})
 
     async def test_page_offers_what_the_server_takes(self) -> None:
         await self.start()
         _, _, script = await self.fetch("/app.js")
         self.assertIn(f"const SETTINGS = {list(SETTINGS)};", script.decode())
-        self.assertIn(f"const VOICES = {list(VOICES)};", script.decode())
-        self.assertRegex(script.decode(), rf"(?m)^const VOLUME_MAX = {VOLUME_MAX};")
 
 
 class FloorplanTests(WebTestCase):

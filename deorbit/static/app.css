@@ -1621,8 +1621,9 @@ td.cell-clock {
   min-width: 0;
 }
 
-/* A choice that a run on no floor plan does not have. */
+/* A choice that a run on no floor plan does not have, or a setting while the robot is asked. */
 .slot-form dd > select:disabled,
+.setting-form dd > select:disabled,
 .start-field > select:disabled {
   color: var(--faint);
 }
@@ -1702,7 +1703,7 @@ td.cell-clock {
   background-position: right center;
 }
 
-/* One that a run on no floor plan does not have. */
+/* One that a run on no floor plan does not have, or a setting while the robot is asked. */
 .switch:disabled {
   opacity: 0.45;
   cursor: default;
@@ -1710,27 +1711,9 @@ td.cell-clock {
 
 /* ---- The settings of one robot ---- */
 
-/* Save and Cancel, under the fields of a setting. */
+/* Save, under the fields of the settings. */
 .setting-form > .slot-tools {
   margin-top: 16px;
-}
-
-/* The volume: a slider, and beside it the number it is at. */
-.volume {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.volume > input {
-  width: 160px;
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.volume > output {
-  min-width: 3ch;
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---- Nothing to show, or not yet ---- */
