@@ -1,7 +1,7 @@
 // The web UI: the robots in the server's database as a list, and a page for
-// each with its name, its schedule, its maps and floor plans with their zones
-// and no-go lines, its settings, its events, the commands it takes and the way
-// to delete it.
+// each with its name, its schedule, its maps, which can be named, and floor
+// plans with their zones and no-go lines, its settings, its events, the
+// commands it takes and the way to delete it.
 // Whatever a robot sent reaches the page as text nodes, never as markup.
 
 import { PALETTES, paint, readBinary } from './map.js';
@@ -26,7 +26,7 @@ const FIT_MOST = 8; // the most pixels of the page a cell of a small map is enla
 const CELL_MOST = 32; // the most a cell of a map is enlarged to by zooming in
 const ZOOM_STEP = 2; // how much a press of Zoom in enlarges a map, and one of Zoom out shrinks it
 const PAN_STEP = 48; // how far an arrow key moves a map that is larger than its window, in pixels of the page
-const NAME_MAX = 64; // the most characters the server takes for a robot's name
+const NAME_MAX = 64; // the most characters the server takes for the name of a robot or a map
 const ZONE_NAME_MAX = 32; // the same for the name of a zone of a floor plan
 const LINES_MAX = 100; // and the most no-go lines a floor plan may have
 const SVG = 'http://www.w3.org/2000/svg';
@@ -44,13 +44,13 @@ let clockOffset = 0;
 // The view on screen: its robot (null for the list), which tab of the robot's
 // page is shown, how many of the robot's events and maps it asks for and which
 // of them are open, the pictures of the maps that have been, the name being
-// entered for it, the command last sent from it and when the robot last accepted one,
-// the robot's schedule and its settings and what is being done to them, what is
-// being asked of the robot about a floor plan, what is being drawn of the zones
-// and no-go lines of one, whether the robot is being deleted, the server's
-// last answer, what was last drawn and the fetch under
-// way. Navigating makes a new one, and a fetch that returns to find its view
-// replaced drops the result.
+// entered for it, whether the name of a map is being saved, the command last
+// sent from it and when the robot last accepted one, the robot's schedule and
+// its settings and what is being done to them, what is being asked of the
+// robot about a floor plan, what is being drawn of the zones and no-go lines
+// of one, whether the robot is being deleted, the server's last answer, what
+// was last drawn and the fetch under way. Navigating makes a new one, and a
+// fetch that returns to find its view replaced drops the result.
 let view = null;
 
 // The canvas of a map that is being dragged about or drawn on, which a new page
@@ -427,7 +427,8 @@ function report(mine, kind, said) {
 // button, which a redraw builds anew, by the button's `data-focus`, and goes
 // when the button goes, when the button can no longer be pressed or when what
 // it asks no longer stands. One is open at a time. An answer, Keep, Escape, the
-// button again, and a press or the keyboard anywhere else shut it.
+// button again, and a press or the keyboard anywhere else shut it. The name of
+// a map is entered in one too, in a field above Cancel and Save.
 
 const POPOVER_MARGIN = 16; // how close a popover comes to the edge of the screen
 const POPOVER_GAP = 10; // how far it stands from its button, with its arrow between them
@@ -438,37 +439,55 @@ const ARROW_INSET = 20; // how close its arrow comes to a corner of it, which is
 let popped = null;
 
 /**
- * Ask whether to do what cannot be undone, in a popover by the button of the
- * view `mine` that `anchor` names by its `data-focus`, or shut the one that
- * button opened. `title` names what is asked, and `text` asks it and says what
- * it does. `answers` are each a label and what a press does: one does it, or
- * where there is a choice to make each does it one way. `stands` says, each
- * time the page is drawn, whether what is asked still stands.
+ * Open a popover by the button of the view `mine` that `anchor` names by its
+ * `data-focus`, or shut the one that button opened. `title` heads it, and
+ * `build` makes what stands under the heading, with an element of the id
+ * `popover-text` that says what the popover is about, and gives the field or
+ * the button the keyboard is put on. `stands` says, each time the page is
+ * drawn, whether what the popover is about still stands.
  */
-function popover(mine, anchor, { title, text, answers, stands = () => true }) {
+function openPopover(mine, anchor, title, build, stands = () => true) {
   const again = popped !== null && popped.mine === mine && popped.anchor === anchor;
   closePopover(false);
   if (again) return;
-  const keep = h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Keep');
+  const [content, first] = build();
   const node = h('div', {
     class: 'popover',
     role: 'dialog',
     'aria-labelledby': 'popover-title',
     'aria-describedby': 'popover-text',
     onkeydown: (event) => {
-      // The Tab key past its last button goes on from the button that opened it, and past its first goes back to that
-      // button, as if the popover stood after it in the page.
+      // The Tab key past its last field or button goes on from the button that opened it, and past its first goes back
+      // to that button, as if the popover stood after it in the page.
       if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
-      const buttons = node.querySelectorAll('button');
-      if (document.activeElement !== (event.shiftKey ? buttons[0] : buttons[buttons.length - 1])) return;
+      const stops = node.querySelectorAll('input, button');
+      if (document.activeElement !== (event.shiftKey ? stops[0] : stops[stops.length - 1])) return;
       if (event.shiftKey) event.preventDefault();
       closePopover();
     },
   },
   h('h2', { class: 'popover-head', id: 'popover-title' }, title),
-  h('div', { class: 'popover-body' },
-    h('p', { id: 'popover-text' }, text),
-    h('div', { class: 'popover-tools' },
+  h('div', { class: 'popover-body' }, content));
+  document.body.append(node);
+  popped = { node, mine, anchor, under: null, stands };
+  placePopover();
+  if (popped?.node !== node) return;
+  first.focus();
+  // What a field holds is there to be typed over.
+  if (first instanceof HTMLInputElement) first.select();
+}
+
+/**
+ * Ask whether to do what cannot be undone, in a popover by the button that
+ * `anchor` names, as `openPopover` has it. `title` names what is asked, and
+ * `text` asks it and says what it does. `answers` are each a label and what a
+ * press does: one does it, or where there is a choice to make each does it one
+ * way. `stands` says whether what is asked still stands.
+ */
+function popover(mine, anchor, { title, text, answers, stands = () => true }) {
+  openPopover(mine, anchor, title, () => {
+    const keep = h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Keep');
+    const tools = h('div', { class: 'popover-tools' },
       keep,
       answers.map(([label, press]) => {
         const answer = h('button', {
@@ -484,11 +503,9 @@ function popover(mine, anchor, { title, text, answers, stands = () => true }) {
           },
         }, label);
         return answer;
-      }))));
-  document.body.append(node);
-  popped = { node, mine, anchor, under: null, stands };
-  placePopover();
-  if (popped?.node === node) keep.focus();
+      }));
+    return [[h('p', { id: 'popover-text' }, text), tools], keep];
+  }, stands);
 }
 
 /** Shut the popover, if one is open, and put the keyboard back on the button that opened it unless `back` is false. */
@@ -952,11 +969,13 @@ function word(value) {
 const named = (label, value) => word(value) && `${label} ${value}`;
 
 // How an event is shown: its label, icon and tone, and what its body says in a
-// line. A login and a disconnect are the server's own, and so are a call, which
-// is what a command is sent as, and the robot's response to one; the others are
-// named by the service a robot sent a message to, and a service not listed here
-// goes under its own name. These are maps because a robot chooses that name,
-// and "constructor" must not find anything.
+// line, which an upload says with what its map is called, as the maps the
+// robot gave names to by their rank_uuid have it. A login and a disconnect are
+// the server's own, and so are a call, which is what a command is sent as, and
+// the robot's response to one; the others are named by the service a robot
+// sent a message to, and a service not listed here goes under its own name.
+// These are maps because a robot chooses that name, and "constructor" must not
+// find anything.
 const CONNECTION = new Map([
   ['login', ['Login', 'login', 'good', (body) => [
     named('from', body.address),
@@ -975,7 +994,10 @@ const SERVICES = new Map([
     named('version', body.version),
     body.only_mandatory === true && 'mandatory only',
   ]]],
-  ['maps.create', ['Map', 'map', 'quiet', (body) => [word(body.rank_uuid)]]],
+  // What a map goes by without a name, when its run began, is in the upload as well.
+  ['maps.create', ['Map', 'map', 'quiet', (body, names) => [
+    mapText(names.get(body.rank_uuid) ?? null, record(body.timing).start) ?? word(body.rank_uuid),
+  ]]],
   ['logs.list_files', ['Log files', 'file', 'quiet', (body) => [
     Array.isArray(body.files) && (body.files.length === 1 ? '1 file' : `${body.files.length} files`),
   ]]],
@@ -996,11 +1018,11 @@ function eventDetail(event) {
   ];
 }
 
-/** An event as a row of the table. */
-function eventRow(event) {
+/** An event as a row of the table. `names` are what the maps that were given names are called, by their rank_uuid. */
+function eventRow(event, names) {
   const known = event.service == null ? CONNECTION.get(event.kind) : SERVICES.get(event.service);
   const [label, glyph, tone, says] = known ?? [String(event.service ?? event.kind), 'message', 'quiet', () => []];
-  const said = says(record(parsed(event.body_json))).filter(Boolean).join(' · ');
+  const said = says(record(parsed(event.body_json)), names).filter(Boolean).join(' · ');
   return {
     id: event.id,
     focus: `event-${event.id}`,
@@ -1009,10 +1031,12 @@ function eventRow(event) {
   };
 }
 
-/** The robot's events, newest first. */
-function eventLog(mine, events, more) {
+/** The robot's events, newest first, as the server's answer `body` has them. */
+function eventLog(mine, { events, more, map_names: given }) {
   if (events.length === 0) return none('Nothing yet.');
-  return [table('Events', EVENT_COLUMNS, mine.open, events.map(eventRow)), older(mine, 'events', more)];
+  // A map, because a robot chooses the rank_uuid that is looked up.
+  const names = new Map(given.map((row) => [row.rank_uuid, row.name]));
+  return [table('Events', EVENT_COLUMNS, mine.open, events.map((event) => eventRow(event, names))), older(mine, 'events', more)];
 }
 
 // ---- The maps of one robot ----
@@ -1067,19 +1091,39 @@ function runStatus(runs) {
 }
 
 /**
+ * What a map is called, as text: the `name` it was given here, or else when
+ * its run began, the `start` the robot gave, as `numeric` gives a time, which
+ * is what a map goes by until it is given a name. Null for a map that has
+ * neither.
+ */
+function mapText(name, start) {
+  if (name != null) return name;
+  const at = Date.parse(start);
+  return Number.isNaN(at) ? null : numeric(at);
+}
+
+/** The same in a line, where a start is the time `dated` gives, with the rest of it to a pointer that rests on it. */
+function mapShown(name, start) {
+  return name ?? dated(start);
+}
+
+/**
  * What a map says of its run that its row does not, beside the picture. The
  * map of a floor plan has no row, so it has `whole` what the row says as well.
+ * `row` is the map as the server lists it, and `map` what the robot sent of it.
  */
-function mapFacts(map, runs, whole = false) {
+function mapFacts(row, map, runs, whole = false) {
   const timing = record(map.timing);
   return rows([
     ...(whole ? [
-      ['Start time', dated(timing.start)],
+      ['Name', mapShown(row.name, timing.start)],
       ['Status', runStatus(runs)],
       ['Area', areaOf(runs) ?? none()],
       ['Duration', took(timing) ?? none()],
     ] : []),
-    // As the start is: the date and the time, and the rest to a pointer that rests on it.
+    // When the robot says the run began, which every map of one run says alike, and when it ended: the date and the
+    // time, and the rest to a pointer that rests on it.
+    ['Start time', dated(timing.start)],
     ['End time', dated(timing.end)],
     ['Paused for', typeof timing.pause === 'number' ? lasting(timing.pause) : plain(timing.pause)],
     ['Started by', plain(map.started_by)],
@@ -1419,10 +1463,10 @@ function repaint(mine) {
   for (const pictured of mine.drawings.values()) pictured.repaint?.();
 }
 
-// The columns of the maps that are no floor plan: when the run of one started,
-// how it went, what it cleaned and how long it took.
+// The columns of the maps that are no floor plan: what one is called, how its
+// run went, what it cleaned and how long it took.
 const MAP_COLUMNS = [
-  ['Start time', 'time'],
+  ['Name', 'name'],
   ['Status', 'kind'],
   ['Area', 'amount', true],
   ['Duration', 'amount', true],
@@ -1436,14 +1480,13 @@ function mapRow(row, mine, robot, plans) {
     id: row.id,
     focus: `map-${row.id}`,
     cells: [
-      // When the robot says the run began, which every map of one run says alike.
-      dated(record(map.timing).start),
+      mapShown(row.name, record(map.timing).start),
       runStatus(runs),
       areaOf(runs) ?? none(),
       took(record(map.timing)) ?? none(),
     ],
-    tools: mapTools(mine, robot, plans, row.id, map),
-    detail:() => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(map, runs)), drawing(mine, row.id))],
+    tools: mapTools(mine, robot, plans, row, map),
+    detail:() => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(row, map, runs)), drawing(mine, row.id))],
   };
 }
 
@@ -1451,15 +1494,104 @@ function mapRow(row, mine, robot, plans) {
  * A floor plan as a block of its own, open on all of it: the picture of the
  * map it was made of, with its zones and no-go lines to the right, which are
  * drawn on the picture, and under both what the map says of its run, in two
- * columns. Demote stands beside its heading.
+ * columns. Rename and Demote stand beside its heading.
  */
 function floorPanel(mine, robot, plan, row) {
   const map = record(parsed(row.map_json));
   const demote = robotButton(mine.floors, robot, 'Demote', `floor-${row.id}`, () => askDemote(mine, plan, row.id), { glyph: 'demote' });
   return panel('Floor plan', [
     h('div', { class: 'floor-plan' }, drawing(mine, row.id), trackPanel(mine, robot, row.id, plan)),
-    h('div', { class: 'floor-facts' }, mapFacts(map, runsIn(map), true)),
-  ], { wide: true, tools: h('div', { class: 'panel-tools' }, demote) });
+    h('div', { class: 'floor-facts' }, mapFacts(row, map, runsIn(map), true)),
+  ], { wide: true, tools: h('div', { class: 'panel-tools' }, renameButton(mine, row), demote) });
+}
+
+/**
+ * Ask the server to call the map of `row` what `draft` holds, or by when its
+ * run began again where that holds nothing, and say in a toast how that went.
+ * The view's `mapNaming` holds whether the server has yet to answer. Once the
+ * name is saved, the popover it was entered in is shut.
+ */
+async function nameMap(mine, row, draft) {
+  const naming = mine.mapNaming;
+  if (naming.waiting) return;
+  const before = mapText(row.name, record(record(parsed(row.map_json)).timing).start) ?? 'the map';
+  naming.waiting = true;
+  drawRobot(mine);
+  const address = `api/map_name?${new URLSearchParams({ ...mine.robot, id: row.id, name: draft })}`;
+  const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS, 'POST');
+  naming.waiting = false;
+  report(mine, 'map-name', status !== 200 ? { tone: 'bad', text: `Rename map: ${answer?.error ?? 'no answer from the server'}` }
+    : answer.name === null ? { tone: 'good', text: `Rename map: ${before} goes by its start time again` }
+    : { tone: 'good', text: `Rename map: ${before} is now called ${answer.name}` });
+  if (mine !== view) return;
+  if (status === 200) {
+    // As with the robot's name: the answer has the name as the server keeps it, which goes on the page now, and an
+    // answer that was asked for before the change, which has the old one, is dropped.
+    for (const listed of [...mine.body.maps, ...mine.body.floorplan_maps]) if (listed.id === row.id) listed.name = answer.name;
+    if (popped?.mine === mine && popped.anchor === `map-name-${row.id}`) closePopover();
+    refresh(mine);
+  }
+  drawRobot(mine);
+}
+
+/**
+ * Ask in a popover what the map of `row` is to be called: a field on the name
+ * it has, which is empty for one that goes by when its run began, as the field
+ * for a robot's name is. While the server has yet to answer, Save is held back
+ * as the button that opened it is.
+ */
+function askMapName(mine, row) {
+  const start = record(record(parsed(row.map_json)).timing).start;
+  openPopover(mine, `map-name-${row.id}`, 'Rename map', () => {
+    const field = h('input', {
+      type: 'text',
+      value: row.name ?? '',
+      maxlength: NAME_MAX,
+      placeholder: mapText(null, start),
+      autocomplete: 'off',
+      'aria-label': 'Name',
+    });
+    const save = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
+    const form = h('form', {
+      class: 'popover-form',
+      onsubmit: (event) => {
+        event.preventDefault();
+        if (!save.hasAttribute('aria-disabled')) nameMap(mine, row, field.value);
+      },
+    },
+    field,
+    h('p', { id: 'popover-text' }, 'Only this server knows the name. Left empty, the map goes by its start time.'),
+    h('div', { class: 'popover-tools' },
+      h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
+      save));
+    return [form, field];
+  });
+}
+
+/**
+ * The button that opens the popover that renames the map of `row`: with its
+ * label beside the heading of a floor plan's block, and `alone` on it in the
+ * row of a map. It has one name to the keyboard in both, as Promote and Demote
+ * have, so the keyboard goes with the map from the one to the other. The robot
+ * is sent nothing, so it need not be connected.
+ */
+function renameButton(mine, row, alone = false) {
+  const waiting = mine.mapNaming.waiting;
+  return h('button', {
+    class: alone ? 'button tool' : 'button',
+    type: 'button',
+    // Held back, not disabled: a disabled button could not keep the keyboard's focus.
+    'aria-disabled': waiting && 'true',
+    'aria-label': alone && 'Rename',
+    title: waiting ? 'Rename: waiting for the server to answer' : alone && 'Rename',
+    'data-focus': `map-name-${row.id}`,
+    onclick: () => {
+      if (mine.mapNaming.waiting) return;
+      // A selection would hold the page as it is, and the press has to show.
+      getSelection().removeAllRanges();
+      askMapName(mine, row);
+    },
+  }, icon('pencil'), !alone && 'Rename');
 }
 
 /**
@@ -1529,20 +1661,21 @@ async function askFloor(mine, label, more, focus = null) {
 function askDemote(mine, plan, id) {
   popover(mine, `floor-${id}`, {
     title: 'Demote floor plan',
-    text: `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones and no-go lines.`,
+    text: `Demote floor plan ${floorText(plan.rank_uuid, [plan], true)}? The robot deletes it, with its zones and no-go lines.`,
     answers: [['Demote it', () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid })]],
     stands: () => mine.body.floorplans.some((each) => each.rank_uuid === plan.rank_uuid),
   });
 }
 
 /**
- * Ask in a popover whether the map of that `id` is to take the place of a
- * floor plan on the robot. Where the robot has more floor plans than one to
+ * Ask in a popover whether the map of `row` is to take the place of a floor
+ * plan on the robot. Where the robot has more floor plans than one to
  * replace, an answer to each is also what chooses among them. While the robot
  * answers, the keyboard is on Promote, which goes with the map from the table
  * to a block of its own.
  */
-function askReplace(mine, plans, id, map) {
+function askReplace(mine, plans, row, map) {
+  const { id } = row;
   const others = replaceable(plans, map);
   // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
   const drawn = others.some((old) => {
@@ -1550,11 +1683,14 @@ function askReplace(mine, plans, id, map) {
     return known && (known.zones.length > 0 || known.nogo !== null);
   });
   const forgotten = drawn ? ' What it does with the zones and no-go lines drawn here is not known, and this page forgets them.' : '';
+  const called = mapText(row.name, record(map.timing).start);
+  const what = called === null ? 'this map' : `the map ${called}`;
   popover(mine, `floor-swap-${id}`, {
     title: 'Replace floor plan',
-    text: others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.${forgotten}`
-      : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`,
-    answers: others.map((old) => [others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
+    text: others.length === 1
+      ? `Replace floor plan ${floorText(others[0], plans, true)} with ${what}? The robot keeps the map in its place.${forgotten}`
+      : `Replace which floor plan with ${what}? The robot keeps the map in its place.${forgotten}`,
+    answers: others.map((old) => [others.length === 1 ? 'Replace it' : `Replace ${floorText(old, plans)}`,
       () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, `floor-${id}`)]),
   });
 }
@@ -1569,20 +1705,22 @@ function replaceable(plans, map) {
 }
 
 /**
- * The buttons of the row of a map that is no floor plan: to have the robot
- * keep the map as a new floor plan, and to have it keep the map in place of
- * another. The second takes a floor plan from the robot, so it only asks, in
- * a popover. Promote has the name to the keyboard that Demote has in the block
- * of a floor plan: a map goes from the one to the other as it is promoted or
- * demoted, and the keyboard goes with it.
+ * The buttons of the row of a map that is no floor plan, `row`: to rename the
+ * map, to have the robot keep it as a new floor plan, and to have it keep the
+ * map in place of another. The last takes a floor plan from the robot, so it
+ * only asks, in a popover. Promote has the name to the keyboard that Demote has
+ * in the block of a floor plan: a map goes from the one to the other as it is
+ * promoted or demoted, and the keyboard goes with it.
  */
-function mapTools(mine, robot, plans, id, map) {
+function mapTools(mine, robot, plans, row, map) {
+  const { id } = row;
   const lone = replaceable(plans, map).length === 0 ? 'the robot is not known to have a floor plan to replace' : null;
   return [
+    renameButton(mine, row, true),
     robotButton(mine.floors, robot, 'Promote to floor plan', `floor-${id}`,
       () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { glyph: 'promote', alone: true }),
     robotButton(mine.floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`,
-      () => askReplace(mine, plans, id, map), { why: lone, glyph: 'replace', alone: true }),
+      () => askReplace(mine, plans, row, map), { why: lone, glyph: 'replace', alone: true }),
   ];
 }
 
@@ -2009,11 +2147,12 @@ function sign(text = null) {
 }
 
 /**
- * The floor plans the server had the robot keep, each with the `start` of the
- * map it was made of: when the robot says that map's run began, which is what
- * the block of the floor plan shows of it, or null where the server has the map no
- * more. Each has as well the `zones` the server had the robot keep of it, by
- * name, and as `nogo` the track of its no-go lines, or null.
+ * The floor plans the server had the robot keep, each with the `name` and the
+ * `start` of the map it was made of: what that map is called, or null for
+ * none, and when the robot says its run began, which is what it goes by
+ * without one; both are null where the server has the map no more. Each has
+ * as well the `zones` the server had the robot keep of it, by name, and as
+ * `nogo` the track of its no-go lines, or null.
  */
 function plansOf({ maps, floorplans, floorplan_maps: old, tracks }) {
   const all = [...maps, ...old];
@@ -2022,6 +2161,7 @@ function plansOf({ maps, floorplans, floorplan_maps: old, tracks }) {
     const own = tracks.filter((track) => track.rank_uuid === plan.rank_uuid);
     return {
       ...plan,
+      name: row?.name ?? null,
       start: row ? record(record(parsed(row.map_json)).timing).start ?? null : null,
       zones: own.filter((track) => track.type === 'cleaning'),
       nogo: own.find((track) => track.type === 'no-go') ?? null,
@@ -2029,16 +2169,20 @@ function plansOf({ maps, floorplans, floorplan_maps: old, tracks }) {
   });
 }
 
-/** The floor plan of `plans` that the robot knows as `uuid`, where its map has a start that is a time, or else null. */
-function startOf(uuid, plans) {
+/**
+ * What the floor plan the robot knows as `uuid` is called, as text: what its
+ * map is called, where it is one of `plans` and the server knows that map, or
+ * else what the robot knows it by, `whole` or how that begins.
+ */
+function floorText(uuid, plans, whole = false) {
   const plan = plans.find((known) => known.rank_uuid === uuid);
-  return plan && !Number.isNaN(Date.parse(plan.start)) ? plan.start : null;
+  return (plan && mapText(plan.name, plan.start)) ?? (whole ? uuid : short(uuid));
 }
 
 /**
  * The floor plan the runs of an event are on, with a warning sign before one
  * the robot is not known to have. It is shown as its block on the Maps tab
- * shows it, by when that map's run began. One whose map the server
+ * shows it, by what its map is called. One whose map the server
  * does not know is shown by what the robot knows it by: for the row of the
  * event how that begins, the rest of which is told to a pointer that rests on
  * it, and for the event's form `whole`. The row has after it the zone of it
@@ -2048,12 +2192,13 @@ function floorShown(runs, plans, whole = false) {
   if (runs.length === 0) return none('No runs');
   const place = runs[0].map == null ? null : record(runs[0].map);
   const uuid = place && word(place.rank_id);
-  const start = uuid && startOf(uuid, plans);
+  const plan = uuid && plans.find((known) => known.rank_uuid === uuid);
   const lost = strays(runs.map(floorOf), plans);
   const zone = !whole && runs.length === 1 && zoneShown(runs[0], plans);
   return [
     lost.length > 0 && sign(strayed(lost)),
-    place === null ? none() : uuid === null ? none('Unnamed') : start ? dated(start)
+    place === null ? none() : uuid === null ? none('Unnamed') : plan && mapText(plan.name, plan.start) !== null
+      ? mapShown(plan.name, plan.start)
       : whole ? uuid : h('span', { title: uuid }, short(uuid)),
     !whole && runs.length > 1 && ` · ${runs.length} runs`,
     ...(zone ? [' · ', zone] : []),
@@ -2214,25 +2359,19 @@ function yesNo(label, focus, on, set) {
   });
 }
 
-/**
- * A floor plan as a line to choose it by: when the run of the map it was made
- * of began, as its block on the Maps tab has it, or how what the robot knows it by
- * begins where the server does not know that map.
- */
-function floorLabel(plan) {
-  const uuid = String(plan.rank_uuid);
-  const start = startOf(uuid, [plan]);
-  return start ? numeric(Date.parse(start)) : short(uuid);
-}
-
 // What sets a zone in from its floor plan in a list of them: spaces that do not break, since a list lays out nothing of an option.
 const ZONE_INDENT = '    ';
 
-/** A floor plan of `plans` as `placeField` offers it: by `floorLabel`, with its zones by name, or by how what the robot knows one by begins where it has none. */
+/**
+ * A floor plan of `plans` as `placeField` offers it: by what its map is called,
+ * or how what the robot knows it by begins where the server does not know that
+ * map, with its zones by name, or by how what the robot knows one by begins
+ * where it has none.
+ */
 function placeOf(plan) {
   return {
     uuid: plan.rank_uuid,
-    label: floorLabel(plan),
+    label: floorText(plan.rank_uuid, [plan]),
     zones: plan.zones.map((zone) => ({ track: zone.track_uuid, label: word(zone.name) ?? short(zone.track_uuid) })),
   };
 }
@@ -3090,7 +3229,7 @@ function deleteButton(mine) {
       if (mine.deleting.waiting) return;
       popover(mine, 'delete', {
         title: 'Delete robot',
-        text: 'Delete this robot? Its state, its events, its maps and its name are deleted from the database, '
+        text: 'Delete this robot? Its state, its events, its maps, its name and those of its maps are deleted from the database, '
           + 'and so is its key, if the server keeps one for it. If it is connected, its connection is ended. '
           + 'None of this can be undone. A robot that can still log in is listed again, as a new one, once it connects.',
         answers: [['Delete it', () => forget(mine)]],
@@ -3266,7 +3405,7 @@ const TABS = [
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
   ['maps', 'Maps', (mine, body) => mapPanels(mine, body)],
   ['settings', 'Settings', (mine, { robot }) => SETTINGS.map((name) => settingPanel(mine, robot, name))],
-  ['events', 'Events', (mine, { events, more }) => panel('Events', eventLog(mine, events, more), {
+  ['events', 'Events', (mine, body) => panel('Events', eventLog(mine, body), {
     hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
     wide: true,
   })],
@@ -3407,8 +3546,8 @@ function drawRobot(mine) {
   if (mine !== view || !body) return;
   const data = [
     body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, body.tracks,
-    mine.tab, mine.naming, mine.command, mine.accepted, mine.start, mine.schedule, mine.settings, mine.floors, mine.tracks,
-    mine.deleting,
+    body.map_names, mine.tab, mine.naming, mine.mapNaming, mine.command, mine.accepted, mine.start, mine.schedule,
+    mine.settings, mine.floors, mine.tracks, mine.deleting,
   ];
   draw(mine, data, () => robotPage(mine, body));
   // The pictures of the maps are no part of what is drawn, and what is drawn over them may have changed.
@@ -3532,6 +3671,8 @@ function navigate() {
     drawings: new Map(),
     // The name in the field, when the field is open, and whether the server has yet to answer.
     naming: { draft: null, waiting: false },
+    // Whether the server has yet to answer the renaming of a map, whose name is entered in a popover.
+    mapNaming: { waiting: false },
     // The command sent from this view, by its name, while the robot has yet to answer it.
     command: null,
     accepted: null,

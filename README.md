@@ -86,7 +86,7 @@ it reports is kept in a database file on your machine.
 | Zones and no-go lines | 🟡 | Drawn on the Maps tab, on the picture in the block of a floor plan the page had the robot keep, while the robot is connected: a zone as a rectangle with a name and a cleaning mode, and no-go lines one at a time. A cleaning, started or scheduled, can clean a zone and mind the no-go lines. If the robot cannot use them, a cleaning started on them from the page says so, and deleting the zone or the lines puts it right. Zones and lines the robot got from Neato's cloud are not shown. |
 | History of what a robot reported | ✅ | Its connections, its messages and error reports, and the commands it was sent. |
 | Notifications | 🟡 | A robot's notifications are in that history; nothing is sent to a phone or by e-mail. |
-| Name a robot | ✅ | Kept by the server; the robot is not told. |
+| Name a robot, and its maps | ✅ | Kept by the server; the robot is not told. A map without a name goes by when its run began. |
 | Delete a robot with everything kept of it | ✅ | |
 | Robot settings: language, sounds, cleaning options, automatic updates | 🟡 | On the Settings tab, read from the robot, so only while it is connected. A factory reset is not offered. A robot may answer with an error of its own instead of giving its sounds, which then cannot be changed. |
 | Find the robot by sound | ❌ | |
@@ -117,7 +117,7 @@ server at startup with a message that names it.
 | `key` | `certs/server.key` | The server's TLS private key (PEM). |
 | `generate_certs` | `true` | Create a certificate authority and a certificate when `cert` and `key` are both missing: see [Certificates](#certificates). |
 | `keys` | empty | A folder of robots' public keys. Empty: any robot is let in. See [Checking robots' keys](#checking-robots-keys). |
-| `database` | `data/deorbit.db` | The SQLite file that holds each robot's last status, its history, its maps, the floor plans it was given and its name. It is created when missing. |
+| `database` | `data/deorbit.db` | The SQLite file that holds each robot's last status, its history, its maps and their names, the floor plans it was given and its name. It is created when missing. |
 | `heartbeat_interval` | `30` | Seconds between the heartbeats that keep a robot's connection open. A robot hangs up after 70 seconds of silence. |
 | `idle_timeout` | `150` | Seconds after which a robot that has sent nothing is dropped. |
 | `login_timeout` | `30` | Seconds a new connection has to log in. |
@@ -161,8 +161,8 @@ nothing, so that a file already in place is never overwritten. With
 ### The web page
 
 The web page has no login and is served over plain HTTP. Anyone who can reach
-it sees every robot, and can command it, change its schedule, its settings and
-its name, and delete it. Keep it to a network you trust, and do not open its port to the
+it sees every robot, and can command it, change its schedule, its settings,
+its name and those of its maps, and delete it. Keep it to a network you trust, and do not open its port to the
 internet; neither of the two ports has to be reachable from outside your home.
 
 `web_host: 127.0.0.1` keeps the page to the machine the server runs on, and

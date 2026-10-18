@@ -751,7 +751,7 @@ h1 {
   }
 }
 
-/* ---- Popovers: what is asked before what cannot be undone, by the button that was pressed ---- */
+/* ---- Popovers: what is asked before what cannot be undone, and the name of a map, by the button that was pressed ---- */
 
 /* Placed by the script against the page, so that it scrolls with its button; over the bar at the top, under the toasts. */
 .popover {
@@ -821,6 +821,22 @@ h1 {
   margin: 0;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+/* The name of a map, entered in one: the field, what it does, then Cancel and Save. */
+.popover-form {
+  display: grid;
+  gap: 10px;
+}
+
+.popover-form > input {
+  width: 100%;
+  min-width: 0;
+}
+
+.popover-form > p {
+  margin: 0 0 4px;
+  color: var(--muted);
 }
 
 /* Keep, then the answers that do it, at its right. */
@@ -1152,6 +1168,13 @@ h2 {
 
 /* When: the date and the time, on one line, with the day and the seconds for a pointer that rests on it. */
 td.cell-time {
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* What a map is called: its name, which wraps where it has to, or else when its run began, set as a time is. */
+td.cell-name > time {
   font-size: 13.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1571,7 +1594,8 @@ td.cell-clock {
 .track-form dd > input,
 .track-form dd > select,
 .start-field > select,
-.name-form > input {
+.name-form > input,
+.popover-form > input {
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--line-strong);

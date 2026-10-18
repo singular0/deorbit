@@ -144,6 +144,11 @@ class StoreTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(self.path)) as db:
             return {RobotId(vendor, serial): name for vendor, serial, name in db.execute("SELECT * FROM names")}
 
+    def called(self) -> list[tuple]:
+        """Every name of a map in the file, by the map, read the way another process would."""
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            return db.execute("SELECT vendor, serial, map_id, name FROM map_names ORDER BY map_id").fetchall()
+
     def plans(self) -> list[tuple]:
         """Every floor plan in the file but for when it was noted, read the way another process would."""
         with contextlib.closing(sqlite3.connect(self.path)) as db:
@@ -434,8 +439,8 @@ class StoreTests(unittest.TestCase):
         listed = store.maps(ROBOT, 10)
         self.assertEqual([row["id"] for row in listed], [5, 3, 1])
         for row in listed:
-            # A row as it is stored but for the binaries, and with those the map is the one that was sent.
-            self.assertEqual({**row, "map_json": None}, {**stored[row["id"]], "map_json": None})
+            # A row as it is stored but for the binaries, and with those the map is the one that was sent. None was named.
+            self.assertEqual({**row, "map_json": None}, {**stored[row["id"]], "map_json": None, "name": None})
         self.assertEqual(json.loads(listed[0]["map_json"]), {})
         self.assertEqual(json.loads(listed[1]["map_json"]), {**unfinished, "map": {"origin": {"x": -120, "y": 85}}})
         self.assertEqual(json.loads(listed[2]["map_json"]), {**MAP, "map": {"origin": {"x": -120, "y": 85}}})
@@ -457,6 +462,74 @@ class StoreTests(unittest.TestCase):
         # A map is asked of its robot, and one of another robot is not found.
         self.assertIsNone(store.map(ROBOT, 2))
         self.assertIsNone(store.map(ROBOT, 3))
+
+    def test_map_is_given_a_name_changed_and_has_it_taken_away(self) -> None:
+        store = self.open()
+        for robot, body in ((ROBOT, MAP), (OTHER, MAP), (ROBOT, {**MAP, "rank_uuid": "second"}), (ROBOT, {})):
+            store.save_map(robot, body)
+        before = self.maps()
+        self.assertEqual((self.called(), store.map_names(ROBOT)), ([], []))
+        self.assertTrue(store.save_map_name(ROBOT, 3, "Kitchen"))
+        self.assertEqual(self.called(), [("n", "board1", 3, "Kitchen")])
+        # A map is listed with its name, and one that has none without, as the map of a floor plan is.
+        self.assertEqual([(row["id"], row["name"]) for row in store.maps(ROBOT, 10)], [(4, None), (3, "Kitchen"), (1, None)])
+        self.assertEqual([row["name"] for row in store.maps(OTHER, 10)], [None])
+        store.save_floorplan(ROBOT, "second", 3)
+        self.assertEqual([(row["id"], row["name"]) for row in store.floorplan_maps(ROBOT, 4)], [(3, "Kitchen")])
+        # Two maps may have one name, and each is named by what the robot knows it by as well, which a map may lack.
+        self.assertTrue(store.save_map_name(ROBOT, 4, "Caf\u00e9 \U0001f9f9"))
+        self.assertTrue(store.save_map_name(ROBOT, 1, "Kitchen"))
+        self.assertEqual(store.map_names(ROBOT), [
+            {"rank_uuid": MAP["rank_uuid"], "name": "Kitchen"},
+            {"rank_uuid": "second", "name": "Kitchen"},
+            {"rank_uuid": None, "name": "Caf\u00e9 \U0001f9f9"},
+        ])
+        self.assertEqual(store.map_names(OTHER), [])
+        # A new name takes the place of the old one, and the map itself stays as it was sent.
+        self.assertTrue(store.save_map_name(ROBOT, 3, "Hall"))
+        self.assertEqual(store.maps(ROBOT, 10)[1]["name"], "Hall")
+        self.assertEqual(self.maps(), before)
+        # Without its name a map has no row there, and one without a name has none to lose.
+        for _ in range(2):
+            self.assertTrue(store.save_map_name(ROBOT, 3, None))
+            self.assertEqual([map_id for _, _, map_id, _ in self.called()], [1, 4])
+        self.assertIsNone(store.maps(ROBOT, 10)[1]["name"])
+        store.close()
+        self.assertEqual([row["name"] for row in self.open().maps(ROBOT, 10)], ["Caf\u00e9 \U0001f9f9", None, "Kitchen"])
+
+    def test_map_name_that_cannot_be_stored(self) -> None:
+        store = self.open()
+        store.save_map(ROBOT, MAP)
+        store.save_map_name(ROBOT, 1, "Kitchen")
+        with self.assertLogs("deorbit", "ERROR") as logs:
+            self.assertFalse(store.save_map_name(ROBOT, 1, "\ud800"))  # not text that UTF-8 can carry
+            self.assertEqual(self.called(), [("n", "board1", 1, "Kitchen")])
+            with contextlib.closing(sqlite3.connect(self.path)) as db:
+                db.execute("DROP TABLE map_names")
+            self.assertFalse(store.save_map_name(ROBOT, 1, "Kitchen"))
+            self.assertFalse(store.save_map_name(ROBOT, 1, None))
+        self.assertEqual(len(logs.output), 3)
+        for line in logs.output[1:]:
+            self.assertIn("[n/board1] not saved to the database: no such table: map_names", line)
+        # A map is listed with its name, so its row alone is not enough.
+        for read in (lambda: store.maps(ROBOT, 10), lambda: store.floorplan_maps(ROBOT, 2), lambda: store.map_names(ROBOT)):
+            with self.assertRaisesRegex(StoreError, "^cannot read the database: no such table: map_names$"):
+                read()
+
+    def test_file_without_a_map_names_table_gets_one(self) -> None:
+        store = self.open()
+        store.save_state(ROBOT, STATE)
+        store.save_map(ROBOT, MAP)
+        store.close()
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            db.execute("DROP TABLE map_names")  # as in a file from before maps had names
+        before = self.rows(), self.maps()
+        store = self.open()
+        # Every map in it goes by when its run began, until it is given a name.
+        self.assertEqual([row["name"] for row in store.maps(ROBOT, 10)], [None])
+        self.assertTrue(store.save_map_name(ROBOT, 1, "Kitchen"))
+        self.assertEqual(store.maps(ROBOT, 10)[0]["name"], "Kitchen")
+        self.assertEqual((self.rows(), self.maps()), before)
 
     def test_map_that_cannot_be_stored(self) -> None:
         store = self.open()
@@ -712,17 +785,18 @@ class StoreTests(unittest.TestCase):
             store.add_event(robot, "request", "robots.notify", {"message_code": "bin_full"})
             store.save_map(robot, MAP)
             store.save_name(robot, "Rosie")
+            store.save_map_name(robot, store.maps(robot, 1)[0]["id"], "Hall")
             store.save_floorplan(robot, MAP["rank_uuid"], 1)
             store.save_track(robot, MAP["rank_uuid"], "zone", "cleaning", "Kitchen", "eco", [1, 2, 3, 4])
 
     def held(self) -> tuple:
         """All that the file holds, table by table."""
-        return self.rows(), self.logged(), self.maps(), self.names(), self.plans(), self.tracked()
+        return self.rows(), self.logged(), self.maps(), self.names(), self.called(), self.plans(), self.tracked()
 
     def test_robot_is_deleted_from_every_table(self) -> None:
         store = self.open()
         self.fill(store)
-        rows, logged, maps, names, plans, tracked = self.held()
+        rows, logged, maps, names, called, plans, tracked = self.held()
         self.assertTrue(store.delete(ROBOT))
         # The other robot has all it had, and this one nothing.
         self.assertEqual(self.held(), (
@@ -730,13 +804,14 @@ class StoreTests(unittest.TestCase):
             [event for event in logged if event["serial"] == "board2"],
             [row for row in maps if row["serial"] == "board2"],
             {OTHER: "Rosie"},
+            [("n", "board2", 2, "Hall")],
             [("n", "board2", MAP["rank_uuid"], 1)],
             [("n", "board2", "zone", MAP["rank_uuid"], "cleaning", "Kitchen", "eco", "[1,2,3,4]")],
         ))
-        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1, 1, 1])
+        self.assertEqual([len(found) for found in self.held()], [1, 2, 1, 1, 1, 1, 1])
         self.assertIsNone(store.robot(ROBOT))
-        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10), store.floorplans(ROBOT), store.tracks(ROBOT)),
-                         ([], [], [], []))
+        self.assertEqual((store.events(ROBOT, 10), store.maps(ROBOT, 10), store.map_names(ROBOT), store.floorplans(ROBOT),
+                          store.tracks(ROBOT)), ([], [], [], [], []))
         # A robot the file has nothing of is deleted as well as any.
         self.assertTrue(store.delete(ROBOT))
         self.assertTrue(store.delete(RobotId("3", "board2")))
@@ -755,9 +830,10 @@ class StoreTests(unittest.TestCase):
         store.add_event(gone, "request", "robots.notify", {"message_code": "event-of-the-deleted"})
         store.save_map(gone, {"map": {"rank_binary": "map-of-the-deleted" * 5000}})
         store.save_name(gone, "name-of-the-deleted")
+        store.save_map_name(gone, store.maps(gone, 1)[0]["id"], "label-of-the-deleted")
         store.save_floorplan(gone, "plan-of-the-deleted", 1)
         store.save_track(gone, "plan-of-the-deleted", "track-of-the-deleted", "cleaning", "zone-of-the-deleted", "eco", [])
-        for what in (b"serial", b"state", b"event", b"map", b"name", b"plan", b"track", b"zone"):
+        for what in (b"serial", b"state", b"event", b"map", b"name", b"label", b"plan", b"track", b"zone"):
             self.assertIn(what + b"-of-the-deleted", self.path.read_bytes())
         before = self.held()
         self.assertTrue(store.delete(gone))

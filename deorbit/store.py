@@ -1,4 +1,4 @@
-"""SQLite database of what the server remembers about each robot: its state, its events, its maps, its floor plans with their zones and no-go lines, and its name."""
+"""SQLite database of what the server remembers about each robot: its state, its events, its maps and their names, its floor plans with their zones and no-go lines, and its name."""
 
 import json
 import logging
@@ -74,11 +74,16 @@ _ROBOTS = "robots LEFT JOIN names USING (vendor, serial)"
 
 # Every table. Each names the robot a row is of by its vendor and serial, which
 # is how ``delete`` finds all there is of one.
-_TABLES = ("robots", "events", "maps", "names", "floorplans", "tracks")
+_TABLES = ("robots", "events", "maps", "names", "map_names", "floorplans", "tracks")
 
 # A map as a list of maps gives it: its columns, with everything in the body
-# but the two binaries. Those are most of a map, and only its picture needs them.
-_MAP = "id, at, vendor, serial, json_remove(map_json, '$.map.rank_binary', '$.map.real_binary') AS map_json"
+# but the two binaries, and the name it was given. The binaries are most of a
+# map, and only its picture needs them.
+_MAP = (
+    "id, at, vendor, serial, json_remove(map_json, '$.map.rank_binary', '$.map.real_binary') AS map_json, "
+    "(SELECT name FROM map_names AS given "
+    "WHERE given.vendor = maps.vendor AND given.serial = maps.serial AND given.map_id = maps.id) AS name"
+)
 
 # What a map is known by, as an index and the query that goes by it both have to write it.
 _RANK_UUID = "json_extract(map_json, '$.rank_uuid')"
@@ -141,6 +146,17 @@ CREATE TABLE IF NOT EXISTS names (
     serial TEXT NOT NULL,
     name   TEXT NOT NULL,  -- what the web UI calls the robot
     PRIMARY KEY (vendor, serial)
+)
+""",
+    # The same for a map: one that was given a name has a row here, and one
+    # that goes by when its run began has none.
+    """
+CREATE TABLE IF NOT EXISTS map_names (
+    vendor TEXT NOT NULL,
+    serial TEXT NOT NULL,
+    map_id INTEGER NOT NULL,  -- the map, by its id in maps
+    name   TEXT NOT NULL,     -- what the web UI calls the map
+    PRIMARY KEY (vendor, serial, map_id)
 )
 """,
     # A floor plan is a map that the robot keeps, and the robot is what keeps
@@ -251,6 +267,17 @@ class Store:
         )
         return self._write(robot, sql, (robot.vendor, robot.serial, name))
 
+    def save_map_name(self, robot: RobotId, map_id: int, name: str | None) -> bool:
+        """Give the robot's map of that ``id`` a name, or with ``None`` take the one it has away, and say whether the file now has it so."""
+        where = (robot.vendor, robot.serial, map_id)
+        if name is None:
+            return self._write(robot, "DELETE FROM map_names WHERE vendor = ? AND serial = ? AND map_id = ?", where)
+        sql = (
+            "INSERT INTO map_names (vendor, serial, map_id, name) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (vendor, serial, map_id) DO UPDATE SET name = excluded.name"
+        )
+        return self._write(robot, sql, (*where, name))
+
     def save_floorplan(self, robot: RobotId, rank_uuid: str, map_id: int, replaced: str | None = None) -> bool:
         """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so.
 
@@ -319,12 +346,12 @@ class Store:
         return self._select(sql, (robot.vendor, robot.serial, limit))
 
     def maps(self, robot: RobotId, limit: int) -> list[dict[str, object]]:
-        """The robot's last ``limit`` maps, newest first, each without its two binaries."""
+        """The robot's last ``limit`` maps, newest first, each without its two binaries and with its name."""
         sql = f"SELECT {_MAP} FROM maps WHERE vendor = ? AND serial = ? ORDER BY id DESC LIMIT ?"
         return self._select(sql, (robot.vendor, robot.serial, limit))
 
     def floorplan_maps(self, robot: RobotId, before: int) -> list[dict[str, object]]:
-        """Those of the robot's maps older than the one of the ``id`` ``before`` that a floor plan of its was made of, newest first, each without its two binaries."""
+        """Those of the robot's maps older than the one of the ``id`` ``before`` that a floor plan of its was made of, newest first, each as ``maps`` gives one."""
         where = (robot.vendor, robot.serial)
         sql = (
             f"SELECT {_MAP} FROM maps WHERE vendor = ? AND serial = ? AND id < ? "
@@ -342,6 +369,16 @@ class Store:
         sql = "SELECT * FROM maps WHERE id = ? AND vendor = ? AND serial = ?"
         rows = self._select(sql, (map_id, robot.vendor, robot.serial))
         return rows[0] if rows else None
+
+    def map_names(self, robot: RobotId) -> list[dict[str, object]]:
+        """The ``rank_uuid`` and the name of each of the robot's maps that was given one, the oldest map first."""
+        # Each of these maps is read whole for its rank_uuid, as few as they are.
+        sql = (
+            f"SELECT {_RANK_UUID} AS rank_uuid, name FROM map_names JOIN maps ON maps.id = map_names.map_id "
+            "AND maps.vendor = map_names.vendor AND maps.serial = map_names.serial "
+            "WHERE map_names.vendor = ? AND map_names.serial = ? ORDER BY map_names.map_id"
+        )
+        return self._select(sql, (robot.vendor, robot.serial))
 
     def floorplans(self, robot: RobotId) -> list[dict[str, object]]:
         """The floor plans the robot is known to keep, the one it accepted last first."""

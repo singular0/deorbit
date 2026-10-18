@@ -482,6 +482,151 @@ class NameTests(WebTestCase):
         self.assertEqual(int(re.search(r"^const NAME_MAX = (\d+);", script.decode(), re.M)[1]), web._MAX_NAME)
 
 
+class MapNameTests(WebTestCase):
+    """``POST /api/map_name``, which is what Save sends in the popover of Rename, in the row of a map or the block of a floor plan."""
+
+    OTHER = RobotId("n", "board0")
+    BOARD1 = "/api/map_name?vendor=n&serial=board1&id=2"
+
+    async def start(self, **overrides: object) -> Web:
+        web = await super().start(**overrides)
+        # A map of each robot's, the other robot's first. Neither robot is connected.
+        store = self.server.store
+        store.save_heartbeat(self.OTHER)
+        store.save_state(self.ROBOT, STATE)
+        store.save_map(self.OTHER, MAP)
+        store.save_map(self.ROBOT, MAP)
+        return web
+
+    async def names(self, serial: str = "board1") -> list[str | None]:
+        """What the robot's maps are called, as its page has them."""
+        return [row["name"] for row in (await self.api(f"/api/robot?vendor=n&serial={serial}"))["maps"]]
+
+    async def test_map_has_no_name_until_it_is_given_one(self) -> None:
+        await self.start()
+        self.assertEqual(await self.names(), [None])
+        with self.assertLogs("deorbit", "INFO") as logs:
+            self.assertEqual(await self.command(self.BOARD1 + "&name=Kitchen"), (200, {"name": "Kitchen"}))
+        self.assertIn("[n/board1] map 2 named 'Kitchen'", logs.output[0])
+        answer = await self.api("/api/robot?vendor=n&serial=board1")
+        (row,) = answer["maps"]
+        # The name is beside what the robot sent, and in the place of none of it.
+        self.assertEqual((row["id"], row["name"], json.loads(row["map_json"])["timing"]), (2, "Kitchen", MAP["timing"]))
+        # The event of an upload names its map by what the robot knows it by.
+        self.assertEqual(answer["map_names"], [{"rank_uuid": MAP["rank_uuid"], "name": "Kitchen"}])
+        # The other robot's map of the same rank_uuid is its own.
+        self.assertEqual(await self.names("board0"), [None])
+        self.assertEqual((await self.api("/api/robot?vendor=n&serial=board0"))["map_names"], [])
+        # The robot is named as it is in the address of its page, whatever the case.
+        self.assertEqual(await self.command("/api/map_name?name=Hall&id=2&serial=BOARD1&vendor=N"), (200, {"name": "Hall"}))
+        self.assertEqual(await self.names(), ["Hall"])
+        # The map as /api/map gives it is the row as it is stored.
+        self.assertNotIn("name", (await self.api("/api/map?vendor=n&serial=board1&id=2"))["map"])
+
+    async def test_map_of_a_floor_plan_is_named_as_any(self) -> None:
+        await self.start()
+        store = self.server.store
+        store.save_floorplan(self.ROBOT, MAP["rank_uuid"], 2)
+        for n in range(3):
+            store.save_map(self.ROBOT, {**MAP, "rank_uuid": f"later {n}"})
+        self.assertEqual(await self.command(self.BOARD1 + "&name=Kitchen"), (200, {"name": "Kitchen"}))
+        # Older than the maps that were asked for, it comes with its name.
+        answer = await self.api("/api/robot?vendor=n&serial=board1&maps=2")
+        self.assertEqual([(row["id"], row["name"]) for row in answer["maps"]], [(5, None), (4, None)])
+        self.assertEqual([(row["id"], row["name"]) for row in answer["floorplan_maps"]], [(2, "Kitchen")])
+
+    async def test_name_is_kept_as_one_line_of_text(self) -> None:
+        await self.start()
+        for sent, name in {
+            "++Kitchen%20and+%09%0D%0A+hall%C2%A0": "Kitchen and hall",
+            quote("Caf\u00e9 \U0001f9f9 <b>&amp;\"'"): "Caf\u00e9 \U0001f9f9 <b>&amp;\"'",
+            "x" * web._MAX_NAME: "x" * web._MAX_NAME,
+        }.items():
+            with self.subTest(sent):
+                self.assertEqual(await self.command(f"{self.BOARD1}&name={sent}"), (200, {"name": name}))
+                self.assertEqual(await self.names(), [name])
+
+    async def test_no_name_takes_the_name_away(self) -> None:
+        await self.start()
+        for target in (self.BOARD1, self.BOARD1 + "&name=", self.BOARD1 + "&name=+%20%0A"):
+            with self.subTest(target):
+                await self.command(self.BOARD1 + "&name=Kitchen")
+                with self.assertLogs("deorbit", "INFO") as logs:
+                    self.assertEqual(await self.command(target), (200, {"name": None}))
+                self.assertIn("[n/board1] map 2 goes by its start time again", logs.output[0])
+                self.assertEqual(await self.names(), [None])
+        # A map that has none has none to lose.
+        self.assertEqual(await self.command(self.BOARD1), (200, {"name": None}))
+
+    async def test_name_that_is_not_taken(self) -> None:
+        await self.start()
+        await self.command(self.BOARD1 + "&name=Kitchen")
+        long = (400, {"error": "name must be at most 64 characters"})
+        control = (400, {"error": "name must not hold control characters"})
+        for sent, told in {"x" * (web._MAX_NAME + 1): long, quote("\u00e9" * (web._MAX_NAME + 1)): long, "Hall%00": control}.items():
+            with self.subTest(sent):
+                self.assertEqual(await self.command(f"{self.BOARD1}&name={sent}"), told)
+                # Refused whichever map it is for, before the map is looked for.
+                self.assertEqual(await self.command(f"/api/map_name?name={sent}"), told)
+        self.assertEqual(await self.names(), ["Kitchen"])
+
+    async def test_map_that_is_not_in_the_database(self) -> None:
+        await self.start()
+        for target in (
+            "/api/map_name?vendor=n&serial=board1&id=1&name=Kitchen",  # the other robot's
+            "/api/map_name?vendor=n&serial=board1&id=3&name=Kitchen",
+            "/api/map_name?vendor=n&serial=board2&id=2&name=Kitchen",
+            "/api/map_name?id=2&name=Kitchen",
+            "/api/map_name?vendor=n&serial=board1&name=Kitchen",
+            "/api/map_name",
+            # Not the number of any row a table can have.
+            *(f"/api/map_name?vendor=n&serial=board1&name=Kitchen&id={asked}" for asked in ("0", "-1", "2.0", "two", "", 2 ** 63)),
+        ):
+            with self.subTest(target):
+                self.assertEqual(await self.command(target), (404, {"error": "no such map in the database"}))
+        with contextlib.closing(sqlite3.connect(self.server.config.database)) as db:
+            self.assertEqual(db.execute("SELECT * FROM map_names").fetchall(), [])
+
+    async def test_name_is_taken_from_the_ui_s_own_page_by_post_alone(self) -> None:
+        await self.start()
+        target = self.BOARD1 + "&name=Kitchen"
+        told = (403, {"error": "a command is taken only from this server's own page"})
+        for sent in (("Host: localhost:8080",), ("Host: localhost:8080", "Origin: http://elsewhere.example"), ()):
+            with self.subTest(sent):
+                self.assertEqual(await self.command(target, sent), told)
+        for method in ("GET", "HEAD", "PUT", "DELETE"):
+            with self.subTest(method):
+                status, headers, _ = await self.fetch(target, method, self.PAGE)
+                self.assertEqual((status, headers["Allow"]), (405, "POST"))
+        self.assertEqual(await self.names(), [None])
+
+    async def test_connected_robot_is_sent_nothing(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        self.assertEqual(await self.command(self.BOARD1 + "&name=Kitchen"), (200, {"name": "Kitchen"}))
+        # The name is the server's own: the first thing the robot gets is the answer to what it asks next.
+        self.assertEqual((await robot.request("firmware.check", {}))["id"], "r1")
+        board1 = await self.api("/api/robot?vendor=n&serial=board1")
+        self.assertEqual([row["name"] for row in board1["maps"]], ["Kitchen"])
+        # Nor is it something the robot did, so it is not among its events.
+        self.assertEqual([(event["kind"], event["service"]) for event in board1["events"]],
+                         [("request", "firmware.check"), ("login", None)])
+
+    async def test_name_that_cannot_be_saved(self) -> None:
+        await self.start()
+        await self.command(self.BOARD1 + "&name=Kitchen")
+        with contextlib.closing(sqlite3.connect(self.server.config.database)) as db:
+            # A file that takes no change to a name, as a full disk would not.
+            for change in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"CREATE TRIGGER no_{change} BEFORE {change} ON map_names BEGIN SELECT RAISE(ABORT, 'full'); END")
+            for target in (self.BOARD1 + "&name=Hall", self.BOARD1):
+                with self.subTest(target), self.assertLogs("deorbit", "ERROR") as logs:
+                    self.assertEqual(await self.command(target),
+                                     (503, {"error": "the name could not be saved to the database"}))
+                    self.assertIn("[n/board1] not saved to the database: full", logs.output[0])
+            self.assertEqual(await self.names(), ["Kitchen"])
+
+
 class DeleteTests(WebTestCase):
     """``POST /api/delete``, which is what Delete it, in the popover of Delete on a robot's page, sends."""
 
@@ -629,8 +774,9 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps", "tracks"})
-        self.assertEqual((answer["events"], answer["more"], answer["tracks"]), ([], False, []))
+        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps", "tracks",
+                                       "map_names"})
+        self.assertEqual((answer["events"], answer["more"], answer["tracks"], answer["map_names"]), ([], False, [], []))
 
     async def test_events_newest_first_as_stored(self) -> None:
         await self.start()
@@ -758,8 +904,9 @@ class MapTests(WebTestCase):
                 answer = await self.api(target)
                 self.assertFalse(answer["more_maps"])
                 last, first = answer["maps"]
+                # Neither was given a name.
                 self.assertEqual(last, {"id": 3, "at": last["at"], "vendor": "n", "serial": "board1",
-                                        "map_json": last["map_json"]})
+                                        "map_json": last["map_json"], "name": None})
                 self.assertJustNow(last["at"])
                 # A map is given as JSON text, like the whole state of the robot, and here without its binaries.
                 self.assertEqual(json.loads(last["map_json"]), {**self.LISTED, "rank_uuid": "second",
@@ -813,7 +960,8 @@ class MapTests(WebTestCase):
             self.assertEqual((self.numbers(answer), answer["more_maps"]), ([7, 6, 5], True))
             # Only those that are not among the maps already, newest first, each as a map is listed.
             older, oldest = answer["floorplan_maps"]
-            self.assertEqual(older, {"id": 2, "at": older["at"], "vendor": "n", "serial": "board1", "map_json": older["map_json"]})
+            self.assertEqual(older, {"id": 2, "at": older["at"], "vendor": "n", "serial": "board1", "map_json": older["map_json"],
+                                     "name": None})
             self.assertEqual(json.loads(older["map_json"]), {**self.LISTED, "rank_uuid": 2})
             self.assertEqual((oldest["id"], json.loads(oldest["map_json"])), (1, {**self.LISTED, "rank_uuid": 1}))
             answer = await self.api(self.BOARD1 + "&maps=5")

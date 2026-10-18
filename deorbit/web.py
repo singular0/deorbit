@@ -1,4 +1,4 @@
-"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it."""
+"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot and its maps, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it."""
 
 import asyncio
 import json
@@ -61,7 +61,7 @@ _MAPS = 10
 _MAX_MAPS = 100
 # The largest number a row of a table can have, which is the most the ``id`` of a map can be.
 _MAX_ID = 2**63 - 1
-# The most characters the name given to a robot may have.
+# The most characters the name given to a robot, or to a map, may have.
 _MAX_NAME = 64
 
 # Sent with every response. Each connection carries one request. Nothing is
@@ -107,7 +107,7 @@ def _number(asked: dict[str, list[str]], name: str, most: int, default: int | No
 
 
 def _name(asked: dict[str, list[str]]) -> str | None:
-    """The name a query gives a robot, as it is kept, or ``None`` when it gives none; one that is refused is a ``ValueError`` that says why."""
+    """The name a query gives a robot or a map, as it is kept, or ``None`` when it gives none; one that is refused is a ``ValueError`` that says why."""
     # A name is one line: whatever white space it came with, its words end up a space apart.
     name = " ".join(asked.get("name", [""])[0].split())
     if len(name) > _MAX_NAME:
@@ -166,6 +166,7 @@ class Web:
             "/api/floorplan": self._floorplan,
             "/api/track": self._track,
             "/api/name": self._rename,
+            "/api/map_name": self._rename_map,
             "/api/delete": self._delete,
         }
         self._listener: asyncio.Server | None = None
@@ -280,6 +281,8 @@ class Web:
                 # robot however old it is: here if it is older than the maps that were asked for.
                 "floorplan_maps": self._store.floorplan_maps(robot, listed[-1]["id"]) if older else [],
                 "tracks": self._store.tracks(robot),
+                # The event of an upload names its map by what the robot knows it by, and the map may be one of any age.
+                "map_names": self._store.map_names(robot),
             }
             return 200, _JSON, _json(answer)
         if path == "/api/map":
@@ -403,6 +406,23 @@ class Web:
         if not self._store.save_name(robot, name):
             return 503, _JSON, _json({"error": "the name could not be saved to the database"})
         log.info("[%s] %s", robot, "goes by its serial again" if name is None else f"named {name!r}")
+        return 200, _JSON, _json({"name": name})
+
+    async def _rename_map(self, query: str) -> tuple[int, str, bytes]:
+        """Give a robot's map the name in the query, or take away the one it has when the query has none."""
+        asked = parse_qs(query)
+        try:
+            name = _name(asked)
+        except ValueError as exc:
+            return 400, _JSON, _json({"error": str(exc)})
+        robot = _named(asked)
+        # The server's own, as a robot's name is, and of a map in the database, which is named as ``/api/map`` has it named.
+        number = _number(asked, "id", _MAX_ID)
+        if number is None or self._store.map(robot, number) is None:
+            return 404, _JSON, _json({"error": "no such map in the database"})
+        if not self._store.save_map_name(robot, number, name):
+            return 503, _JSON, _json({"error": "the name could not be saved to the database"})
+        log.info("[%s] map %d %s", robot, number, "goes by its start time again" if name is None else f"named {name!r}")
         return 200, _JSON, _json({"name": name})
 
     async def _delete(self, query: str) -> tuple[int, str, bytes]:
