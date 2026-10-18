@@ -412,31 +412,12 @@ h1 {
   font-size: 27px;
 }
 
-/* What the robot is called, and the button that opens the field to change it. */
+/* What the robot is called, and the buttons that rename it and delete it. */
 .hero-name {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 14px;
-}
-
-/* That field, in the place of the name. */
-.name-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.name-form > input {
-  flex: 1 1 220px;
-  min-width: 0;
-  max-width: 420px;
-}
-
-.name-form > p {
-  flex-basis: 100%;
-  margin: 0;
 }
 
 .pills {
@@ -751,7 +732,7 @@ h1 {
   }
 }
 
-/* ---- Popovers: what is asked before what cannot be undone, and the name of a map, by the button that was pressed ---- */
+/* ---- Popovers: what is asked before what cannot be undone, a name and a zone, by the button that was pressed ---- */
 
 /* Placed by the script against the page, so that it scrolls with its button; over the bar at the top, under the toasts. */
 .popover {
@@ -823,15 +804,24 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* The name of a map, entered in one: the field, what it does, then Cancel and Save. */
+/* A name entered in one, or a zone: the field or fields, what they do, then Cancel and Save. */
 .popover-form {
   display: grid;
   gap: 10px;
 }
 
-.popover-form > input {
+.popover-form > input,
+.popover-field > input,
+.popover-field > select {
   width: 100%;
   min-width: 0;
+}
+
+/* A field with its name over it, where a popover has more than one. */
+.popover-field {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
 }
 
 .popover-form > p {
@@ -1591,11 +1581,10 @@ td.cell-clock {
 .slot-form dd > input:not(.switch),
 .slot-form dd > select,
 .setting-form dd > select,
-.track-form dd > input,
-.track-form dd > select,
 .start-field > select,
-.name-form > input,
-.popover-form > input {
+.popover-form > input,
+.popover-field > input,
+.popover-field > select {
   height: 34px;
   padding: 0 10px;
   border: 1px solid var(--line-strong);
@@ -1607,10 +1596,9 @@ td.cell-clock {
   font-variant-numeric: tabular-nums;
 }
 
-/* A floor plan is a longer line than a narrow screen is wide, and a language or a zone's name may be. */
+/* A floor plan is a longer line than a narrow screen is wide, and a language may be. */
 .slot-form dd > select,
-.setting-form dd > select,
-.track-form dd > input {
+.setting-form dd > select {
   min-width: 0;
   max-width: 100%;
 }

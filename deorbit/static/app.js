@@ -428,14 +428,17 @@ function report(mine, kind, said) {
 // when the button goes, when the button can no longer be pressed or when what
 // it asks no longer stands. One is open at a time. An answer, Keep, Escape, the
 // button again, and a press or the keyboard anywhere else shut it. The name of
-// a map is entered in one too, in a field above Cancel and Save.
+// a robot or a map is entered in one too, in a field above Cancel and Save, and
+// so are the name and the mode of a zone of a floor plan, which is drawn on the
+// picture of the map meanwhile: a press there leaves the popover open.
 
 const POPOVER_MARGIN = 16; // how close a popover comes to the edge of the screen
 const POPOVER_GAP = 10; // how far it stands from its button, with its arrow between them
 const ARROW_INSET = 20; // how close its arrow comes to a corner of it, which is rounded
 
 // The popover that is open, or null: its node, the view it is of, its button by `data-focus`, whether it opened
-// under the button or over it, and what says whether what it asks still stands.
+// under the button or over it, what says whether what it asks still stands, what says whether a press or the
+// keyboard elsewhere leaves it open, and what is done when it shuts.
 let popped = null;
 
 /**
@@ -444,9 +447,12 @@ let popped = null;
  * `build` makes what stands under the heading, with an element of the id
  * `popover-text` that says what the popover is about, and gives the field or
  * the button the keyboard is put on. `stands` says, each time the page is
- * drawn, whether what the popover is about still stands.
+ * drawn, whether what the popover is about still stands; `keeps`, of the
+ * element a press or the keyboard went to outside the popover, whether it
+ * stays open all the same; and `shut` is done when it shuts, however it does.
+ * It opens `under` its button whatever the room there, where that is given.
  */
-function openPopover(mine, anchor, title, build, stands = () => true) {
+function openPopover(mine, anchor, title, build, { stands = () => true, keeps = () => false, shut = null, under = false } = {}) {
   const again = popped !== null && popped.mine === mine && popped.anchor === anchor;
   closePopover(false);
   if (again) return;
@@ -460,7 +466,7 @@ function openPopover(mine, anchor, title, build, stands = () => true) {
       // The Tab key past its last field or button goes on from the button that opened it, and past its first goes back
       // to that button, as if the popover stood after it in the page.
       if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
-      const stops = node.querySelectorAll('input, button');
+      const stops = node.querySelectorAll('input, select, button');
       if (document.activeElement !== (event.shiftKey ? stops[0] : stops[stops.length - 1])) return;
       if (event.shiftKey) event.preventDefault();
       closePopover();
@@ -469,7 +475,7 @@ function openPopover(mine, anchor, title, build, stands = () => true) {
   h('h2', { class: 'popover-head', id: 'popover-title' }, title),
   h('div', { class: 'popover-body' }, content));
   document.body.append(node);
-  popped = { node, mine, anchor, under: null, stands };
+  popped = { node, mine, anchor, under: under || null, stands, keeps, shut };
   placePopover();
   if (popped?.node !== node) return;
   first.focus();
@@ -484,7 +490,7 @@ function openPopover(mine, anchor, title, build, stands = () => true) {
  * press does: one does it, or where there is a choice to make each does it one
  * way. `stands` says whether what is asked still stands.
  */
-function popover(mine, anchor, { title, text, answers, stands = () => true }) {
+function popover(mine, anchor, { title, text, answers, stands }) {
   openPopover(mine, anchor, title, () => {
     const keep = h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Keep');
     const tools = h('div', { class: 'popover-tools' },
@@ -505,15 +511,50 @@ function popover(mine, anchor, { title, text, answers, stands = () => true }) {
         return answer;
       }));
     return [[h('p', { id: 'popover-text' }, text), tools], keep];
-  }, stands);
+  }, { stands });
+}
+
+/**
+ * Ask in a popover what something is to be called: a field on the `name` it
+ * has, empty for one that goes by something else, which is the `placeholder`;
+ * `text`, which says what the name is; then Cancel and Save. Enter and Save
+ * hand `save` what the field holds. Save is held back while the button that
+ * opened the popover is, which is while the server has yet to answer.
+ */
+function askName(mine, anchor, title, { name, placeholder, text, save }) {
+  openPopover(mine, anchor, title, () => {
+    const field = h('input', {
+      type: 'text',
+      value: name ?? '',
+      maxlength: NAME_MAX,
+      placeholder,
+      autocomplete: 'off',
+      'aria-label': 'Name',
+    });
+    const button = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
+    const form = h('form', {
+      class: 'popover-form',
+      onsubmit: (event) => {
+        event.preventDefault();
+        if (!button.hasAttribute('aria-disabled')) save(field.value);
+      },
+    },
+    field,
+    h('p', { id: 'popover-text' }, text),
+    h('div', { class: 'popover-tools' },
+      h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
+      button));
+    return [form, field];
+  });
 }
 
 /** Shut the popover, if one is open, and put the keyboard back on the button that opened it unless `back` is false. */
 function closePopover(back = true) {
   if (!popped) return;
-  const { node, anchor } = popped;
+  const { node, anchor, shut } = popped;
   popped = null;
   node.remove();
+  shut?.();
   if (back) app.querySelector(`[data-focus="${CSS.escape(anchor)}"]`)?.focus();
 }
 
@@ -552,8 +593,8 @@ function placePopover() {
     const below = innerHeight - POPOVER_MARGIN - at.bottom - POPOVER_GAP;
     const above = at.top - POPOVER_GAP - roof - POPOVER_MARGIN;
     popped.under = below >= height || below >= above;
-    node.dataset.side = popped.under ? 'under' : 'over';
   }
+  node.dataset.side = popped.under ? 'under' : 'over';
   const middle = at.left + at.width / 2;
   const room = document.documentElement.clientWidth;
   const left = Math.max(POPOVER_MARGIN, Math.min(middle - width / 2, room - POPOVER_MARGIN - width));
@@ -563,9 +604,9 @@ function placePopover() {
   node.style.setProperty('--arrow', `${Math.max(ARROW_INSET, Math.min(middle - left, width - ARROW_INSET))}px`);
 }
 
-/** Whether `target`, which an event was at, is neither in the popover nor the button that opened it. */
+/** Whether `target`, which an event was at, is neither in the popover nor the button that opened it, nor where the popover keeps. */
 function elsewhere(target) {
-  if (!popped || popped.node.contains(target)) return false;
+  if (!popped || popped.node.contains(target) || popped.keeps(target)) return false;
   // A press that drew the page anew has a target that is no longer in it, but still has the ancestors it had.
   return !target.closest?.(`[data-focus="${CSS.escape(popped.anchor)}"]`);
 }
@@ -1537,34 +1578,14 @@ async function nameMap(mine, row, draft) {
 /**
  * Ask in a popover what the map of `row` is to be called: a field on the name
  * it has, which is empty for one that goes by when its run began, as the field
- * for a robot's name is. While the server has yet to answer, Save is held back
- * as the button that opened it is.
+ * for a robot's name is for one that goes by its serial.
  */
 function askMapName(mine, row) {
-  const start = record(record(parsed(row.map_json)).timing).start;
-  openPopover(mine, `map-name-${row.id}`, 'Rename map', () => {
-    const field = h('input', {
-      type: 'text',
-      value: row.name ?? '',
-      maxlength: NAME_MAX,
-      placeholder: mapText(null, start),
-      autocomplete: 'off',
-      'aria-label': 'Name',
-    });
-    const save = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
-    const form = h('form', {
-      class: 'popover-form',
-      onsubmit: (event) => {
-        event.preventDefault();
-        if (!save.hasAttribute('aria-disabled')) nameMap(mine, row, field.value);
-      },
-    },
-    field,
-    h('p', { id: 'popover-text' }, 'Only this server knows the name. Left empty, the map goes by its start time.'),
-    h('div', { class: 'popover-tools' },
-      h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
-      save));
-    return [form, field];
+  askName(mine, `map-name-${row.id}`, 'Rename map', {
+    name: row.name,
+    placeholder: mapText(null, record(record(parsed(row.map_json)).timing).start),
+    text: 'Only this server knows the name. Left empty, the map goes by its start time.',
+    save: (draft) => nameMap(mine, row, draft),
   });
 }
 
@@ -1831,13 +1852,14 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
     end: (keep) => {
       const [edit, drawn] = [editing(), stroke];
       stroke = null;
-      pictured.repaint?.();
       // A press that does not leave its cell draws nothing.
-      if (!keep || edit === null || drawn === null || (drawn[0] === drawn[2] && drawn[1] === drawn[3])) return;
-      if (edit.kind === 'zone') edit.rect = corners(drawn);
-      else if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
-      // The form says what has been drawn.
-      drawRobot(mine);
+      if (keep && edit !== null && drawn !== null && (drawn[0] !== drawn[2] || drawn[1] !== drawn[3])) {
+        if (edit.kind === 'zone') edit.rect = corners(drawn);
+        else if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
+      }
+      pictured.repaint?.();
+      // The form of the lines says how many have been drawn. That of a zone is in a popover, which is no part of the page.
+      if (edit?.kind === 'nogo') drawRobot(mine);
     },
     paint: (pen, plot, size, ratio) => {
       const plan = mine.body && plansOf(mine.body).find((known) => known.map_id === id);
@@ -1867,19 +1889,54 @@ function trackSwatch(colour) {
 }
 
 /**
- * Open the form that draws a zone of the floor plan `plan`, which is made of
- * the map of that `id`: the zone `zone`, or a new one where there is none. Of
- * the `kind` nogo, the form draws the floor plan's no-go lines.
+ * Open the form that draws the no-go lines of the floor plan `plan`, which is
+ * made of the map of that `id`, under them.
  */
-function drawTracks(mine, id, plan, kind, zone = null) {
-  const job = mine.tracks;
-  const where = { map: id, rank: plan.rank_uuid, kind, moving: false };
-  job.edit = kind === 'zone'
-    ? { ...where, track: zone?.track_uuid ?? null, name: zone?.name ?? '', mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
-      rect: zone ? rectOf(zone) : null }
-    : { ...where, track: plan.nogo?.track_uuid ?? null, lines: linesOf(plan.nogo) };
+function drawLines(mine, id, plan) {
+  mine.tracks.edit = { map: id, rank: plan.rank_uuid, kind: 'nogo', moving: false, track: plan.nogo?.track_uuid ?? null,
+    lines: linesOf(plan.nogo) };
   drawRobot(mine);
-  app.querySelector(`[data-focus="${kind === 'zone' ? 'zone-name' : 'track-save'}"]`)?.focus();
+  app.querySelector('[data-focus="track-save"]')?.focus();
+}
+
+/**
+ * Open the popover that draws a zone of the floor plan `plan`, which is made
+ * of the map of that `id`: the zone `zone`, or a new one where there is none.
+ * It has the zone's name and mode, and the zone is drawn on the picture of the
+ * map meanwhile, which a press on does not shut it. A second press on the
+ * button that opened it shuts it, and what it shuts with is not kept. It opens
+ * under its button, so as not to stand on the picture where that is above it.
+ */
+function drawZone(mine, id, plan, zone = null) {
+  const anchor = zone ? `zone-${zone.track_uuid}-edit` : `zone-add-${id}`;
+  if (popped?.mine === mine && popped.anchor === anchor) {
+    closePopover(false);
+    return;
+  }
+  const edit = {
+    map: id,
+    rank: plan.rank_uuid,
+    kind: 'zone',
+    moving: false,
+    track: zone?.track_uuid ?? null,
+    name: zone?.name ?? '',
+    mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
+    rect: zone ? rectOf(zone) : null,
+  };
+  mine.tracks.edit = edit;
+  // Nothing on the page itself changes with it, so it is not drawn anew, which would take a press elsewhere from
+  // the button it was meant for; the picture is, which is now drawn on.
+  repaint(mine);
+  openPopover(mine, anchor, zone ? 'Edit zone' : 'Add zone', () => zoneForm(mine, edit, anchor), {
+    stands: () => mine.tracks.edit === edit,
+    keeps: (target) => Boolean(mine.drawings.get(id)?.node.contains(target)),
+    shut: () => {
+      if (mine.tracks.edit !== edit) return;
+      mine.tracks.edit = null;
+      repaint(mine);
+    },
+    under: true,
+  });
 }
 
 /** Shut the form, and put the keyboard back on the button that opened it, which `back` names. */
@@ -1896,8 +1953,8 @@ function endTracks(mine, back) {
  * Ask the robot, through the server, to keep a zone or the no-go lines of a
  * floor plan, or to drop a track, as `more` says, and say in a toast how that
  * went. The view's `tracks` holds whether an answer is waited for, and one is
- * asked at a time. Once the robot accepts, the form is shut and the keyboard
- * goes to the button `back` names.
+ * asked at a time. Once the robot accepts, the form or the popover is shut and
+ * the keyboard goes to the button `back` names.
  */
 async function askTracks(mine, label, more, back) {
   const job = mine.tracks;
@@ -1915,6 +1972,7 @@ async function askTracks(mine, label, more, back) {
     return;
   }
   job.edit = null;
+  // The popover of a zone goes with it, as what it was about stands no more.
   drawRobot(mine);
   app.querySelector(`[data-focus="${back}"]`)?.focus();
   // The zones and the no-go lines come with the robot, and so do the events of this.
@@ -1927,10 +1985,10 @@ async function askTracks(mine, label, more, back) {
   if (zone && events.some((event) => runsOf(event).some((run) => zoneOf(run) === zone))) askSchedule(mine, 'show', 'Schedule');
 }
 
-/** Ask for what the form has drawn to be kept, or say what it lacks. */
+/** Ask for what the form or the popover has drawn to be kept, or say what it lacks. */
 function saveTracks(mine, back) {
   const edit = mine.tracks.edit;
-  const label = edit.kind === 'zone' ? 'Save zone' : 'Save no-go lines';
+  const label = edit.kind === 'nogo' ? 'Save no-go lines' : edit.track ? 'Edit zone' : 'Add zone';
   const lacks = (text) => report(mine, 'tracks', { tone: 'bad', text: `${label}: ${text}` });
   if (edit.kind === 'zone') {
     // As the server keeps it: one line, its words a space apart.
@@ -1949,14 +2007,51 @@ function saveTracks(mine, back) {
 }
 
 /**
- * The form that draws a zone, or the no-go lines: for a zone its name and its
- * mode, and what is to be drawn on the map beside it, then Save and Cancel; for
- * the lines how many there are, and the buttons that take back the last and
- * all of them. `back` names the button that opened it.
+ * What the popover that draws a zone holds: the zone's name and its mode, what
+ * is to be drawn on the map, then Cancel and Save. `back` names the button
+ * that opened it. Save is held back while that button is, which is while the
+ * robot has yet to answer; the popover shuts where the robot is not connected.
  */
-function trackForm(mine, robot, edit, back) {
+function zoneForm(mine, edit, back) {
+  const field = (label, control) => h('label', { class: 'popover-field' }, h('span', null, label), control);
+  const name = h('input', {
+    type: 'text',
+    value: edit.name,
+    maxlength: ZONE_NAME_MAX,
+    autocomplete: 'off',
+    oninput: ({ target }) => {
+      edit.name = target.value;
+      // The zone has its name in its corner on the map.
+      repaint(mine);
+    },
+  });
+  const save = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
+  const form = h('form', {
+    class: 'popover-form',
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (!save.hasAttribute('aria-disabled')) saveTracks(mine, back);
+    },
+  },
+  field('Name', name),
+  field('Mode', h('select', { onchange: ({ target }) => { edit.mode = target.value; } },
+    MODES.map((mode) => h('option', { value: mode, selected: mode === edit.mode }, mode)))),
+  h('p', { id: 'popover-text' },
+    edit.rect ? 'Drag on the map to draw the zone again.' : 'Drag on the map to draw the zone.',
+    ' To move an enlarged map instead, press the button with the arrows beside it.'),
+  h('div', { class: 'popover-tools' },
+    h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
+    save));
+  return [form, name];
+}
+
+/**
+ * The form that draws the no-go lines: how many there are, Save, and the
+ * buttons that take back the last and all of them. `back` names the button
+ * that opened it.
+ */
+function linesForm(mine, robot, edit, back) {
   const job = mine.tracks;
-  const zone = edit.kind === 'zone';
   const button = h('button', {
     class: 'command',
     type: 'submit',
@@ -1965,7 +2060,7 @@ function trackForm(mine, robot, edit, back) {
     title: !robot.session ? 'Save: the robot is not connected' : job.waiting && 'Save: waiting for the robot to answer',
     'data-focus': 'track-save',
   }, 'Save');
-  const count = zone ? 0 : edit.lines.length;
+  const count = edit.lines.length;
   // Held back, not disabled, so that the keyboard stays on one that takes back the last line.
   const takeBack = (label, focus, press) => h('button', {
     class: 'button',
@@ -1980,41 +2075,24 @@ function trackForm(mine, robot, edit, back) {
       drawRobot(mine);
     },
   }, label);
-  const said = zone ? (edit.rect ? 'Drag on the map to draw the zone again.' : 'Drag on the map to draw the zone.')
-    : count === 0 ? (edit.track ? 'No lines: saving deletes them from the robot.' : 'Drag on the map to draw a line.')
+  const said = count === 0 ? (edit.track ? 'No lines: saving deletes them from the robot.' : 'Drag on the map to draw a line.')
     : count < LINES_MAX ? `${count} ${count === 1 ? 'line' : 'lines'}. Drag on the map to draw another.`
     : `${count} lines, the most there may be.`;
   return h('form', {
     class: 'track-form',
     onsubmit: (submit) => {
       submit.preventDefault();
-      // A field that kept the focus would hold the page as it is, as a selection would, and the press has to show.
+      // A selection would hold the page as it is, and the press has to show.
       button.focus();
       getSelection().removeAllRanges();
       if (!job.waiting) saveTracks(mine, back);
     },
   },
-  zone && rows([
-    ['Name', h('input', {
-      type: 'text',
-      value: edit.name,
-      maxlength: ZONE_NAME_MAX,
-      autocomplete: 'off',
-      'aria-label': 'Name',
-      'data-focus': 'zone-name',
-      oninput: ({ target }) => { edit.name = target.value; },
-    })],
-    ['Mode', h('select', {
-      'aria-label': 'Mode',
-      'data-focus': 'zone-mode',
-      onchange: ({ target }) => { edit.mode = target.value; },
-    }, MODES.map((mode) => h('option', { value: mode, selected: mode === edit.mode }, mode)))],
-  ]),
   h('p', { class: 'hint' }, said, ' To move an enlarged map instead, press the button with the arrows beside it.'),
   h('div', { class: 'slot-tools' },
     button,
-    !zone && takeBack('Undo', 'track-undo', () => edit.lines.pop()),
-    !zone && takeBack('Clear', 'track-clear', () => { edit.lines = []; }),
+    takeBack('Undo', 'track-undo', () => edit.lines.pop()),
+    takeBack('Clear', 'track-clear', () => { edit.lines = []; }),
     h('button', { class: 'button', type: 'button', 'data-focus': 'track-cancel', onclick: () => endTracks(mine, back) }, 'Cancel')));
 }
 
@@ -2034,17 +2112,17 @@ function askDropZone(mine, zone, name, id) {
 /**
  * The zones and the no-go lines of the floor plan `plan`, which is made of the
  * map of that `id`, beside the picture of that map: a line to each zone,
- * with the buttons that draw it again and that ask whether to delete it, and
- * how many no-go lines there are, with the button that draws them; and under
- * either the form that draws them while it is open. Deleting a zone is asked
- * in a popover, as a map's Demote is. One thing is drawn at a time, in the
- * whole page.
+ * with the buttons that draw it again in a popover and that ask in one whether
+ * to delete it, and how many no-go lines there are, with the button that draws
+ * them, and under it the form that draws them while it is open. One thing is
+ * drawn at a time, in the whole page: a popover shuts at a press elsewhere, and
+ * the form holds back every other button that would draw something.
  */
 function trackPanel(mine, robot, id, plan) {
   const job = mine.tracks;
   const edit = job.edit !== null && job.edit.map === id ? job.edit : null;
   const colours = schemePalette();
-  const why = job.edit !== null ? 'a zone or no-go lines are being drawn' : null;
+  const why = job.edit?.kind === 'nogo' ? 'no-go lines are being drawn' : null;
   const lines = linesOf(plan.nogo);
   const zoneLine = (zone) => {
     const focus = `zone-${zone.track_uuid}`;
@@ -2054,20 +2132,19 @@ function trackPanel(mine, robot, id, plan) {
       h('span', { class: 'track-name' }, name),
       h('span', { class: 'track-mode' }, plain(zone.mode)),
       h('div', { class: 'entry-tools' },
-        robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawTracks(mine, id, plan, 'zone', zone),
+        robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawZone(mine, id, plan, zone),
           { why: why ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
         robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone, name, id), { why, glyph: 'trash', alone: true })));
   };
   return h('section', { class: 'tracks' },
     h('div', { class: 'tracks-head' },
       h('h3', null, 'Zones'),
-      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawTracks(mine, id, plan, 'zone'), { why, glyph: 'plus' })),
-    plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.map(zoneLine)) :h('p', { class: 'track-none' }, none('No zones.')),
-    edit?.kind === 'zone' && trackForm(mine, robot, edit, edit.track ? `zone-${edit.track}-edit` : `zone-add-${id}`),
+      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawZone(mine, id, plan), { why, glyph: 'plus' })),
+    plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.map(zoneLine)) : h('p', { class: 'track-none' }, none('No zones.')),
     h('div', { class: 'tracks-head' },
       h('h3', null, 'No-go lines'),
-      robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawTracks(mine, id, plan, 'nogo'), { why, glyph: 'pencil' })),
-    edit?.kind === 'nogo' ? trackForm(mine, robot, edit, `nogo-edit-${id}`)
+      robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawLines(mine, id, plan), { why, glyph: 'pencil' })),
+    edit?.kind === 'nogo' ? linesForm(mine, robot, edit, `nogo-edit-${id}`)
       : lines.length > 0 ? h('p', { class: 'track' }, trackSwatch(colours.nogo), `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`)
       : h('p', { class: 'track-none' }, none('None.')));
 }
@@ -3161,38 +3238,33 @@ function commands(mine, robot) {
   mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold));
 }
 
-/** Shut the field for the robot's name, and put the keyboard back on the button that opened it. */
-function endNaming(mine) {
-  mine.naming.draft = null;
-  // A selection would hold the page as it is, and so would the field while the keyboard is in it.
-  getSelection().removeAllRanges();
-  if (entering()) document.activeElement.blur();
-  drawRobot(mine);
-  app.querySelector('[data-focus="rename"]')?.focus();
-}
-
-/** Ask the server to call the robot what the field holds, or by its serial again when it holds nothing, and say in a toast how that went. */
-async function rename(mine) {
+/**
+ * Ask the server to call the robot what `draft` holds, or by its serial again
+ * where that holds nothing, and say in a toast how that went. The view's
+ * `naming` holds whether the server has yet to answer. Once the name is saved,
+ * the popover it was entered in is shut.
+ */
+async function rename(mine, draft) {
   const naming = mine.naming;
+  if (naming.waiting) return;
   naming.waiting = true;
   drawRobot(mine);
-  const address = `api/name?${new URLSearchParams({ ...mine.robot, name: naming.draft })}`;
+  const address = `api/name?${new URLSearchParams({ ...mine.robot, name: draft })}`;
   const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS, 'POST');
   naming.waiting = false;
   // From the robot as it was called until now.
-  report(mine, 'name', status !== 200 ? { tone: 'bad', text: `Rename: ${answer?.error ?? 'no answer from the server'}` }
-    : answer.name === null ? { tone: 'good', text: 'Rename: the robot goes by its board serial again' }
-    : { tone: 'good', text: `Rename: the robot is now called ${answer.name}` });
+  report(mine, 'name', status !== 200 ? { tone: 'bad', text: `Rename robot: ${answer?.error ?? 'no answer from the server'}` }
+    : answer.name === null ? { tone: 'good', text: 'Rename robot: it goes by its board serial again' }
+    : { tone: 'good', text: `Rename robot: it is now called ${answer.name}` });
   if (mine !== view) return;
-  if (status !== 200) {
-    drawRobot(mine);
-    return;
+  if (status === 200) {
+    // The answer has the name as the server keeps it. It goes on the page now, and an
+    // answer that was asked for before the change, which has the old one, is dropped.
+    if (mine.body) mine.body.robot.name = answer.name;
+    if (popped?.mine === mine && popped.anchor === 'rename') closePopover();
+    refresh(mine);
   }
-  // The answer has the name as the server keeps it. It goes on the page now, and an
-  // answer that was asked for before the change, which has the old one, is dropped.
-  if (mine.body) mine.body.robot.name = answer.name;
-  endNaming(mine);
-  refresh(mine);
+  drawRobot(mine);
 }
 
 /** Ask the server to delete the robot, say in a toast how that went, and go to the list of the others once it has. */
@@ -3239,63 +3311,34 @@ function deleteButton(mine) {
 }
 
 /**
- * What the robot is called, beside the button that opens a field to change it
- * and the one that asks whether to delete the robot, or else that field. What
- * is entered goes to the view's `naming.draft` as it is entered, and a new page
- * draws the field from that.
+ * What the robot is called, beside the button that asks in a popover what it
+ * is to be called, and the one that asks whether to delete the robot. Neither
+ * does anything while the server has yet to answer it.
  */
 function nameLine(mine, robot) {
-  const naming = mine.naming;
-  if (naming.draft === null) {
-    return h('div', { class: 'hero-name' },
-      called('h1', robot),
-      h('button', {
-        class: 'button',
-        type: 'button',
-        'data-focus': 'rename',
-        onclick: () => {
-          naming.draft = robot.name ?? '';
-          // A selection would hold the page as it is, and the press has to show.
-          getSelection().removeAllRanges();
-          drawRobot(mine);
-          const field = app.querySelector('[data-focus="name"]');
-          field?.focus();
-          field?.select();
-        },
-      }, icon('pencil'), 'Rename'),
-      deleteButton(mine));
-  }
-  const save = h('button', {
-    class: 'command',
-    type: 'submit',
-    'aria-disabled': naming.waiting && 'true',
-    'data-focus': 'name-save',
-  }, 'Save');
-  return h('form', {
-    class: 'name-form',
-    onsubmit: (event) => {
-      event.preventDefault();
-      // The field would hold the page as it is while the keyboard is in it, as a selection would, and the press has to show.
-      save.focus();
-      getSelection().removeAllRanges();
-      if (!naming.waiting) rename(mine);
-    },
-  },
-  h('input', {
-    type: 'text',
-    value: naming.draft,
-    maxlength: NAME_MAX,
-    placeholder: robot.serial,
-    autocomplete: 'off',
-    'aria-label': 'Name',
-    'data-focus': 'name',
-    oninput: (event) => { naming.draft = event.target.value; },
-    // Not the Escape that ends the composing of a character.
-    onkeydown: (event) => { if (event.key === 'Escape' && !event.isComposing) endNaming(mine); },
-  }),
-  save,
-  h('button', { class: 'button', type: 'button', 'data-focus': 'name-cancel', onclick: () => endNaming(mine) }, 'Cancel'),
-  h('p', { class: 'hint' }, 'Only this server knows the name. Left empty, the robot goes by its board serial.'));
+  const waiting = mine.naming.waiting;
+  return h('div', { class: 'hero-name' },
+    called('h1', robot),
+    h('button', {
+      class: 'button',
+      type: 'button',
+      // Held back, not disabled: a disabled button could not keep the keyboard's focus.
+      'aria-disabled': waiting && 'true',
+      title: waiting && 'Rename: waiting for the server to answer',
+      'data-focus': 'rename',
+      onclick: () => {
+        if (mine.naming.waiting) return;
+        // A selection would hold the page as it is, and the press has to show.
+        getSelection().removeAllRanges();
+        askName(mine, 'rename', 'Rename robot', {
+          name: robot.name,
+          placeholder: robot.serial,
+          text: 'Only this server knows the name. Left empty, the robot goes by its board serial.',
+          save: (draft) => rename(mine, draft),
+        });
+      },
+    }, icon('pencil'), 'Rename'),
+    deleteButton(mine));
 }
 
 function hero(mine, robot) {
@@ -3669,8 +3712,8 @@ function navigate() {
     openMaps: new Set(),
     openSlots: new Set(),
     drawings: new Map(),
-    // The name in the field, when the field is open, and whether the server has yet to answer.
-    naming: { draft: null, waiting: false },
+    // Whether the server has yet to answer the renaming of the robot, whose name is entered in a popover.
+    naming: { waiting: false },
     // Whether the server has yet to answer the renaming of a map, whose name is entered in a popover.
     mapNaming: { waiting: false },
     // The command sent from this view, by its name, while the robot has yet to answer it.
