@@ -483,7 +483,7 @@ class NameTests(WebTestCase):
 
 
 class DeleteTests(WebTestCase):
-    """``POST /api/delete``, which is what the second press of Delete on a robot's page sends."""
+    """``POST /api/delete``, which is what Delete it, in the popover of Delete on a robot's page, sends."""
 
     OTHER = RobotId("n", "board0")
     BOARD1 = "/api/delete?vendor=n&serial=board1"

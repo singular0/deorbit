@@ -416,6 +416,143 @@ function report(mine, kind, said) {
   toast(`${kind} ${mine.robot.vendor}/${mine.robot.serial}`, said, robot);
 }
 
+// ---- Popovers ----
+//
+// What cannot be undone is asked first, in a popover by the button that was
+// pressed: a box over the page with an arrow to that button, what is asked as
+// its heading, what doing it means under that, then Keep, which the keyboard
+// is put on, and the answer or answers that do it. The answers are not where
+// the button is, so a double click does nothing but open and shut it. Like a
+// toast it is no part of the page, and a redraw leaves it be; it follows its
+// button, which a redraw builds anew, by the button's `data-focus`, and goes
+// when the button goes, when the button can no longer be pressed or when what
+// it asks no longer stands. One is open at a time. An answer, Keep, Escape, the
+// button again, and a press or the keyboard anywhere else shut it.
+
+const POPOVER_MARGIN = 16; // how close a popover comes to the edge of the screen
+const POPOVER_GAP = 10; // how far it stands from its button, with its arrow between them
+const ARROW_INSET = 20; // how close its arrow comes to a corner of it, which is rounded
+
+// The popover that is open, or null: its node, the view it is of, its button by `data-focus`, whether it opened
+// under the button or over it, and what says whether what it asks still stands.
+let popped = null;
+
+/**
+ * Ask whether to do what cannot be undone, in a popover by the button of the
+ * view `mine` that `anchor` names by its `data-focus`, or shut the one that
+ * button opened. `title` names what is asked, and `text` asks it and says what
+ * it does. `answers` are each a label and what a press does: one does it, or
+ * where there is a choice to make each does it one way. `stands` says, each
+ * time the page is drawn, whether what is asked still stands.
+ */
+function popover(mine, anchor, { title, text, answers, stands = () => true }) {
+  const again = popped !== null && popped.mine === mine && popped.anchor === anchor;
+  closePopover(false);
+  if (again) return;
+  const keep = h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Keep');
+  const node = h('div', {
+    class: 'popover',
+    role: 'dialog',
+    'aria-labelledby': 'popover-title',
+    'aria-describedby': 'popover-text',
+    onkeydown: (event) => {
+      // The Tab key past its last button goes on from the button that opened it, and past its first goes back to that
+      // button, as if the popover stood after it in the page.
+      if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
+      const buttons = node.querySelectorAll('button');
+      if (document.activeElement !== (event.shiftKey ? buttons[0] : buttons[buttons.length - 1])) return;
+      if (event.shiftKey) event.preventDefault();
+      closePopover();
+    },
+  },
+  h('h2', { class: 'popover-head', id: 'popover-title' }, title),
+  h('div', { class: 'popover-body' },
+    h('p', { id: 'popover-text' }, text),
+    h('div', { class: 'popover-tools' },
+      keep,
+      answers.map(([label, press]) => {
+        const answer = h('button', {
+          class: 'button danger',
+          type: 'button',
+          'data-answer': label,
+          onclick: () => {
+            if (answer.hasAttribute('aria-disabled')) return;
+            // A selection would hold the page as it is, and what the answer does has to show.
+            getSelection().removeAllRanges();
+            closePopover();
+            press();
+          },
+        }, label);
+        return answer;
+      }))));
+  document.body.append(node);
+  popped = { node, mine, anchor, under: null, stands };
+  placePopover();
+  if (popped?.node === node) keep.focus();
+}
+
+/** Shut the popover, if one is open, and put the keyboard back on the button that opened it unless `back` is false. */
+function closePopover(back = true) {
+  if (!popped) return;
+  const { node, anchor } = popped;
+  popped = null;
+  node.remove();
+  if (back) app.querySelector(`[data-focus="${CSS.escape(anchor)}"]`)?.focus();
+}
+
+/**
+ * Put the popover by its button, or shut it where there is nothing to ask
+ * about any more. It opens under the button where it has the room, and over
+ * it where it has more there, and stays on that side; its arrow points at the
+ * middle of the button. It is placed against the page and not the screen, so
+ * that it scrolls with the button. An answer is held back while the button is.
+ */
+function placePopover() {
+  if (!popped) return;
+  const { node, mine, anchor } = popped;
+  const button = mine === view ? app.querySelector(`[data-focus="${CSS.escape(anchor)}"]`) : null;
+  if (!button || button.disabled || !popped.stands()) {
+    // The keyboard, if it was in it, goes to the button in its place where there is one that can take it.
+    closePopover(node.contains(document.activeElement));
+    return;
+  }
+  const held = button.getAttribute('aria-disabled') === 'true';
+  for (const answer of node.querySelectorAll('[data-answer]')) {
+    if (held) {
+      answer.setAttribute('aria-disabled', 'true');
+      answer.title = `${answer.dataset.answer}: waiting for an answer to what was asked before`;
+    } else {
+      answer.removeAttribute('aria-disabled');
+      answer.removeAttribute('title');
+    }
+  }
+  const at = button.getBoundingClientRect();
+  const width = node.offsetWidth;
+  const height = node.offsetHeight;
+  if (popped.under === null) {
+    // The bar at the top of the screen stays over the page.
+    const roof = document.querySelector('.bar')?.getBoundingClientRect().bottom ?? 0;
+    const below = innerHeight - POPOVER_MARGIN - at.bottom - POPOVER_GAP;
+    const above = at.top - POPOVER_GAP - roof - POPOVER_MARGIN;
+    popped.under = below >= height || below >= above;
+    node.dataset.side = popped.under ? 'under' : 'over';
+  }
+  const middle = at.left + at.width / 2;
+  const room = document.documentElement.clientWidth;
+  const left = Math.max(POPOVER_MARGIN, Math.min(middle - width / 2, room - POPOVER_MARGIN - width));
+  const top = popped.under ? at.bottom + POPOVER_GAP : at.top - POPOVER_GAP - height;
+  node.style.left = `${left + scrollX}px`;
+  node.style.top = `${top + scrollY}px`;
+  node.style.setProperty('--arrow', `${Math.max(ARROW_INSET, Math.min(middle - left, width - ARROW_INSET))}px`);
+}
+
+/** Whether `target`, which an event was at, is neither in the popover nor the button that opened it. */
+function elsewhere(target) {
+  if (!popped || popped.node.contains(target)) return false;
+  // A press that drew the page anew has a target that is no longer in it, but still has the ancestors it had.
+  return !target.closest?.(`[data-focus="${CSS.escape(popped.anchor)}"]`);
+}
+
 // ---- The list ----
 
 /** What else a card says of its robot, or nothing when there is nothing to say. */
@@ -723,15 +860,15 @@ function drawAdd(mine) {
 /**
  * A row of a table, with what is under it. It gives a cell to each of the
  * table's `columns` as `cells`; `tools`, the buttons that stand at its end,
- * where the table is `tooled`, which is to say has a column for them; `note`,
- * a line of its own under it; and `detail`, which gives what it opens on. The
+ * where the table is `tooled`, which is to say has a column for them; and
+ * `detail`, which gives what it opens on. The
  * row itself is what opens it, at a press or from the keyboard, so it is a
  * stop for the Tab key, which `focus` names to the keyboard's focus. `open` is
  * the view's set of the rows that are open, by `id`. A row that is `dim` is
  * set quieter than the others, and one that is `pinned` is open and cannot be
  * shut, as a row is while the form it opens on is being filled in.
  */
-function entry(columns, open, tooled, { id, focus, cells, tools, note, detail, dim, pinned }) {
+function entry(columns, open, tooled, { id, focus, cells, tools, detail, dim, pinned }) {
   const width = columns.length + (tooled ? 1 : 0);
   const opened = pinned || open.has(id);
   // The detail is laid out when the row is first opened: most rows never are.
@@ -767,10 +904,7 @@ function entry(columns, open, tooled, { id, focus, cells, tools, note, detail, d
   tooled && h('td', { class: 'cell-tools' }, h('div', { class: 'entry-tools' }, tools)));
   // A row that was open stays open when the page is drawn again.
   if (opened) under.append(...detail());
-  return h('tbody', { class: dim ? 'entry dim' : 'entry' },
-    row,
-    note && h('tr', { class: 'entry-note' }, h('td', { colspan: width }, note)),
-    below);
+  return h('tbody', { class: dim ? 'entry dim' : 'entry' }, row, below);
 }
 
 /**
@@ -1309,8 +1443,7 @@ function mapRow(row, mine, robot, plans) {
       took(record(map.timing)) ?? none(),
     ],
     tools: mapTools(mine, robot, plans, row.id, map),
-    note: floorQuestion(mine, robot, plans, row.id, map, null),
-    detail: () => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(map, runs)), drawing(mine, row.id))],
+    detail:() => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(map, runs)), drawing(mine, row.id))],
   };
 }
 
@@ -1320,12 +1453,10 @@ function mapRow(row, mine, robot, plans) {
  * drawn on the picture, and under both what the map says of its run, in two
  * columns. Demote stands beside its heading.
  */
-function floorPanel(mine, robot, plans, plan, row) {
+function floorPanel(mine, robot, plan, row) {
   const map = record(parsed(row.map_json));
-  const demote = robotButton(mine.floors, robot, 'Demote', `floor-${row.id}`,
-    () => askAgain(mine, { map: row.id, action: 'demote' }, 'floor-keep'), { glyph: 'demote' });
+  const demote = robotButton(mine.floors, robot, 'Demote', `floor-${row.id}`, () => askDemote(mine, plan, row.id), { glyph: 'demote' });
   return panel('Floor plan', [
-    floorQuestion(mine, robot, plans, row.id, map, plan),
     h('div', { class: 'floor-plan' }, drawing(mine, row.id), trackPanel(mine, robot, row.id, plan)),
     h('div', { class: 'floor-facts' }, mapFacts(map, runsIn(map), true)),
   ], { wide: true, tools: h('div', { class: 'panel-tools' }, demote) });
@@ -1345,7 +1476,7 @@ function mapPanels(mine, body) {
   // The older maps that come with the robot are all of floor plans.
   const others = maps.filter((row) => !plans.some((plan) => plan.map_id === row.id));
   return [
-    ...kept.map(([plan, row]) => floorPanel(mine, robot, plans, plan, row)),
+    ...kept.map(([plan, row]) => floorPanel(mine, robot, plan, row)),
     panel('Other maps', [
       others.length > 0
         ? table('Other maps', MAP_COLUMNS, mine.openMaps, others.map((row) => mapRow(row, mine, robot, plans)))
@@ -1372,14 +1503,12 @@ function short(uuid) {
  * Ask the robot, through the server, to keep a map as a floor plan or to drop
  * one it keeps, and say in a toast how that went. The view's `floors` holds
  * whether an answer is waited for, and one is asked at a time. `focus` names
- * the button the keyboard goes to when the one that was pressed leaves the
- * page with its question.
+ * the button the keyboard goes to while the robot answers.
  */
 async function askFloor(mine, label, more, focus = null) {
   const floors = mine.floors;
   if (floors.waiting) return;
   floors.waiting = true;
-  floors.asking = null;
   drawRobot(mine);
   if (focus) app.querySelector(`[data-focus="${focus}"]`)?.focus();
   const address = `api/floorplan?${new URLSearchParams({ ...mine.robot, ...more })}`;
@@ -1393,17 +1522,41 @@ async function askFloor(mine, label, more, focus = null) {
 }
 
 /**
- * Ask whether a floor plan is to go from the robot, or take that back.
- * `asking` is the map whose button was pressed and what that would do, which
- * the view's `floors.asking` holds until the second press, or null for none,
- * and `focus` names the button the keyboard goes to.
+ * Ask in a popover whether the floor plan `plan`, made of the map of that
+ * `id`, is to go from the robot. It asks while the robot keeps it, since
+ * Promote has the name of its button in the table once it is gone.
  */
-function askAgain(mine, asking, focus) {
-  mine.floors.asking = asking;
-  // A selection would hold the page as it is, and the press has to show.
-  getSelection().removeAllRanges();
-  drawRobot(mine);
-  app.querySelector(`[data-focus="${focus}"]`)?.focus();
+function askDemote(mine, plan, id) {
+  popover(mine, `floor-${id}`, {
+    title: 'Demote floor plan',
+    text: `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones and no-go lines.`,
+    answers: [['Demote it', () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid })]],
+    stands: () => mine.body.floorplans.some((each) => each.rank_uuid === plan.rank_uuid),
+  });
+}
+
+/**
+ * Ask in a popover whether the map of that `id` is to take the place of a
+ * floor plan on the robot. Where the robot has more floor plans than one to
+ * replace, an answer to each is also what chooses among them. While the robot
+ * answers, the keyboard is on Promote, which goes with the map from the table
+ * to a block of its own.
+ */
+function askReplace(mine, plans, id, map) {
+  const others = replaceable(plans, map);
+  // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
+  const drawn = others.some((old) => {
+    const known = plans.find((each) => each.rank_uuid === old);
+    return known && (known.zones.length > 0 || known.nogo !== null);
+  });
+  const forgotten = drawn ? ' What it does with the zones and no-go lines drawn here is not known, and this page forgets them.' : '';
+  popover(mine, `floor-swap-${id}`, {
+    title: 'Replace floor plan',
+    text: others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.${forgotten}`
+      : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`,
+    answers: others.map((old) => [others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
+      () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, `floor-${id}`)]),
+  });
 }
 
 /**
@@ -1418,10 +1571,10 @@ function replaceable(plans, map) {
 /**
  * The buttons of the row of a map that is no floor plan: to have the robot
  * keep the map as a new floor plan, and to have it keep the map in place of
- * another. The second takes a floor plan from the robot, so it only asks what
- * `floorQuestion` puts under the row. Promote has the name to the keyboard
- * that Demote has in the block of a floor plan: a map goes from the one to the
- * other as it is promoted or demoted, and the keyboard goes with it.
+ * another. The second takes a floor plan from the robot, so it only asks, in
+ * a popover. Promote has the name to the keyboard that Demote has in the block
+ * of a floor plan: a map goes from the one to the other as it is promoted or
+ * demoted, and the keyboard goes with it.
  */
 function mapTools(mine, robot, plans, id, map) {
   const lone = replaceable(plans, map).length === 0 ? 'the robot is not known to have a floor plan to replace' : null;
@@ -1429,49 +1582,8 @@ function mapTools(mine, robot, plans, id, map) {
     robotButton(mine.floors, robot, 'Promote to floor plan', `floor-${id}`,
       () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { glyph: 'promote', alone: true }),
     robotButton(mine.floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`,
-      () => askAgain(mine, { map: id, action: 'replace' }, 'floor-keep'), { why: lone, glyph: 'replace', alone: true }),
+      () => askReplace(mine, plans, id, map), { why: lone, glyph: 'replace', alone: true }),
   ];
-}
-
-/**
- * What a press on Demote or on Replace asks, under the heading of a floor
- * plan or the row of a map, and the answers to that. Taking a floor plan from
- * the robot is asked twice, and the second time here and not where the button
- * that asked first is, so that pressing that one twice takes nothing, and the
- * keyboard is put on Keep. Where the robot has more floor plans than one to
- * replace, the second press is also what chooses among them.
- */
-function floorQuestion(mine, robot, plans, id, map, plan) {
-  const floors = mine.floors;
-  const asking = floors.asking;
-  if (asking === null || asking.map !== id) return null;
-  const demoting = asking.action === 'demote';
-  const others = demoting ? [] : replaceable(plans, map);
-  // Nothing is asked of a map that the buttons would no longer ask it of.
-  if (demoting ? plan === null : plan !== null || others.length === 0) return null;
-  // Keep puts the keyboard back on the button that asked. While the robot answers it is on Promote or Demote,
-  // which go with the map from the table to a block of its own and back, so that it follows a Replace too.
-  const back = demoting ? `floor-${id}` : `floor-swap-${id}`;
-  const after = `floor-${id}`;
-  // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
-  const drawn = others.some((old) => {
-    const known = plans.find((each) => each.rank_uuid === old);
-    return known && (known.zones.length > 0 || known.nogo !== null);
-  });
-  const forgotten = drawn ? ' What it does with the zones and no-go lines drawn here is not known, and this page forgets them.' : '';
-  const question = demoting ? `Demote floor plan ${plan.rank_uuid}? The robot deletes it, with its zones and no-go lines.`
-    : others.length === 1 ? `Replace floor plan ${others[0]} with this map? The robot keeps the map in its place.${forgotten}`
-    : `Replace which floor plan with this map? The robot keeps the map in its place.${forgotten}`;
-  const again = demoting
-    ? [robotButton(floors, robot, 'Demote it', 'floor-again',
-      () => askFloor(mine, 'Demote floor plan', { action: 'demote', rank_uuid: plan.rank_uuid }, after))]
-    : others.map((old) => robotButton(floors, robot, others.length === 1 ? 'Replace it' : `Replace ${short(old)}`,
-      `floor-again-${old}`, () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, after)));
-  return h('div', { class: 'entry-ask' },
-    h('p', null, question),
-    h('div', { class: 'slot-tools' },
-      h('button', { class: 'button', type: 'button', 'data-focus': 'floor-keep', onclick: () => askAgain(mine, null, back) }, 'Keep'),
-      again));
 }
 
 // ---- The zones and no-go lines of a floor plan ----
@@ -1628,7 +1740,6 @@ function drawTracks(mine, id, plan, kind, zone = null) {
     ? { ...where, track: zone?.track_uuid ?? null, name: zone?.name ?? '', mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
       rect: zone ? rectOf(zone) : null }
     : { ...where, track: plan.nogo?.track_uuid ?? null, lines: linesOf(plan.nogo) };
-  job.dropping = null;
   drawRobot(mine);
   app.querySelector(`[data-focus="${kind === 'zone' ? 'zone-name' : 'track-save'}"]`)?.focus();
 }
@@ -1666,7 +1777,6 @@ async function askTracks(mine, label, more, back) {
     return;
   }
   job.edit = null;
-  job.dropping = null;
   drawRobot(mine);
   app.querySelector(`[data-focus="${back}"]`)?.focus();
   // The zones and the no-go lines come with the robot, and so do the events of this.
@@ -1770,13 +1880,17 @@ function trackForm(mine, robot, edit, back) {
     h('button', { class: 'button', type: 'button', 'data-focus': 'track-cancel', onclick: () => endTracks(mine, back) }, 'Cancel')));
 }
 
-/** Ask whether the zone `uuid` is to go from the robot, or with null take that back, and put the keyboard on the button `focus` names. */
-function askDropZone(mine, uuid, focus) {
-  mine.tracks.dropping = uuid;
-  // A selection would hold the page as it is, and the press has to show.
-  getSelection().removeAllRanges();
-  drawRobot(mine);
-  app.querySelector(`[data-focus="${focus}"]`)?.focus();
+/**
+ * Ask in a popover whether the zone `zone`, called `name`, of the floor plan
+ * made of the map of that `id`, is to go from the robot. Once it has, the
+ * keyboard goes to Add zone.
+ */
+function askDropZone(mine, zone, name, id) {
+  popover(mine, `zone-${zone.track_uuid}-drop`, {
+    title: 'Delete zone',
+    text: `Delete the zone ${name}? The robot deletes it.`,
+    answers: [['Delete it', () => askTracks(mine, 'Delete zone', { action: 'delete', track_uuid: zone.track_uuid }, `zone-add-${id}`)]],
+  });
 }
 
 /**
@@ -1785,8 +1899,8 @@ function askDropZone(mine, uuid, focus) {
  * with the buttons that draw it again and that ask whether to delete it, and
  * how many no-go lines there are, with the button that draws them; and under
  * either the form that draws them while it is open. Deleting a zone is asked
- * twice, the second time under it and with the keyboard put on Keep, as a
- * map's Demote is. One thing is drawn at a time, in the whole page.
+ * in a popover, as a map's Demote is. One thing is drawn at a time, in the
+ * whole page.
  */
 function trackPanel(mine, robot, id, plan) {
   const job = mine.tracks;
@@ -1797,31 +1911,20 @@ function trackPanel(mine, robot, id, plan) {
   const zoneLine = (zone) => {
     const focus = `zone-${zone.track_uuid}`;
     const name = word(zone.name) ?? 'Unnamed';
-    return [
-      h('li', { class: 'track' },
-        trackSwatch(colours.zone),
-        h('span', { class: 'track-name' }, name),
-        h('span', { class: 'track-mode' }, plain(zone.mode)),
-        h('div', { class: 'entry-tools' },
-          robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawTracks(mine, id, plan, 'zone', zone),
-            { why: why ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
-          robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone.track_uuid, 'zone-keep'),
-            { why, glyph: 'trash', alone: true }))),
-      job.dropping === zone.track_uuid && h('li', { class: 'entry-ask track-ask' },
-        h('p', null, `Delete the zone ${name}? The robot deletes it.`),
-        h('div', { class: 'slot-tools' },
-          // No button of the robot's, so it also takes the question back while the robot is away.
-          h('button', { class: 'button', type: 'button', 'data-focus': 'zone-keep', onclick: () => askDropZone(mine, null, `${focus}-drop`) },
-            'Keep'),
-          robotButton(job, robot, 'Delete it', 'zone-again',
-            () => askTracks(mine, 'Delete zone', { action: 'delete', track_uuid: zone.track_uuid }, `zone-add-${id}`)))),
-    ];
+    return h('li', { class: 'track' },
+      trackSwatch(colours.zone),
+      h('span', { class: 'track-name' }, name),
+      h('span', { class: 'track-mode' }, plain(zone.mode)),
+      h('div', { class: 'entry-tools' },
+        robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawTracks(mine, id, plan, 'zone', zone),
+          { why: why ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
+        robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone, name, id), { why, glyph: 'trash', alone: true })));
   };
   return h('section', { class: 'tracks' },
     h('div', { class: 'tracks-head' },
       h('h3', null, 'Zones'),
       robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawTracks(mine, id, plan, 'zone'), { why, glyph: 'plus' })),
-    plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.flatMap(zoneLine)) : h('p', { class: 'track-none' }, none('No zones.')),
+    plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.map(zoneLine)) :h('p', { class: 'track-none' }, none('No zones.')),
     edit?.kind === 'zone' && trackForm(mine, robot, edit, edit.track ? `zone-${edit.track}-edit` : `zone-add-${id}`),
     h('div', { class: 'tracks-head' },
       h('h3', null, 'No-go lines'),
@@ -1995,7 +2098,6 @@ async function askSchedule(mine, action, label, more = {}) {
     plan.shown = record(answer.body);
   } else if (went.tone === 'good') {
     plan.form = null;
-    plan.dropping = null;
     askSchedule(mine, 'show', 'Schedule');
     return;
   }
@@ -2041,7 +2143,6 @@ function edit(mine, event) {
   const plan = mine.schedule;
   if (event) mine.openSlots.add(event.id);
   plan.form = draftOf(event);
-  plan.dropping = null;
   drawRobot(mine);
   app.querySelector('[data-focus="plan-time"]')?.focus();
 }
@@ -2304,29 +2405,27 @@ const SCHEDULE_COLUMNS = [
 ];
 
 /**
- * Ask whether an event is to go from the robot's schedule, or take that back.
- * `id` is that event's, which the view's `schedule.dropping` holds until the
- * second press, or null for none, and `focus` names the button the keyboard
- * goes to.
+ * Ask in a popover whether the event whose id is `id` is to go from the
+ * robot's schedule. Its row is named to the keyboard by where it stands among
+ * the events, `n`, so the question stands while the event there is that one.
  */
-function askDrop(mine, id, focus) {
-  mine.schedule.dropping = id;
-  // A selection would hold the page as it is, and the press has to show.
-  getSelection().removeAllRanges();
-  drawRobot(mine);
-  app.querySelector(`[data-focus="${focus}"]`)?.focus();
+function askDrop(mine, id, n) {
+  popover(mine, `slot-drop-${n}`, {
+    title: 'Delete event',
+    text: 'Delete this event? The robot takes it out of its schedule.',
+    answers: [['Delete it', () => askSchedule(mine, 'delete', 'Delete event', { id })]],
+    stands: () => record(mine.schedule.shown?.events?.[n]).id === id,
+  });
 }
 
 /**
  * An event of the schedule as a row of the table: when it starts and on which
  * days, what its runs are set to and the floor plan they are on, and at its
- * end the buttons that turn it on or off, open the form on it and ask whether
- * to delete it. `n` is where it stands among the events. The row opens on the
- * form of the event, which says what the event has, and Edit opens it with the
- * fields that change that; it is not shut while they are there. Under the row
- * is what a press on Delete asks. Deleting is asked twice, and the second time
- * there and not where the button that asked first is, so that pressing that
- * one twice deletes nothing, and the keyboard is put on Keep.
+ * end the buttons that turn it on or off, open the form on it and ask, in a
+ * popover, whether to delete it. `n` is where it stands among the events. The
+ * row opens on the form of the event, which says what the event has, and Edit
+ * opens it with the fields that change that; it is not shut while they are
+ * there.
  */
 function slot(mine, robot, event, n, plans) {
   const plan = mine.schedule;
@@ -2340,12 +2439,6 @@ function slot(mine, robot, event, n, plans) {
   const toggle = () => askSchedule(mine, 'update', on ? 'Turn event off' : 'Turn event on', {
     event: JSON.stringify(sent({ ...event, enabled: !on, runs })),
   });
-  const question = () => h('div', { class: 'entry-ask' },
-    h('p', null, 'Delete this event? The robot takes it out of its schedule.'),
-    h('div', { class: 'slot-tools' },
-      // No button of the robot's, so it also takes the question back while the robot is away.
-      h('button', { class: 'button', type: 'button', 'data-focus': 'slot-keep', onclick: () => askDrop(mine, null, `slot-drop-${n}`) }, 'Keep'),
-      planButton(mine, robot, 'Delete it', 'slot-again', () => askSchedule(mine, 'delete', 'Delete event', { id }))));
   return {
     // The place of an event that has no id stands for one: a number, which no id is.
     id: id ?? n,
@@ -2363,10 +2456,9 @@ function slot(mine, robot, event, n, plans) {
     tools: [
       planButton(mine, robot, on ? 'Turn off' : 'Turn on', `slot-on-${n}`, toggle, { why, glyph: 'power', alone: true, lit: on }),
       planButton(mine, robot, 'Edit', `slot-edit-${n}`, () => edit(mine, event), { why, glyph: 'pencil', alone: true }),
-      planButton(mine, robot, 'Delete', `slot-drop-${n}`, () => askDrop(mine, id, 'slot-keep'), { why, glyph: 'trash', alone: true }),
+      planButton(mine, robot, 'Delete', `slot-drop-${n}`, () => askDrop(mine, id, n), { why, glyph: 'trash', alone: true }),
     ],
-    note: plan.dropping !== null && plan.dropping === id && question(),
-    detail: () => [scheduleForm(mine, robot, plans, event, changing ? plan.form : null, `slot-edit-${n}`)],
+    detail:() => [scheduleForm(mine, robot, plans, event, changing ? plan.form : null, `slot-edit-${n}`)],
   };
 }
 
@@ -2977,45 +3069,28 @@ async function forget(mine) {
   location.hash = '#/';
 }
 
-/** A button of the robot's deleting, which does nothing while the server has yet to answer. */
-function deleteButton(mine, label, focus, press, glyph) {
-  const button = h('button', {
+/**
+ * The button that asks, in a popover, whether the robot is to be deleted, and
+ * what doing it means. It does nothing while the server has yet to answer.
+ */
+function deleteButton(mine) {
+  return h('button', {
     class: 'button',
     type: 'button',
     // Held back, not disabled: a disabled button could not keep the keyboard's focus.
     'aria-disabled': mine.deleting.waiting && 'true',
-    'data-focus': focus,
+    'data-focus': 'delete',
     onclick: () => {
       if (mine.deleting.waiting) return;
-      // The field for the name would hold the page as it is while the keyboard is in it, as a selection would, and the press has to show.
-      button.focus();
-      getSelection().removeAllRanges();
-      press();
+      popover(mine, 'delete', {
+        title: 'Delete robot',
+        text: 'Delete this robot? Its state, its events, its maps and its name are deleted from the database, '
+          + 'and so is its key, if the server keeps one for it. If it is connected, its connection is ended. '
+          + 'None of this can be undone. A robot that can still log in is listed again, as a new one, once it connects.',
+        answers: [['Delete it', () => forget(mine)]],
+      });
     },
-  }, glyph && icon(glyph), label);
-  return button;
-}
-
-/** Ask whether the robot is to be deleted, or take that back, and put the keyboard on Keep or back on Delete. */
-function askDelete(mine, asked) {
-  mine.deleting.asked = asked;
-  drawRobot(mine);
-  app.querySelector(`[data-focus="${asked ? 'delete-keep' : 'delete'}"]`)?.focus();
-}
-
-/**
- * What deleting the robot would do, and the two answers to that. Deleting is
- * asked twice, and the second time here, under the name and not where the
- * button that asked first was, so that pressing that one twice deletes nothing.
- */
-function deleteQuestion(mine) {
-  return mine.deleting.asked && h('div', { class: 'confirm' },
-    h('p', null, 'Delete this robot? Its state, its events, its maps and its name are deleted from the database, '
-      + 'and so is its key, if the server keeps one for it. If it is connected, its connection is ended. '
-      + 'None of this can be undone. A robot that can still log in is listed again, as a new one, once it connects.'),
-    h('div', { class: 'slot-tools' },
-      deleteButton(mine, 'Delete it', 'delete-it', () => forget(mine)),
-      deleteButton(mine, 'Keep', 'delete-keep', () => askDelete(mine, false))));
+  }, icon('trash'), 'Delete');
 }
 
 /**
@@ -3043,8 +3118,7 @@ function nameLine(mine, robot) {
           field?.select();
         },
       }, icon('pencil'), 'Rename'),
-      // Gone while the question it asks is under the name.
-      !mine.deleting.asked && deleteButton(mine, 'Delete', 'delete', () => askDelete(mine, true), 'trash'));
+      deleteButton(mine));
   }
   const save = h('button', {
     class: 'command',
@@ -3084,7 +3158,6 @@ function hero(mine, robot) {
     h('div', { class: 'avatar' }, icon('robot')),
     h('div', { class: 'hero-main' },
       nameLine(mine, robot),
-      deleteQuestion(mine),
       h('div', { class: 'pills' },
         presence(robot),
         statePill(robot),
@@ -3334,6 +3407,8 @@ function drawRobot(mine) {
   draw(mine, data, () => robotPage(mine, body));
   // The pictures of the maps are no part of what is drawn, and what is drawn over them may have changed.
   repaint(mine);
+  // Nor is a popover, whose button may be new, held back or gone.
+  placePopover();
 }
 
 // What the toast that says the server cannot be reached said, while it cannot, or null while it can.
@@ -3437,8 +3512,9 @@ function navigate() {
   if (view) {
     clearTimeout(view.timer);
     view.controller?.abort();
-    // The dialog is no part of the page, so it does not go with it.
+    // The dialog is no part of the page, so it does not go with it, and neither does a popover.
     if (view.adding) closeAdd(view);
+    closePopover(false);
   }
   const mine = {
     robot: robotInAddress(),
@@ -3461,19 +3537,17 @@ function navigate() {
     start: { open: false, mode: MODES[0], navigation: NAVIGATION_MODES[0], floor: '', zone: '', nogo: false },
     // How each request below went is said in a toast, and none of it is kept here.
     // The connection the schedule was last asked of, by when it began; what is waited for; what the robot gave;
-    // the form, when one is open; and the event about to be deleted.
-    schedule: { asked: null, waiting: null, shown: null, form: null, dropping: null },
+    // and the form, when one is open.
+    schedule: { asked: null, waiting: null, shown: null, form: null },
     // The connection the settings were last asked of; those that are being read or saved, while any is; what
     // the robot gave for each, by name; and the form, when one is open.
     settings: { asked: null, waiting: null, shown: {}, form: null },
-    // Whether the robot has yet to answer what was asked of it about a floor plan, and the map whose button
-    // awaits its second press, with what that would do.
-    floors: { waiting: false, asking: null },
-    // The same for the zones and no-go lines of a floor plan: whether an answer is waited for; what the form
-    // that draws them has, while it is open; and the zone whose Delete awaits its second press.
-    tracks: { waiting: false, edit: null, dropping: null },
-    // Whether deleting the robot has been asked for and awaits its second press, and whether the server has yet to answer.
-    deleting: { asked: false, waiting: false },
+    // Whether the robot has yet to answer what was asked of it about a floor plan.
+    floors: { waiting: false },
+    // The same for the zones and no-go lines of a floor plan, and what the form that draws them has, while it is open.
+    tracks: { waiting: false, edit: null },
+    // Whether the server has yet to answer the deleting of the robot.
+    deleting: { waiting: false },
     // The add-robot dialog, over the list: null while shut, else the log lines, whether it is running or done,
     // whether the server has yet to say its address and certificate, and what it gave.
     adding: null,
@@ -3499,7 +3573,22 @@ addEventListener('hashchange', navigate);
 // press that drew the page anew has a target that is no longer in it, but still has the ancestors it had.
 document.addEventListener('click', ({ target }) => {
   if (view?.start.open && !target.closest?.('[data-start]')) shutStart(view, false);
+  // The same for a popover, which leaves the keyboard where that press put it.
+  if (elsewhere(target)) closePopover(false);
 });
+// And the keyboard going anywhere else, or Escape, which puts it back on the button that opened it.
+document.addEventListener('focusin', ({ target }) => {
+  if (elsewhere(target)) closePopover(false);
+});
+document.addEventListener('keydown', (event) => {
+  if (!popped || event.key !== 'Escape' || event.isComposing) return;
+  event.preventDefault();
+  closePopover();
+});
+// The button a popover is by moves when the page is laid out anew without being drawn anew, as when a row above it
+// is opened or a map above it is drawn, and when the window changes its size.
+new ResizeObserver(() => placePopover()).observe(app);
+addEventListener('resize', () => placePopover());
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && view?.paused) {
     view.paused = false;

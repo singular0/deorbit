@@ -439,18 +439,6 @@ h1 {
   margin: 0;
 }
 
-/* What deleting the robot would do, and the two answers to that, under its name. */
-.confirm {
-  display: grid;
-  gap: 10px;
-  margin-top: 8px;
-  font-size: 13.5px;
-}
-
-.confirm > p {
-  margin: 0;
-}
-
 .pills {
   display: flex;
   flex-wrap: wrap;
@@ -760,6 +748,117 @@ h1 {
   to {
     opacity: 0;
     transform: translateX(24px);
+  }
+}
+
+/* ---- Popovers: what is asked before what cannot be undone, by the button that was pressed ---- */
+
+/* Placed by the script against the page, so that it scrolls with its button; over the bar at the top, under the toasts. */
+.popover {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 15;
+  width: 320px;
+  max-width: calc(100% - 32px);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 56px -20px #00000099;
+  font-size: 13.5px;
+  animation: pop-in 0.16s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+/* The arrow to the middle of the button, where the script says with --arrow: a square on its corner, half of it out. */
+.popover::before {
+  content: "";
+  position: absolute;
+  left: var(--arrow, 50%);
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* Under the button it points up, out of the heading, in its colour. */
+.popover[data-side="under"]::before {
+  top: -7px;
+  border-right: 0;
+  border-bottom: 0;
+  background: var(--raised);
+}
+
+/* Over it, down out of the foot. */
+.popover[data-side="over"]::before {
+  bottom: -7px;
+  border-top: 0;
+  border-left: 0;
+  background: var(--surface);
+}
+
+/* What is asked, as a heading over the rest. */
+.popover-head {
+  margin: 0;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 13px 13px 0 0;
+  background: var(--raised);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.popover-body {
+  display: grid;
+  gap: 14px;
+  padding: 12px 14px 14px;
+}
+
+.popover-body > p {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* Keep, then the answers that do it, at its right. */
+.popover-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* An answer that does what cannot be undone. Held back, it looks like any other button that is. */
+.button.danger:not(:disabled, [aria-disabled]) {
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad);
+}
+
+.button.danger:not(:disabled, [aria-disabled]):hover {
+  border-color: color-mix(in srgb, var(--bad) 65%, transparent);
+  background: color-mix(in srgb, var(--bad) 22%, transparent);
+}
+
+/* Towards the button from a little way off. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.popover[data-side="over"] {
+  animation-name: pop-in-over;
+}
+
+@keyframes pop-in-over {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
 }
 
@@ -1106,31 +1205,6 @@ td.cell-clock {
   opacity: 0.55;
 }
 
-/* What is asked about a row, under it. */
-.entry-note > td {
-  padding: 0 0 12px;
-}
-
-/* A question and its answers, the buttons after the words. */
-.entry-ask {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
-  font-size: 13.5px;
-}
-
-.entry-ask > p {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* What is asked about a floor plan, under its heading. */
-.panel > .entry-ask {
-  margin-bottom: 16px;
-}
-
 /* What a row opens on. */
 .entry-detail > td {
   padding: 4px 0 16px;
@@ -1386,11 +1460,6 @@ td.cell-clock {
 .track-none {
   margin: 0;
   font-size: 14px;
-}
-
-/* What a press on a zone's Delete asks, under it. */
-.track-ask {
-  padding: 2px 0 10px;
 }
 
 .track-form {
