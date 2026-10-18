@@ -468,7 +468,8 @@ h1 {
   z-index: 2;
   display: grid;
   gap: 10px;
-  width: 320px;
+  /* Wide enough for the four modes side by side. */
+  width: 344px;
   padding: 16px;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -1672,6 +1673,87 @@ td.cell-clock {
 .pick input:focus-visible + span {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+/*
+  A choice of one of a few values as a group of buttons side by side, joined at their edges, of which only the ends
+  are rounded: a radio button lies over each, unseen, as the box of a chip does, and the one chosen is lit as a chip is.
+  Where the group has more room than it needs, as in the menu of the Start button, its buttons share it.
+*/
+.segments {
+  display: inline-flex;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.segment {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+}
+
+/* The one the keyboard is on, so that its ring is not under the button after it. */
+.segment:focus-within {
+  z-index: 1;
+}
+
+.segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.segment span {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+/* Two buttons share the edge between them, which is the left one's. */
+.segment + .segment span {
+  border-left-width: 0;
+}
+
+.segment:first-child span {
+  border-radius: 9px 0 0 9px;
+}
+
+.segment:last-child span {
+  border-radius: 0 9px 9px 0;
+}
+
+.segment input:hover:not(:checked) + span {
+  color: var(--text);
+}
+
+.segment input:checked + span {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  color: var(--accent);
+}
+
+/* The edge the one chosen shares with the button before it is lit with it. */
+.segment + .segment input:checked + span {
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /*

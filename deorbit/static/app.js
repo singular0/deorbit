@@ -2080,8 +2080,9 @@ function zoneForm(mine, edit, back) {
     },
   },
   field('Name', name),
-  field('Mode', h('select', { onchange: ({ target }) => { edit.mode = target.value; } },
-    MODES.map((mode) => h('option', { value: mode, selected: mode === edit.mode }, mode)))),
+  // A group of buttons is no one control that a label could hold, so its field is a block it names.
+  h('div', { class: 'popover-field' }, h('span', null, 'Mode'),
+    oneOf('Mode', 'zone-mode', MODES, edit.mode, (mode) => { edit.mode = mode; })),
   h('p', { id: 'popover-text' },
     edit.rect ? 'Drag on the map to draw the zone again.' : 'Drag on the map to draw the zone.',
     ' To move an enlarged map instead, press the button with the arrows beside it.'),
@@ -2483,6 +2484,37 @@ function yesNo(label, focus, on, set) {
   });
 }
 
+/**
+ * A field of a form that is a choice of one of `values`, as a group of buttons
+ * side by side, the one `chosen` lit, which `set` is told of as the value it
+ * chooses. Each is a radio button under its label, so the group does what a
+ * list does: the Tab key stops at the one chosen, and the arrow keys choose
+ * another, and Enter does not send the form it is in, which a radio button
+ * would. `label` names it to a screen reader, and `focus` names the group,
+ * and with a value each of its buttons, to the keyboard.
+ */
+function oneOf(label, focus, values, chosen, set) {
+  return h('div', {
+    class: 'segments',
+    role: 'radiogroup',
+    'aria-label': label,
+    // Not the Enter that ends the composing of a character.
+    onkeydown: (event) => {
+      if (event.key === 'Enter' && !event.isComposing) event.preventDefault();
+    },
+  },
+    values.map((value) => h('label', { class: 'segment' },
+      h('input', {
+        type: 'radio',
+        name: focus,
+        value,
+        checked: value === chosen,
+        'data-focus': `${focus}-${value}`,
+        onchange: ({ target }) => set(target.value),
+      }),
+      h('span', null, value))));
+}
+
 // What sets a zone in from its floor plan in a list of them: spaces that do not break, since a list lays out nothing of an option.
 const ZONE_INDENT = '    ';
 
@@ -2593,11 +2625,7 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     depict();
   };
   // A line names its field to the eye, and this to a screen reader.
-  const choice = (name, label, values) => h('select', {
-    'aria-label': label,
-    'data-focus': `plan-${name}`,
-    onchange: ({ target }) => { draft[name] = target.value; },
-  }, values.map((value) => h('option', { value, selected: value === draft[name] }, value)));
+  const choice = (name, label, values) => oneOf(label, `plan-${name}`, values, draft[name], (value) => { draft[name] = value; });
   const pick = (label, focus, on, flip) => h('label', { class: 'pick' },
     h('input', { type: 'checkbox', checked: on, 'data-focus': focus, onchange: ({ target }) => flip(target.checked) }),
     h('span', null, label));
@@ -3154,7 +3182,7 @@ function startToggle(mine, why) {
       // A selection would hold the page as it is, and the press has to show.
       getSelection().removeAllRanges();
       drawRobot(mine);
-      app.querySelector('[data-focus="start-mode"]')?.focus();
+      app.querySelector(`[data-focus="start-mode-${start.mode}"]`)?.focus();
     },
   }, icon('down'));
 }
@@ -3171,12 +3199,10 @@ function startToggle(mine, why) {
  */
 function startMenu(mine, plans, why, hold) {
   const start = mine.start;
-  const option = ([value, label], chosen) => h('option', { value, selected: value === chosen }, label);
-  const field = (label, select) => h('label', { class: 'start-field' }, h('span', null, label), select);
-  const choice = (name, values) => h('select', {
-    'data-focus': `start-${name}`,
-    onchange: ({ target }) => { start[name] = target.value; },
-  }, values.map((value) => option([value, value], start[name])));
+  // A group of buttons is no one control that a label could hold, so its field is a block it names.
+  const field = (label, control) => h(control.matches('input, select') ? 'label' : 'div', { class: 'start-field' },
+    h('span', null, label), control);
+  const choice = (name, label, values) => oneOf(label, `start-${name}`, values, start[name], (value) => { start[name] = value; });
   const nogoField = yesNo('No-go lines', 'start-nogo', start.nogo, (on) => { start.nogo = on; });
   // On no floor plan, a run has no no-go lines to mind.
   nogoField.disabled = start.floor === '';
@@ -3215,8 +3241,8 @@ function startMenu(mine, plans, why, hold) {
       app.querySelector('[data-focus="can_start"]')?.focus();
     },
   },
-  field('Mode', choice('mode', MODES)),
-  field('Navigation', choice('navigation', NAVIGATION_MODES)),
+  field('Mode', choice('mode', 'Mode', MODES)),
+  field('Navigation', choice('navigation', 'Navigation', NAVIGATION_MODES)),
   field('Floor plan', placeChoice),
   field('No-go lines', nogoField),
   plans.length === 0 && h('p', { class: 'hint' }, 'No floor plans yet: a map is made one on the Maps tab.'),
