@@ -2225,6 +2225,51 @@ function floorLabel(plan) {
   return start ? numeric(Date.parse(start)) : short(uuid);
 }
 
+// What sets a zone in from its floor plan in a list of them: spaces that do not break, since a list lays out nothing of an option.
+const ZONE_INDENT = '    ';
+
+/** A floor plan of `plans` as `placeField` offers it: by `floorLabel`, with its zones by name, or by how what the robot knows one by begins where it has none. */
+function placeOf(plan) {
+  return {
+    uuid: plan.rank_uuid,
+    label: floorLabel(plan),
+    zones: plan.zones.map((zone) => ({ track: zone.track_uuid, label: word(zone.name) ?? short(zone.track_uuid) })),
+  };
+}
+
+/**
+ * The field that chooses where a run cleans, as one list: on no floor plan, on
+ * one of `floors` whole, or on one of its zones, which stand under it and are
+ * set in from it. A floor is its `uuid`, its `label` and its `zones`, each a
+ * `track` and a `label`. `floor` and `zone` are what is chosen, empty for none
+ * and for the whole of it, and `choose` is told of a choice as those two. A
+ * list shows of a zone only its name, so the field says the floor plan as well
+ * to a pointer that rests on it.
+ */
+function placeField(focus, floors, floor, zone, choose) {
+  // The choices by their place in the list, since a robot chooses the names they are made of.
+  const places = [['', '', null]];
+  const option = (uuid, track, label, path) => {
+    places.push([uuid, track, path]);
+    return h('option', { value: String(places.length - 1), selected: uuid === floor && track === zone }, label);
+  };
+  const choices = floors.flatMap((each) => [
+    option(each.uuid, '', each.label, each.label),
+    ...each.zones.map((known) => option(each.uuid, known.track, `${ZONE_INDENT}${known.label}`, `${each.label} · ${known.label}`)),
+  ]);
+  const chosen = places.find(([uuid, track]) => uuid === floor && track === zone);
+  return h('select', {
+    'aria-label': 'Floor plan',
+    title: chosen?.[2],
+    'data-focus': focus,
+    onchange: ({ target }) => {
+      const [uuid, track, path] = places[Number(target.value)];
+      target.title = path ?? '';
+      choose(uuid, track);
+    },
+  }, h('option', { value: '0', selected: floor === '' }, 'None'), choices);
+}
+
 /**
  * The form of an event of the schedule: a line to each thing the event has, as
  * a map has its facts, which is what a row of the schedule opens on. An event
@@ -2251,13 +2296,16 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
   const set = draft !== null && single;
   // The floor plans the robot is not known to have: of an event of one run the one it is on and the one last chosen here.
   const lost = draft === null ? [] : strays(single ? [own, draft.floor] : runs.map(floorOf), plans);
-  // What there is to choose from: no floor plan, then those, then the ones the server had the robot keep.
-  // A map, because a robot chooses the names that are looked up.
-  const offered = new Map([
-    ['', 'None'],
-    ...lost.map((uuid) => [uuid, `⚠ ${short(uuid)} · not listed`]),
-    ...plans.map((known) => [known.rank_uuid, floorLabel(known)]),
-  ]);
+  // The zones of a floor plan the run cleans, or was last given here, that the server did not have the robot keep. Each stays
+  // to choose under its floor plan, since a select whose value is none of its options shows another.
+  const unlisted = ({ uuid, zones }) => [...new Set([uuid === own ? ownZone : null, uuid === draft.floor ? draft.zone : null])]
+    .filter((track) => track && !zones.some((known) => known.track === track))
+    .map((track) => ({ track, label: `⚠ ${short(track)} · not listed` }));
+  // What there is to choose from: no floor plan, then those, then the ones the server had the robot keep, each with its zones.
+  const floors = set ? [
+    ...lost.map((uuid) => ({ uuid, label: `⚠ ${short(uuid)} · not listed`, zones: [] })),
+    ...plans.map(placeOf),
+  ].map((place) => ({ ...place, zones: [...unlisted(place), ...place.zones] })) : [];
   // The picture follows the floor plan and the zone that are chosen as they are chosen, since no field draws the page again.
   // Each form keeps a picture of its own, which is what `back` tells one form from another by.
   const picture = h('div', { class: 'slot-picture' });
@@ -2268,52 +2316,25 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
     picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back, chosen)] : []));
   };
   depict();
-  // The zones to choose from are those of the floor plan that is chosen, so they change with it, in place.
-  const zoneField = set && h('select', {
-    'aria-label': 'Zone',
-    'data-focus': 'plan-zone',
-    onchange: ({ target }) => {
-      draft.zone = target.value;
-      depict();
-    },
-  });
   const nogoField = set && yesNo('No-go lines', 'plan-nogo', draft.nogo, (on) => { draft.nogo = on; });
-  const zoning = () => {
-    const zones = plans.find((known) => known.rank_uuid === draft.floor)?.zones ?? [];
-    // The one the run cleans stays to choose while its floor plan is chosen, though the server did not have the robot
-    // keep it, and so does the one last chosen once it is gone: a select whose value is none of its options shows another.
-    const unlisted = [...new Set([draft.floor === own ? ownZone : null, draft.zone])]
-      .filter((track) => track && !zones.some((known) => known.track_uuid === track));
-    const choices = [
-      ['', 'Whole floor plan'],
-      ...unlisted.map((track) => [track, `⚠ ${short(track)} · not listed`]),
-      ...zones.map((known) => [known.track_uuid, word(known.name) ?? short(known.track_uuid)]),
-    ];
-    zoneField.replaceChildren(...choices.map(([value, label]) => h('option', { value, selected: value === draft.zone }, label)));
-    // On no floor plan, a run has neither.
-    zoneField.disabled = draft.floor === '';
-    nogoField.disabled = draft.floor === '';
+  // On no floor plan, a run has no no-go lines to mind.
+  if (set) nogoField.disabled = draft.floor === '';
+  // On the floor plan the run is on, its no-go lines are as the robot gave them, and on another they are minded where
+  // the server had the robot keep some. Another zone of the floor plan that is chosen leaves them as they are.
+  const choose = (floor, zone) => {
+    if (floor !== draft.floor) draft.nogo = floor === own ? ownNogo : Boolean(plans.find((known) => known.rank_uuid === floor)?.nogo);
+    draft.floor = floor;
+    draft.zone = zone;
+    nogoField.disabled = floor === '';
     nogoField.checked = draft.nogo;
-  };
-  // On the floor plan the run is on, its zone and its no-go lines are as the robot gave them; on another, the whole
-  // of it is cleaned, minding its no-go lines where the server had the robot keep some.
-  const chooseFloor = () => {
-    const same = draft.floor === own;
-    draft.zone = same ? ownZone ?? '' : '';
-    draft.nogo = same ? ownNogo : Boolean(plans.find((known) => known.rank_uuid === draft.floor)?.nogo);
-    zoning();
     depict();
   };
-  if (set) zoning();
   // A line names its field to the eye, and this to a screen reader.
-  const choice = (name, label, values, said = (value) => value, then = () => {}) => h('select', {
+  const choice = (name, label, values) => h('select', {
     'aria-label': label,
     'data-focus': `plan-${name}`,
-    onchange: ({ target }) => {
-      draft[name] = target.value;
-      then();
-    },
-  }, values.map((value) => h('option', { value, selected: value === draft[name] }, said(value))));
+    onchange: ({ target }) => { draft[name] = target.value; },
+  }, values.map((value) => h('option', { value, selected: value === draft[name] }, value)));
   const pick = (label, focus, on, flip) => h('label', { class: 'pick' },
     h('input', { type: 'checkbox', checked: on, 'data-focus': focus, onchange: ({ target }) => flip(target.checked) }),
     h('span', null, label));
@@ -2332,10 +2353,8 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
       })))],
     ['Mode', set ? choice('mode', 'Mode', MODES) : setting(runs, 'mode')],
     ['Navigation', set ? choice('navigation', 'Navigation', NAVIGATION_MODES) : setting(runs, 'navigation_mode')],
-    ['Floor plan', set
-      ? choice('floor', 'Floor plan', [...offered.keys()], (uuid) => offered.get(uuid), chooseFloor)
-      : floorShown(runs, plans, true)],
-    ...(set ? [['Zone', zoneField], ['No-go lines', nogoField]] : [
+    ['Floor plan', set ? placeField('plan-floor', floors, draft.floor, draft.zone, choose) : floorShown(runs, plans, true)],
+    ...(set ? [['No-go lines', nogoField]] : [
       ...(ownZone !== null ? [['Zone', zoneShown(runs[0], plans, true)]] : []),
       ...(own !== null ? [['No-go lines', flag(record(runs[0].map).nogo_enabled)]] : []),
     ]),
@@ -2918,29 +2937,17 @@ function startMenu(mine, plans, why, hold) {
     'data-focus': `start-${name}`,
     onchange: ({ target }) => { start[name] = target.value; },
   }, values.map((value) => option([value, value], start[name])));
-  const zoneField = h('select', { 'data-focus': 'start-zone', onchange: ({ target }) => { start.zone = target.value; } });
   const nogoField = yesNo('No-go lines', 'start-nogo', start.nogo, (on) => { start.nogo = on; });
-  // The zones to choose from are those of the floor plan that is chosen, so they change with it, in place, since no field draws the page again.
-  const zoning = () => {
-    const zones = plans.find((plan) => plan.rank_uuid === start.floor)?.zones ?? [];
-    const choices = [['', 'Whole floor plan'], ...zones.map((zone) => [zone.track_uuid, word(zone.name) ?? short(zone.track_uuid)])];
-    zoneField.replaceChildren(...choices.map((each) => option(each, start.zone)));
-    // On no floor plan, a run has neither.
-    zoneField.disabled = start.floor === '';
-    nogoField.disabled = start.floor === '';
+  // On no floor plan, a run has no no-go lines to mind.
+  nogoField.disabled = start.floor === '';
+  const placeChoice = placeField('start-floor', plans.map(placeOf), start.floor, start.zone, (floor, zone) => {
+    // Another floor plan minds its no-go lines where the server had the robot keep some, and another zone of the same one leaves them as they are.
+    if (floor !== start.floor) start.nogo = Boolean(plans.find((plan) => plan.rank_uuid === floor)?.nogo);
+    start.floor = floor;
+    start.zone = zone;
+    nogoField.disabled = floor === '';
     nogoField.checked = start.nogo;
-  };
-  zoning();
-  const floorField = h('select', {
-    'data-focus': 'start-floor',
-    onchange: ({ target }) => {
-      start.floor = target.value;
-      // Another floor plan is cleaned whole, minding its no-go lines where the server had the robot keep some.
-      start.zone = '';
-      start.nogo = Boolean(plans.find((plan) => plan.rank_uuid === start.floor)?.nogo);
-      zoning();
-    },
-  }, [['', 'None'], ...plans.map((plan) => [plan.rank_uuid, floorLabel(plan)])].map((each) => option(each, start.floor)));
+  });
   // Held back, not disabled, as the other commands are.
   const held = why === null && hold !== null;
   const button = h('button', {
@@ -2970,8 +2977,7 @@ function startMenu(mine, plans, why, hold) {
   },
   field('Mode', choice('mode', MODES)),
   field('Navigation', choice('navigation', NAVIGATION_MODES)),
-  field('Floor plan', floorField),
-  field('Zone', zoneField),
+  field('Floor plan', placeChoice),
   field('No-go lines', nogoField),
   plans.length === 0 && h('p', { class: 'hint' }, 'No floor plans yet: a map is made one on the Maps tab.'),
   h('div', { class: 'slot-tools' }, button));
