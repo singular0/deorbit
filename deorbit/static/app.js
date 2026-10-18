@@ -489,9 +489,11 @@ function openPopover(mine, anchor, title, build, { stands = () => true, keeps = 
  * `anchor` names, as `openPopover` has it. `title` names what is asked, and
  * `text` asks it and says what it does. `answers` are each a label and what a
  * press does: one does it, or where there is a choice to make each does it one
- * way. `stands` says whether what is asked still stands.
+ * way. A `field`, a label and its control, stands over the question where the
+ * choice is made in it instead, and the keyboard is put on it. `stands` says
+ * whether what is asked still stands.
  */
-function popover(mine, anchor, { title, text, answers, stands }) {
+function popover(mine, anchor, { title, text, answers, stands, field = null }) {
   openPopover(mine, anchor, title, () => {
     const keep = h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Keep');
     const tools = h('div', { class: 'popover-tools' },
@@ -511,7 +513,10 @@ function popover(mine, anchor, { title, text, answers, stands }) {
         }, label);
         return answer;
       }));
-    return [[h('p', { id: 'popover-text' }, text), tools], keep];
+    const asked = h('p', { id: 'popover-text' }, text);
+    if (!field) return [[asked, tools], keep];
+    const [label, control] = field;
+    return [[h('label', { class: 'popover-field' }, h('span', null, label), control), asked, tools], control];
   }, { stands });
 }
 
@@ -1690,28 +1695,40 @@ function askDemote(mine, plan, id) {
 /**
  * Ask in a popover whether the map of `row` is to take the place of a floor
  * plan on the robot. Where the robot has more floor plans than one to
- * replace, an answer to each is also what chooses among them. While the robot
- * answers, the keyboard is on Promote, which goes with the map from the table
- * to a block of its own.
+ * replace, a list over the question chooses among them, at first the one the
+ * map's run was on where that is one of them, and the question follows the
+ * choice. While the robot answers, the keyboard is on Promote, which goes with
+ * the map from the table to a block of its own.
  */
 function askReplace(mine, plans, row, map) {
   const { id } = row;
   const others = replaceable(plans, map);
-  // The spec does not say whether a floor plan that takes the place of another keeps what was drawn on that one.
-  const drawn = others.some((old) => {
-    const known = plans.find((each) => each.rank_uuid === old);
-    return known && (known.zones.length > 0 || known.nogo !== null);
-  });
-  const forgotten = drawn ? ' What it does with the zones and no-go lines drawn here is not known, and this page forgets them.' : '';
   const called = mapText(row.name, record(map.timing).start);
   const what = called === null ? 'this map' : `the map ${called}`;
+  const question = (old) => {
+    // The robot keeps the zones and no-go lines of the floor plan the map takes the place of (section 6.3).
+    const known = plans.find((each) => each.rank_uuid === old);
+    const drawn = known && (known.zones.length > 0 || known.nogo !== null);
+    return `Replace floor plan ${floorText(old, plans, true)} with ${what}? The robot keeps the map in its place`
+      + (drawn ? ', with the zones and no-go lines of the floor plan.' : '.');
+  };
+  let chosen = others.includes(map.persistent_rank_uuid) ? map.persistent_rank_uuid : others[0];
+  const text = h('span', null, question(chosen));
+  // An option's value is its place in the list, since the robot chose the floor plan its run was on.
+  const list = others.length > 1 && h('select', {
+    onchange: ({ target }) => {
+      chosen = others[Number(target.value)];
+      text.textContent = question(chosen);
+      // One over its button has its foot there, whatever the question takes.
+      placePopover();
+    },
+  }, others.map((old, n) => h('option', { value: n, selected: old === chosen }, floorText(old, plans))));
   popover(mine, `floor-swap-${id}`, {
     title: 'Replace floor plan',
-    text: others.length === 1
-      ? `Replace floor plan ${floorText(others[0], plans, true)} with ${what}? The robot keeps the map in its place.${forgotten}`
-      : `Replace which floor plan with ${what}? The robot keeps the map in its place.${forgotten}`,
-    answers: others.map((old) => [others.length === 1 ? 'Replace it' : `Replace ${floorText(old, plans)}`,
-      () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: old }, `floor-${id}`)]),
+    text,
+    field: list && ['Floor plan', list],
+    answers: [['Replace it',
+      () => askFloor(mine, 'Replace floor plan', { action: 'update', map: id, old_rank_uuid: chosen }, `floor-${id}`)]],
   });
 }
 

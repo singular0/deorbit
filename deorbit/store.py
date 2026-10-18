@@ -281,14 +281,21 @@ class Store:
     def save_floorplan(self, robot: RobotId, rank_uuid: str, map_id: int, replaced: str | None = None) -> bool:
         """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so.
 
-        Either comes without zones and no-go lines: a floor plan is promoted with
-        none, and what a robot does with those of the one it replaces is not known.
+        A floor plan is promoted without zones and no-go lines, and one that
+        takes the place of another has those of that one, which a robot keeps
+        in effect for it (section 6.3). What one does with those the new floor
+        plan had, if it was one already, is not known, so they are not kept.
         """
         where = (robot.vendor, robot.serial)
+        moved = [] if replaced is None else [
+            # The rows stay, so a zone keeps its place among the floor plan's, and with it its colour on the page.
+            ("UPDATE tracks SET rank_uuid = ? WHERE vendor = ? AND serial = ? AND rank_uuid = ?", (rank_uuid, *where, replaced)),
+            ("DELETE FROM floorplans WHERE vendor = ? AND serial = ? AND rank_uuid = ?", (*where, replaced)),
+        ]
         # The old one goes and the new one comes, or neither.
         return self._change(robot, [
             *self._dropped(robot, rank_uuid),
-            *(self._dropped(robot, replaced) if replaced is not None else []),
+            *moved,
             (
                 "INSERT INTO floorplans (vendor, serial, rank_uuid, map_id, at) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT (vendor, serial, rank_uuid) DO UPDATE SET map_id = excluded.map_id, at = excluded.at",

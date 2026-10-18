@@ -727,11 +727,18 @@ class StoreTests(unittest.TestCase):
         # A floor plan that is dropped takes its zones and its no-go lines with it.
         self.assertTrue(store.delete_floorplan(ROBOT, "first"))
         self.assertEqual(kept(), ["second-zone", "second-lines", "third-zone", "third-lines"])
-        # So does one that another takes the place of, and the other comes without any.
+        # One that another takes the place of hands them on to it, each in the place it had.
         self.assertTrue(store.save_floorplan(ROBOT, "fourth", 3, "second"))
-        self.assertEqual(kept(), ["third-zone", "third-lines"])
+        self.assertEqual([row[2:] for row in self.plans() if row[1] == ROBOT.serial], [("fourth", 3)])
+        self.assertEqual([(row["track_uuid"], row["rank_uuid"]) for row in store.tracks(ROBOT)], [
+            ("second-zone", "fourth"), ("second-lines", "fourth"), ("third-zone", "third"), ("third-lines", "third"),
+        ])
+        # One that takes the place of another keeps those of that one and not its own, where it had any.
+        store.save_track(ROBOT, "fourth", "fourth-zone", "cleaning", "Hall", "eco", [0, 0, 1, 1])
+        self.assertTrue(store.save_floorplan(ROBOT, "third", 4, "fourth"))
+        self.assertEqual(kept(), ["second-zone", "fourth-zone", "second-lines"])
         # A floor plan is made without them, even where the robot kept it before.
-        self.assertTrue(store.save_floorplan(ROBOT, "third", 4))
+        self.assertTrue(store.save_floorplan(ROBOT, "third", 5))
         self.assertEqual(kept(), [])
         self.assertEqual(len(kept(OTHER)), 6)
 
