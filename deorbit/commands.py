@@ -280,6 +280,9 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
 # without a corner that a diagonal step could pass through. These are this
 # server's choices, and so are the limits below.
 ZONE_NAME_MAX = 32  # the most characters a zone's name may have
+# The most zones a floor plan may have, which is how many colours the page has
+# for them that are told apart from each other and from the rest of a map.
+ZONES_MAX = 6
 LINES_MAX = 100  # the most no-go lines a floor plan may have
 _MARKED = 1024  # the value of a marked cell, as the robot's zone loader reads it
 _MARKED_BYTES = _MARKED.to_bytes(2, "little")

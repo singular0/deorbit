@@ -947,6 +947,18 @@ h2 {
   text-transform: uppercase;
 }
 
+.panel-head > h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A name in a heading, such as what the map of a floor plan is called, as it was written. */
+.heading-name {
+  color: var(--text);
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
 /* What can be done with what a panel holds, beside its heading. */
 .panel-tools {
   display: flex;
@@ -1396,14 +1408,14 @@ td.cell-clock {
   margin-top: 0;
 }
 
-/* What the map of a floor plan says of its run, under the picture and the zones. */
+/* What the run of a floor plan's map cleaned and how long it took, under the picture and the zones. */
 .floor-facts {
   margin-top: 24px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
 
-/* In two columns where there is room, a row across both at a time, so the first row is two lines and the last may be. */
+/* In two columns where there is room, so the two are one row. */
 @media (min-width: 761px) {
   .floor-facts > .kv {
     grid-template-columns: repeat(2, minmax(0, 1fr));

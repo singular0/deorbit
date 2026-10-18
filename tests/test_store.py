@@ -683,14 +683,14 @@ class StoreTests(unittest.TestCase):
         store = self.open()
         self.assertEqual(store.tracks(ROBOT), [])
         self.assertTrue(store.save_track(ROBOT, "first", "lines", "no-go", None, None, [[0, 0, 5, 5], [1, 2, 3, 4]]))
-        self.assertTrue(store.save_track(ROBOT, "first", "zone-b", "cleaning", "hall", "turbo", [1, 2, 3, 4]))
         self.assertTrue(store.save_track(ROBOT, "first", "zone-a", "cleaning", "Kitchen", "eco", [5, 6, 7, 8]))
+        self.assertTrue(store.save_track(ROBOT, "first", "zone-b", "cleaning", "hall", "turbo", [1, 2, 3, 4]))
         self.assertTrue(store.save_track(ROBOT, "else", "zone-c", "cleaning", "Attic", "max", [0, 0, 0, 0]))
         self.assertTrue(store.save_track(OTHER, "first", "zone-a", "cleaning", "Kitchen", "eco", [5, 6, 7, 8]))
-        # By floor plan, its zones first by name whatever the case, then its no-go lines; each as the row is stored.
+        # By floor plan, its zones first in the order they were noted, not by name, then its no-go lines; each as the row is stored.
         listed = store.tracks(ROBOT)
-        self.assertEqual([row["track_uuid"] for row in listed], ["zone-c", "zone-b", "zone-a", "lines"])
-        zone, lines = listed[2:]
+        self.assertEqual([row["track_uuid"] for row in listed], ["zone-c", "zone-a", "zone-b", "lines"])
+        zone, lines = listed[1], listed[3]
         self.assertEqual(zone, {"vendor": "n", "serial": "board1", "track_uuid": "zone-a", "rank_uuid": "first",
                                 "type": "cleaning", "name": "Kitchen", "mode": "eco", "shape_json": "[5,6,7,8]", "at": zone["at"]})
         self.assertJustNow(zone["at"])
@@ -699,11 +699,11 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([row["track_uuid"] for row in store.tracks(OTHER)], ["zone-a"])
         # A track alone makes no robot and no floor plan.
         self.assertEqual((self.rows(), self.plans()), ({}, []))
-        # One that is saved again is the same track, as it was last drawn.
+        # One that is saved again is the same track, as it was last drawn, and in the place it had.
         self.assertTrue(store.save_track(ROBOT, "first", "zone-a", "cleaning", "Pantry", "max", [1, 1, 2, 2]))
-        again = {row["track_uuid"]: row for row in store.tracks(ROBOT)}
-        self.assertEqual(len(again), 4)
-        self.assertEqual([again["zone-a"][name] for name in ("name", "mode", "shape_json")], ["Pantry", "max", "[1,1,2,2]"])
+        again = store.tracks(ROBOT)
+        self.assertEqual([row["track_uuid"] for row in again], ["zone-c", "zone-a", "zone-b", "lines"])
+        self.assertEqual([again[1][name] for name in ("name", "mode", "shape_json")], ["Pantry", "max", "[1,1,2,2]"])
         # One that is dropped is gone, and one that was never held is dropped as well as any.
         for _ in range(2):
             self.assertTrue(store.delete_tracks(ROBOT, ["zone-b"]))

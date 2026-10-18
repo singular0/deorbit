@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs
 
 from .auth import RobotId
-from .commands import command, floorplan, scheduling, settings, track
+from .commands import ZONES_MAX, command, floorplan, scheduling, settings, track
 from .session import describe
 from .store import StoreError, now
 
@@ -375,6 +375,9 @@ class Web:
                 # A floor plan has one track of no-go lines, which a change replaces.
                 track_uuid = known[0] if known else str(uuid.uuid4())
             elif not track_uuid:
+                # Each zone the page shows has a colour of its own, of which there are as many as a floor plan may have zones.
+                if len(known) >= ZONES_MAX:
+                    return 400, _JSON, _json({"error": f"the floor plan has {ZONES_MAX} zones, the most it may have"})
                 track_uuid = str(uuid.uuid4())
             elif track_uuid not in known:
                 return 404, _JSON, _json({"error": "no such zone of that floor plan in the database"})

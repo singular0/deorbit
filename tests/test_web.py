@@ -8,6 +8,7 @@ import math
 import re
 import socket
 import sqlite3
+import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,7 +18,9 @@ from urllib.parse import quote
 from deorbit import __main__ as cli
 from deorbit import web
 from deorbit.auth import RobotId
-from deorbit.commands import COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, VOICES, VOLUME_MAX, ZONE_NAME_MAX
+from deorbit.commands import (
+    COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, VOICES, VOLUME_MAX, ZONE_NAME_MAX, ZONES_MAX,
+)
 from deorbit.config import Config
 from deorbit.server import Server
 from deorbit.web import Web, WebError
@@ -2127,8 +2130,32 @@ class TrackTests(WebTestCase):
         hall = self.sent(request)["track_uuid"]
         self.assertNotEqual(hall, kitchen)
         self.assertEqual(self.drawn(request["body"]["tracks"][0])[9], "." * 19 + "#")
-        self.assertEqual(await self.tracks(), [(hall, self.PLAN, "cleaning", "Hall", "eco", [19, 9, 19, 9]),
-                                               (kitchen, self.PLAN, "cleaning", "Pantry corner", "max", [0, 0, 19, 9])])
+        # The one first added stays first, whatever it is called now.
+        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Pantry corner", "max", [0, 0, 19, 9]),
+                                               (hall, self.PLAN, "cleaning", "Hall", "eco", [19, 9, 19, 9])])
+
+    async def test_floor_plan_has_so_many_zones_at_most(self) -> None:
+        await self.start()
+        store = self.server.store
+        robot, _ = await self.login()
+        zones = [str(uuid.uuid4()) for _ in range(ZONES_MAX - 1)]
+        for n, zone in enumerate(zones):
+            store.save_track(self.ROBOT, self.PLAN, zone, "cleaning", f"Room {n}", "eco", [0, 0, 1, 1])
+        # Neither the no-go lines nor the zones of another floor plan are among them.
+        store.save_track(self.ROBOT, self.PLAN, self.PLAN, "no-go", None, None, [[0, 0, 1, 1]])
+        store.save_track(self.ROBOT, self.ELSE, self.ELSE, "cleaning", "Attic", "eco", [0, 0, 1, 1])
+        request, _ = await self.answered(robot, self.zone(self.KITCHEN), self.DONE)
+        zones.append(self.sent(request)["track_uuid"])
+        full = (400, {"error": f"the floor plan has {ZONES_MAX} zones, the most it may have"})
+        self.assertEqual(await self.command(self.zone({**self.KITCHEN, "name": "Hall"})), full)
+        # One it has may still be changed, which the robot is sent next, and not the one refused.
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "name": "Hall"}, zones[0]), self.DONE)
+        self.assertEqual(self.sent(request)["track_uuid"], zones[0])
+        # Once one has gone, another may come.
+        store.delete_tracks(self.ROBOT, [zones[1]])
+        request, _ = await self.answered(robot, self.zone(self.KITCHEN), self.DONE)
+        self.assertNotIn(self.sent(request)["track_uuid"], zones)
+        self.assertEqual(len([row for row in await self.tracks() if row[1] == self.PLAN and row[2] == "cleaning"]), ZONES_MAX)
 
     async def test_no_go_lines_are_one_track_of_their_floor_plan(self) -> None:
         await self.start()
@@ -2381,6 +2408,11 @@ class TrackTests(WebTestCase):
         _, _, script = await self.fetch("/app.js")
         self.assertRegex(script.decode(), rf"(?m)^const ZONE_NAME_MAX = {ZONE_NAME_MAX};")
         self.assertRegex(script.decode(), rf"(?m)^const LINES_MAX = {LINES_MAX};")
+        self.assertRegex(script.decode(), rf"(?m)^const ZONES_MAX = {ZONES_MAX};")
+        # A colour of its own for each zone a floor plan may have, on a dark page and on a light one.
+        _, _, painting = await self.fetch("/map.js")
+        palettes = re.findall(r"(?m)^    zones: \[\n((?:      \[\d+, \d+, \d+\],\n)*)    \],$", painting.decode())
+        self.assertEqual([part.count("\n") for part in palettes], [ZONES_MAX, ZONES_MAX])
 
 
 class ServeTests(ServerTestCase):

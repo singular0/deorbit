@@ -26,9 +26,19 @@ const VALUES = 256; // how many values a cell can have
 const COMMENT_MAX = 1024; // how much of a comment in a file's header is read
 
 // The colours of a picture, for a dark page and for a light one, as red, green
-// and blue. A canvas cannot take them from the stylesheet. The last three are
-// what the page draws over the picture of a floor plan: its zones, the one that
-// is being drawn or that is chosen, and its no-go lines.
+// and blue. A canvas cannot take them from the stylesheet. The last two are
+// what the page draws over the picture of a floor plan: its no-go lines, and
+// its zones, a colour to each by its place among them, in this order, so that
+// there are as many as a floor plan may have zones (ZONES_MAX in app.js).
+//
+// A zone's colour is the same hue on both pages, lime, orchid, rust, violet,
+// pink and teal, a step lighter on the dark one. They were found by a search
+// in OKLab, and checked there (distances times 100): on each page any two are
+// at least 15.5 apart, and each is at least 15 from every other colour of the
+// map, the no-go lines among them. Under protanopia and deuteranopia two are
+// at least 6.9 apart, which the name drawn in each zone makes up for. The
+// first are the farthest apart, as a floor plan has few zones: the first two
+// are 45 apart, and no two of the first three are less than 26.
 export const PALETTES = {
   dark: {
     unseen: [26, 30, 38],
@@ -37,9 +47,15 @@ export const PALETTES = {
     cleaned: [46, 150, 110],
     robot: [124, 157, 255],
     base: [243, 185, 78],
-    zone: [92, 200, 230],
-    chosen: [195, 162, 255],
     nogo: [255, 114, 114],
+    zones: [
+      [116, 220, 0],
+      [214, 114, 255],
+      [193, 99, 0],
+      [133, 87, 255],
+      [255, 169, 236],
+      [0, 203, 195],
+    ],
   },
   light: {
     unseen: [226, 229, 236],
@@ -48,9 +64,15 @@ export const PALETTES = {
     cleaned: [140, 216, 182],
     robot: [52, 87, 227],
     base: [200, 126, 6],
-    zone: [8, 132, 168],
-    chosen: [125, 69, 214],
     nogo: [208, 58, 58],
+    zones: [
+      [86, 167, 0],
+      [129, 0, 166],
+      [131, 65, 0],
+      [156, 132, 255],
+      [216, 26, 191],
+      [0, 165, 158],
+    ],
   },
 };
 

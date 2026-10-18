@@ -28,6 +28,7 @@ const ZOOM_STEP = 2; // how much a press of Zoom in enlarges a map, and one of Z
 const PAN_STEP = 48; // how far an arrow key moves a map that is larger than its window, in pixels of the page
 const NAME_MAX = 64; // the most characters the server takes for the name of a robot or a map
 const ZONE_NAME_MAX = 32; // the same for the name of a zone of a floor plan
+const ZONES_MAX = 6; // the most zones a floor plan may have, each in a colour of its own of the `zones` of PALETTES
 const LINES_MAX = 100; // and the most no-go lines a floor plan may have
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -1148,20 +1149,10 @@ function mapShown(name, start) {
   return name ?? dated(start);
 }
 
-/**
- * What a map says of its run that its row does not, beside the picture. The
- * map of a floor plan has no row, so it has `whole` what the row says as well.
- * `row` is the map as the server lists it, and `map` what the robot sent of it.
- */
-function mapFacts(row, map, runs, whole = false) {
+/** What a map says of its run that its row does not, beside the picture. `map` is what the robot sent of it. */
+function mapFacts(map, runs) {
   const timing = record(map.timing);
   return rows([
-    ...(whole ? [
-      ['Name', mapShown(row.name, timing.start)],
-      ['Status', runStatus(runs)],
-      ['Area', areaOf(runs) ?? none()],
-      ['Duration', took(timing) ?? none()],
-    ] : []),
     // When the robot says the run began, which every map of one run says alike, and when it ended: the date and the
     // time, and the rest to a pointer that rests on it.
     ['Start time', dated(timing.start)],
@@ -1527,22 +1518,30 @@ function mapRow(row, mine, robot, plans) {
       took(record(map.timing)) ?? none(),
     ],
     tools: mapTools(mine, robot, plans, row, map),
-    detail:() => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(row, map, runs)), drawing(mine, row.id))],
+    detail:() => [h('div', { class: 'map-detail' }, h('div', { class: 'map-facts' }, mapFacts(map, runs)), drawing(mine, row.id))],
   };
 }
 
 /**
- * A floor plan as a block of its own, open on all of it: the picture of the
- * map it was made of, with its zones and no-go lines to the right, which are
- * drawn on the picture, and under both what the map says of its run, in two
- * columns. Rename and Demote stand beside its heading.
+ * A floor plan as a block of its own, open on all of it: headed with what its
+ * map is called, the picture of that map, with its zones and no-go lines to
+ * the right, which are drawn on the picture, and under both what its run
+ * cleaned and how long it took. Rename and Demote stand beside its heading.
  */
 function floorPanel(mine, robot, plan, row) {
   const map = record(parsed(row.map_json));
+  const timing = record(map.timing);
+  const runs = runsIn(map);
   const demote = robotButton(mine.floors, robot, 'Demote', `floor-${row.id}`, () => askDemote(mine, plan, row.id), { glyph: 'demote' });
-  return panel('Floor plan', [
+  // A map called nothing, with neither a name nor a start that is a time, leaves the heading as it is.
+  const called = mapText(row.name, timing.start) !== null
+    && h('span', { class: 'heading-name' }, mapShown(row.name, timing.start));
+  return panel(called ? ['Floor plan · ', called] : 'Floor plan', [
     h('div', { class: 'floor-plan' }, drawing(mine, row.id), trackPanel(mine, robot, row.id, plan)),
-    h('div', { class: 'floor-facts' }, mapFacts(row, map, runsIn(map), true)),
+    h('div', { class: 'floor-facts' }, rows([
+      ['Area', areaOf(runs) ?? none()],
+      ['Duration', took(timing) ?? none()],
+    ])),
   ], { wide: true, tools: h('div', { class: 'panel-tools' }, renameButton(mine, row), demote) });
 }
 
@@ -1775,15 +1774,39 @@ function corners([x0, y0, x1, y1]) {
   return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
 }
 
-/** Draw a zone on a map's picture: the rectangle `rect`, with its name in its top left corner, dashed while it is drawn. */
-function paintZone(pen, at, rect, name, colour, palette, ratio, dashed = false) {
+// How a zone is drawn on a map: its fill, how opaque it is all told and the
+// width of its edge, in pixels of the page. A zone that is chosen is drawn
+// bolder and the others fainter, since each has a colour of its own, and the
+// one that is being drawn has a dashed edge.
+const ZONE_LOOKS = {
+  plain: { fill: 0.22, alpha: 1, edge: 1.5 },
+  drawn: { fill: 0.22, alpha: 1, edge: 1.5, dashed: true },
+  chosen: { fill: 0.4, alpha: 1, edge: 3 },
+  aside: { fill: 0.12, alpha: 0.55, edge: 1 },
+};
+
+/**
+ * The colour of the zone in place `n` among those of its floor plan, as the
+ * server lists them, which is the order they were added in. Only a floor plan
+ * given more zones than a floor plan may have, before there was a limit, has
+ * a zone past the last colour, and that one has the colour of its place less
+ * that many.
+ */
+function zoneColour(palette, n) {
+  return palette.zones[n % palette.zones.length];
+}
+
+/** Draw a zone on a map's picture: the rectangle `rect`, with its name in its top left corner, as `look` has it. */
+function paintZone(pen, at, rect, name, colour, palette, ratio, look = 'plain') {
+  const { fill, alpha, edge, dashed = false } = ZONE_LOOKS[look];
   const [x0, y0] = at(rect[0], rect[1]);
   const [x1, y1] = at(rect[2] + 1, rect[3] + 1);
   pen.save();
-  pen.fillStyle = `rgba(${colour}, 0.22)`;
+  pen.globalAlpha = alpha;
+  pen.fillStyle = `rgba(${colour}, ${fill})`;
   pen.fillRect(x0, y0, x1 - x0, y1 - y0);
   pen.strokeStyle = `rgb(${colour})`;
-  pen.lineWidth = 1.5 * ratio;
+  pen.lineWidth = edge * ratio;
   pen.setLineDash(dashed ? [5 * ratio, 4 * ratio] : []);
   pen.strokeRect(x0, y0, x1 - x0, y1 - y0);
   if (name) {
@@ -1866,17 +1889,23 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
       if (!plan) return;
       const edit = editing();
       const at = (x, y) => plot(x - left, y - top);
-      for (const zone of plan.zones) {
+      // Each zone in the colour of its place. Where one is chosen, it stands out and the others stand back.
+      const chosen = plan.zones.some((zone) => zone.track_uuid === pictured.chosen) ? pictured.chosen : null;
+      plan.zones.forEach((zone, n) => {
         const rect = rectOf(zone);
         // The zone that is being drawn is where it is drawn now.
-        if (!rect || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) continue;
-        const colour = zone.track_uuid === pictured.chosen ? palette.chosen : palette.zone;
-        paintZone(pen, at, rect, zone.name, colour, palette, ratio);
-      }
+        if (!rect || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) return;
+        const look = chosen === null ? 'plain' : zone.track_uuid === chosen ? 'chosen' : 'aside';
+        paintZone(pen, at, rect, zone.name, zoneColour(palette, n), palette, ratio, look);
+      });
       const lines = edit?.kind === 'nogo' ? [...edit.lines, ...(stroke ? [stroke] : [])] : linesOf(plan.nogo);
       for (const line of lines) paintLine(pen, at, line, palette.nogo, size, ratio);
       const rect = edit?.kind === 'zone' && (stroke ? corners(stroke) : edit.rect);
-      if (rect) paintZone(pen, at, rect, edit.name.trim(), palette.chosen, palette, ratio, true);
+      if (rect) {
+        // In the colour it has, or a new one in that of the place it is to have, the last.
+        const n = plan.zones.findIndex((zone) => zone.track_uuid === edit.track);
+        paintZone(pen, at, rect, edit.name.trim(), zoneColour(palette, n < 0 ? plan.zones.length : n), palette, ratio, 'drawn');
+      }
     },
   };
 }
@@ -2124,11 +2153,12 @@ function trackPanel(mine, robot, id, plan) {
   const colours = schemePalette();
   const why = job.edit?.kind === 'nogo' ? 'no-go lines are being drawn' : null;
   const lines = linesOf(plan.nogo);
-  const zoneLine = (zone) => {
+  const full = plan.zones.length >= ZONES_MAX && `the floor plan has ${ZONES_MAX} zones, the most it may have`;
+  const zoneLine = (zone, n) => {
     const focus = `zone-${zone.track_uuid}`;
     const name = word(zone.name) ?? 'Unnamed';
     return h('li', { class: 'track' },
-      trackSwatch(colours.zone),
+      trackSwatch(zoneColour(colours, n)),
       h('span', { class: 'track-name' }, name),
       h('span', { class: 'track-mode' }, plain(zone.mode)),
       h('div', { class: 'entry-tools' },
@@ -2139,7 +2169,7 @@ function trackPanel(mine, robot, id, plan) {
   return h('section', { class: 'tracks' },
     h('div', { class: 'tracks-head' },
       h('h3', null, 'Zones'),
-      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawZone(mine, id, plan), { why, glyph: 'plus' })),
+      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawZone(mine, id, plan), { why: why ?? (full || null), glyph: 'plus' })),
     plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.map(zoneLine)) : h('p', { class: 'track-none' }, none('No zones.')),
     h('div', { class: 'tracks-head' },
       h('h3', null, 'No-go lines'),

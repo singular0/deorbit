@@ -386,8 +386,11 @@ class Store:
         return self._select(sql, (robot.vendor, robot.serial))
 
     def tracks(self, robot: RobotId) -> list[dict[str, object]]:
-        """The zones and no-go lines the robot is known to keep, by floor plan, the zones first, by name."""
-        sql = "SELECT * FROM tracks WHERE vendor = ? AND serial = ? ORDER BY rank_uuid, type, name COLLATE NOCASE, track_uuid"
+        """The zones and no-go lines the robot is known to keep, by floor plan, the zones first, in the order they were first noted.
+
+        A track that is noted again keeps its row, and so its rowid and its place, which is what the page gives its colour by.
+        """
+        sql = "SELECT * FROM tracks WHERE vendor = ? AND serial = ? ORDER BY rank_uuid, type, rowid"
         return self._select(sql, (robot.vendor, robot.serial))
 
     @staticmethod
