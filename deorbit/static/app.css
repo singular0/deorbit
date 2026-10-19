@@ -152,6 +152,37 @@ a {
   white-space: nowrap;
 }
 
+/* What is at the left of the bar: the name, then the link back to the list. */
+.bar-start {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* Beside the link, the name gives way first, down to its mark and the gap after it, and the link only once it has. */
+.bar-start .brand {
+  flex-shrink: 1000;
+  min-width: 36px;
+}
+
+.all-robots {
+  min-width: 0;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.16s ease;
+}
+
+.all-robots:hover {
+  color: var(--text);
+}
+
 /* What is at the right of the bar: whether the server answers, whether it is connected to Home Assistant, then the switch of the colour scheme. */
 .bar-end {
   display: flex;
@@ -393,23 +424,6 @@ h1 {
 
 /* ---- One robot ---- */
 
-.back {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin: 28px 0 18px;
-  padding: 4px 10px 4px 6px;
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 14px;
-  font-weight: 550;
-  transition: color 0.16s ease;
-}
-
-.back:hover {
-  color: var(--text);
-}
-
 /* Over the tabs and the panels after it, which the menu of the Start button opens over. */
 .hero {
   position: relative;
@@ -417,6 +431,7 @@ h1 {
   display: flex;
   align-items: center;
   gap: 22px;
+  margin-top: 28px;
   padding: 26px 28px;
 }
 
@@ -579,9 +594,9 @@ h1 {
 
 /* ---- The page that binds a robot over USB ---- */
 
-/* Under the link back to the list, as the top of a robot's page is. */
+/* At the top of the page, as the list's heading is, and nearer the panels under it. */
 .heading.bind-heading {
-  margin: 0 0 10px;
+  margin-bottom: 10px;
 }
 
 .bind-form {
@@ -1957,10 +1972,6 @@ td.cell-clock {
   margin-top: 4px;
 }
 
-.empty .back {
-  margin: 14px 0 0;
-}
-
 .skeleton {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1987,7 +1998,7 @@ td.cell-clock {
 
 .skeleton.banner {
   height: 204px;
-  margin-top: 74px;
+  margin-top: 28px;
 }
 
 /* Where the tabs will be. */
@@ -2171,6 +2182,7 @@ td.cell-clock {
     gap: 12px;
   }
 
+  .bar-start,
   .bar-end {
     gap: 8px;
   }

@@ -218,10 +218,14 @@
 
   <header class="bar">
     <div class="bar-inner">
-      <a class="brand" href="#/">
-        <svg class="icon mark" aria-hidden="true"><use href="#icon-orbit"/></svg>
-        <span>deorbit</span>
-      </a>
+      <div class="bar-start">
+        <a class="brand" href="#/">
+          <svg class="icon mark" aria-hidden="true"><use href="#icon-orbit"/></svg>
+          <span>deorbit</span>
+        </a>
+        <!-- Back to the list, from every page but the list, which the script shows it on. -->
+        <a id="all-robots" class="all-robots" href="#/" hidden>All robots</a>
+      </div>
       <div class="bar-end">
         <div id="live" class="live" role="status" data-state="loading">
           <span class="dot"></span>

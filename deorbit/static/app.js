@@ -37,6 +37,7 @@ const toasts = document.getElementById('toasts'); // where what is said of how s
 const live = document.getElementById('live');
 const liveText = document.getElementById('live-text');
 const homeAssistant = document.getElementById('home-assistant');
+const allRobots = document.getElementById('all-robots'); // the link back to the list, in the bar
 
 // The server's clock minus this browser's, so that "5 s ago" is right even
 // when the two disagree.
@@ -645,12 +646,11 @@ function card(robot) {
       icon('chevron')));
 }
 
-function message(title, text, back) {
+function message(title, text) {
   return h('div', { class: 'card empty' },
     h('div', { class: 'avatar' }, icon('robot')),
     h('h1', null, title),
-    h('p', { class: 'lead' }, text),
-    back && h('a', { class: 'back', href: '#/', 'data-focus': 'back' }, icon('back'), 'All robots'));
+    h('p', { class: 'lead' }, text));
 }
 
 function listPage(mine, robots) {
@@ -995,7 +995,6 @@ function bindLog(mine) {
 
 function bindPage(mine) {
   return h('div', null,
-    h('a', { class: 'back', href: '#/', 'data-focus': 'back' }, icon('back'), 'All robots'),
     h('div', { class: 'heading bind-heading' },
       h('h1', null, 'Bind a robot'),
       h('p', { class: 'lead' }, 'Plug the robot into this computer over USB and click Configure robot button '
@@ -3741,7 +3740,6 @@ function tabList(mine) {
 function robotPage(mine, body) {
   const [, , build] = TABS.find(([name]) => name === mine.tab);
   return h('div', null,
-    h('a', { class: 'back', href: '#/', 'data-focus': 'back' }, icon('back'), 'All robots'),
     hero(mine, body.robot),
     tabList(mine),
     // A stop for the Tab key, since the panels of some tabs hold nothing the keyboard can go to.
@@ -3912,8 +3910,7 @@ function show(mine, status, body) {
     mine.body = null;
     const { vendor, serial } = mine.robot;
     draw(mine, null, () => message('Robot not found',
-      `${vendor}/${serial} is not in the database. A robot appears once it has connected and sent a state or a heartbeat.`,
-      true));
+      `${vendor}/${serial} is not in the database. A robot appears once it has connected and sent a state or a heartbeat.`));
   } else {
     clockOffset = Date.parse(body.now) - Date.now();
     outdated(body.version);
@@ -4047,6 +4044,7 @@ function navigate() {
   view = mine;
   // By its serial until the server has said what the robot is called.
   document.title = `${binds ? 'Bind a robot' : mine.robot ? mine.robot.serial : 'Robots'} · deorbit`;
+  allRobots.hidden = !binds && !mine.robot;
   app.replaceChildren();
   scrollTo(0, 0);
   // That page has nothing to wait for before it is drawn.
