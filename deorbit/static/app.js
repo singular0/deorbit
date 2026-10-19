@@ -3772,7 +3772,7 @@ function show(mine, status, body) {
       // A floor plan or a zone that is kept no more, as after a Demote, is one the robot does not have to start on either.
       // A robot off its base starts on none, and on none a run has no no-go lines to mind.
       const start = mine.start;
-      const kept = isOn(body.robot.is_docked) && plansOf(body).find((plan) => plan.rank_uuid === start.floor);
+      const kept = isOn(body.robot.is_docked) ? plansOf(body).find((plan) => plan.rank_uuid === start.floor) : null;
       if (!kept) start.floor = '';
       if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
       if (start.floor === '') start.nogo = false;
