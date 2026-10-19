@@ -110,9 +110,10 @@ class PageTests(WebTestCase):
         self.assertEqual((status, headers["Content-Type"]), (200, "text/html; charset=utf-8"))
         self.assertEqual(int(headers["Content-Length"]), len(page))
         loaded = dict.fromkeys(re.findall(r'(?:href|src)="([^"#]+)"', page.decode()))
-        self.assertEqual(list(loaded), ["favicon.svg", "app.css", "app.js"])
+        self.assertEqual(list(loaded), ["favicon.svg", "theme.js", "app.css", "app.js"])
         kinds = {
             "favicon.svg": "image/svg+xml",
+            "theme.js": "text/javascript; charset=utf-8",
             "app.css": "text/css; charset=utf-8",
             "app.js": "text/javascript; charset=utf-8",
         }
@@ -127,6 +128,8 @@ class PageTests(WebTestCase):
         status, headers, body = await self.fetch("/map.js")
         self.assertEqual((status, headers["Content-Type"]), (200, "text/javascript; charset=utf-8"))
         self.assertNotIn(b"import ", body)
+        # The colour scheme is set before the page is first painted, by a script that is neither a module nor deferred.
+        self.assertIn('<script src="theme.js"></script>', page.decode())
 
     async def test_the_add_robot_helpers_are_served(self) -> None:
         await self.start()

@@ -1293,9 +1293,13 @@ function mapFacts(map, runs) {
   ]);
 }
 
-/** The colours of the pictures of maps for the page's scheme as it is now. */
+/** The colours of the pictures of maps for the page's scheme as it is now, which theme.js sets. */
 function schemePalette() {
-  return PALETTES[matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'];
+  return PALETTES[scheme() === 'light' ? 'light' : 'dark'];
+}
+
+function scheme() {
+  return document.documentElement.dataset.scheme;
 }
 
 /** Mark a place on a map's picture: the robot as a disc with a line the way it faces, its base as a square. */
@@ -1539,16 +1543,22 @@ async function picture(map, which, layer = null) {
     notes.push(`The cleaned cells are not shown: ${error.message}.`);
     return null;
   });
-  const palette = schemePalette();
+  // One object for as long as the picture lasts, which takes the colours of another scheme when the page does
+  // (`recolour`), so that whatever draws with it draws in those from then on.
+  const palette = { ...schemePalette() };
   // The robot last, so that it is drawn over the base it stands on.
-  const made = paint(rank, real, { base: places.base, robot: places.pos }, palette);
+  const spots = { base: places.base, robot: places.pos };
+  let made = paint(rank, real, spots, palette);
   const source = h('canvas', { width: made.width, height: made.height });
-  source.getContext('2d').putImageData(new ImageData(made.rgba, made.width, made.height), 0, 0);
+  const put = () => source.getContext('2d').putImageData(new ImageData(made.rgba, made.width, made.height), 0, 0);
+  put();
 
+  const swatches = [];
   const key = (name, label) => {
     // Not a class of that name: `robot` is a card in the list.
     const swatch = h('span', { class: name === 'robot' ? 'swatch round' : 'swatch' });
     swatch.style.background = `rgb(${palette[name]})`;
+    swatches.push([swatch, name]);
     return h('li', null, swatch, label);
   };
   const marked = new Set(made.marks.map((mark) => mark.name));
@@ -1571,7 +1581,19 @@ async function picture(map, which, layer = null) {
       marked.has('base') && key('base', 'Base')),
     ...notes.map((note) => h('p', { class: 'hint' }, note)),
   ].filter(Boolean);
-  return { nodes, repaint: redraw };
+  // The cells are painted anew in the colours of the scheme the page now has, and the legend and the window take them,
+  // where that is another than they are in.
+  let painted = scheme();
+  const recolour = () => {
+    if (scheme() === painted) return;
+    painted = scheme();
+    Object.assign(palette, schemePalette());
+    made = paint(rank, real, spots, palette);
+    put();
+    for (const [swatch, name] of swatches) swatch.style.background = `rgb(${palette[name]})`;
+    redraw();
+  };
+  return { nodes, repaint: redraw, recolour };
 }
 
 /** Fetch a map with its binaries and put its picture in the node of `pictured`, or why there is none and a way to try again. */
@@ -1583,9 +1605,10 @@ async function loadMap(mine, id, pictured, which, editable) {
   try {
     if (status !== 200) throw new Error(answer?.error ?? 'no answer from the server');
     const layer = (grid) => trackLayer(mine, id, pictured, editable, grid);
-    const { nodes, repaint: redraw } = await picture(record(parsed(record(answer.map).map_json)), which, layer);
+    const { nodes, repaint: redraw, recolour } = await picture(record(parsed(record(answer.map).map_json)), which, layer);
     node.replaceChildren(...nodes);
     pictured.repaint = redraw;
+    pictured.recolour = recolour;
   } catch (error) {
     node.replaceChildren(
       h('p', { class: 'map-failed' }, `Cannot show this map: ${error.message}.`),
@@ -1612,8 +1635,9 @@ function drawing(mine, id, place = null, chosen = null) {
   const key = place === null ? id : `${place} ${id}`;
   let pictured = mine.drawings.get(key);
   if (!pictured) {
-    // With what draws the picture anew once there is one, and the zone it shows as chosen.
-    pictured = { node: h('div', { class: 'map-drawing' }), repaint: null, chosen };
+    // With what draws the picture anew once there is one, what does so in the colours of another scheme, and the zone
+    // it shows as chosen.
+    pictured = { node: h('div', { class: 'map-drawing' }), repaint: null, recolour: null, chosen };
     mine.drawings.set(key, pictured);
     loadMap(mine, id, pictured, key, place === null);
   }
@@ -3809,6 +3833,8 @@ function drawRobot(mine) {
     body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, body.tracks,
     body.map_names, mine.tab, mine.naming, mine.mapNaming, mine.command, mine.accepted, mine.start, mine.schedule,
     mine.settings, mine.floors, mine.tracks, mine.deleting,
+    // For the colours of the zones beside the pictures of floor plans.
+    scheme(),
   ];
   draw(mine, data, () => robotPage(mine, body));
   // The pictures of the maps are no part of what is drawn, and what is drawn over them may have changed.
@@ -4039,6 +4065,13 @@ document.addEventListener('keydown', (event) => {
 // is opened or a map above it is drawn, and when the window changes its size.
 new ResizeObserver(() => placePopover()).observe(app);
 addEventListener('resize', () => placePopover());
+// The pictures of the maps are painted in the colours of a scheme, which theme.js changes when another is chosen, or
+// when the system's changes while auto is.
+new MutationObserver(() => {
+  if (!view?.robot) return;
+  for (const pictured of view.drawings.values()) pictured.recolour?.();
+  drawRobot(view);
+}).observe(document.documentElement, { attributes: true, attributeFilter: ['data-scheme'] });
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && view?.paused) {
     view.paused = false;

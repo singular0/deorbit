@@ -33,6 +33,7 @@ _PAGES = {
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/map.js": ("map.js", "text/javascript; charset=utf-8"),
+    "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     # The browser-side helpers that "Bind a robot" loads to talk to a robot over WebUSB.
     "/neato-config.js": ("neato-config.js", "text/javascript; charset=utf-8"),

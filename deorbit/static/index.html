@@ -9,6 +9,8 @@
   <title>Robots · deorbit</title>
   <!-- Every address here is relative, so the page also works under a path prefix behind a proxy. -->
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <!-- Not deferred: it sets the colour scheme before the page is first painted. -->
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="app.css">
   <script src="app.js" type="module"></script>
 </head>
@@ -201,6 +203,17 @@
     <symbol id="icon-message" viewBox="0 0 24 24">
       <path d="M5.5 5h13A1.5 1.5 0 0 1 20 6.5v8a1.5 1.5 0 0 1-1.5 1.5H11l-4.5 3.5V16h-1A1.5 1.5 0 0 1 4 14.5v-8A1.5 1.5 0 0 1 5.5 5z"/>
     </symbol>
+    <symbol id="icon-sun" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="3.75"/>
+      <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.64 5.64l1.41 1.41M16.95 16.95l1.41 1.41M5.64 18.36l1.41-1.41M16.95 7.05l1.41-1.41"/>
+    </symbol>
+    <symbol id="icon-moon" viewBox="0 0 24 24">
+      <path d="M20 12.7A8 8 0 1 1 11.3 4a6.2 6.2 0 0 0 8.7 8.7z"/>
+    </symbol>
+    <symbol id="icon-auto" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="8"/>
+      <path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/>
+    </symbol>
   </svg>
 
   <header class="bar">
@@ -209,9 +222,26 @@
         <svg class="icon mark" aria-hidden="true"><use href="#icon-orbit"/></svg>
         <span>deorbit</span>
       </a>
-      <div id="live" class="live" role="status" data-state="loading">
-        <span class="dot"></span>
-        <span id="live-text">Connecting</span>
+      <div class="bar-end">
+        <div id="live" class="live" role="status" data-state="loading">
+          <span class="dot"></span>
+          <span id="live-text">Connecting</span>
+        </div>
+        <!-- The colour scheme of the page, which theme.js sets and keeps. -->
+        <div id="theme" class="segments theme" role="radiogroup" aria-label="Colour scheme">
+          <label class="segment" title="Light">
+            <input type="radio" name="theme" value="light" aria-label="Light">
+            <span><svg class="icon" aria-hidden="true"><use href="#icon-sun"/></svg></span>
+          </label>
+          <label class="segment" title="Dark">
+            <input type="radio" name="theme" value="dark" aria-label="Dark">
+            <span><svg class="icon" aria-hidden="true"><use href="#icon-moon"/></svg></span>
+          </label>
+          <label class="segment" title="Auto: as the system is">
+            <input type="radio" name="theme" value="auto" aria-label="Auto">
+            <span><svg class="icon" aria-hidden="true"><use href="#icon-auto"/></svg></span>
+          </label>
+        </div>
       </div>
     </div>
   </header>

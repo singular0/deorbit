@@ -1,4 +1,7 @@
-/* The web UI's one stylesheet. Dark by default, light when the system is. */
+/*
+  The web UI's one stylesheet. Dark by default, light where the root element's `data-scheme` says so, which theme.js
+  sets from the switch at the right of the bar: light, dark, or auto, which is the system's.
+*/
 
 :root {
   color-scheme: dark;
@@ -22,25 +25,23 @@
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f4f5f8;
-    --surface: #ffffff;
-    --raised: #f0f2f6;
-    --line: #0f172a17;
-    --line-strong: #0f172a33;
-    --text: #141821;
-    --muted: #5b6474;
-    --faint: #8b93a1;
-    --accent: #3457e3;
-    --good: #0d9463;
-    --warn: #a86a05;
-    --bad: #d03a3a;
-    --literal: #7d45d6;
-    --shadow: 0 18px 40px -26px #0f172a47;
-    --scrim: #0f172a47;
-  }
+:root[data-scheme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f8;
+  --surface: #ffffff;
+  --raised: #f0f2f6;
+  --line: #0f172a17;
+  --line-strong: #0f172a33;
+  --text: #141821;
+  --muted: #5b6474;
+  --faint: #8b93a1;
+  --accent: #3457e3;
+  --good: #0d9463;
+  --warn: #a86a05;
+  --bad: #d03a3a;
+  --literal: #7d45d6;
+  --shadow: 0 18px 40px -26px #0f172a47;
+  --scrim: #0f172a47;
 }
 
 *,
@@ -137,10 +138,32 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   font-size: 16px;
   font-weight: 650;
   letter-spacing: -0.01em;
   border-radius: 8px;
+}
+
+/* On a screen too narrow for the bar, the name gives way to what is at the right of it. */
+.brand span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What is at the right of the bar: whether the server answers, then the switch of the colour scheme. */
+.bar-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+/* The switch is a group of buttons as a choice in a form is, as high as the indicator beside it, of icons alone. */
+.theme .segment span {
+  height: 32px;
+  padding: 0 8px;
 }
 
 .mark {
@@ -2118,6 +2141,21 @@ td.cell-clock {
   .floor-plan,
   .slot-form {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* A phone's width, where the indicator and the switch of the colour scheme take the room they can spare. */
+@media (max-width: 400px) {
+  .bar-inner {
+    gap: 12px;
+  }
+
+  .bar-end {
+    gap: 8px;
+  }
+
+  .theme .segment span {
+    padding: 0 6px;
   }
 }
 
