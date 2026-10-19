@@ -1017,12 +1017,15 @@ const named = (label, value) => word(value) && `${label} ${value}`;
 
 // How an event is shown: its label, icon and tone, and what its body says in a
 // line, which an upload says with what its map is called, as the maps the
-// robot gave names to by their rank_uuid have it. A login and a disconnect are
-// the server's own, and so are a call, which is what a command is sent as, and
-// the robot's response to one; the others are named by the service a robot
-// sent a message to, and a service not listed here goes under its own name.
-// These are maps because a robot chooses that name, and "constructor" must not
-// find anything.
+// robot gave names to by their rank_uuid have it. A label or a tone that
+// depends on the body is a function of it. A login and a disconnect are the
+// server's own, and so are a call, which is what a command is sent as, and the
+// robot's response to one; the others are named by the service a robot sent a
+// message to, and a service not listed here goes under its own name. These are
+// maps because a robot chooses that name, and "constructor" must not find
+// anything.
+const isWarning = (body) => body.severity === 'warning';
+const succeeded = (body) => Number.isInteger(body.code) && body.code >= 200 && body.code < 300;
 const CONNECTION = new Map([
   ['login', ['Login', 'login', 'good', (body) => [
     named('from', body.address),
@@ -1031,11 +1034,19 @@ const CONNECTION = new Map([
   ]]],
   ['disconnect', ['Disconnect', 'logout', 'quiet', (body) => [word(body.reason)]]],
   ['call', ['Command', 'forward', 'accent', (body) => [word(body.ability)]]],
-  ['response', ['Answer', 'back', 'quiet', (body) => [word(body.ability), named('code', body.code)]]],
+  ['response', ['Answer', 'back', (body) => (succeeded(body) ? 'good' : 'bad'), (body) => [
+    word(body.ability),
+    named('code', body.code),
+  ]]],
 ]);
 const SERVICES = new Map([
   ['robots.notify', ['Notification', 'bell', 'accent', (body) => [word(body.message_code)]]],
-  ['robots.error_codes', ['Error', 'alert', 'bad', (body) => [word(body.code), word(body.severity)]]],
+  ['robots.error_codes', [
+    (body) => (isWarning(body) ? 'Warning' : 'Error'),
+    'alert',
+    (body) => (isWarning(body) ? 'warn' : 'bad'),
+    (body) => [word(body.code), word(body.severity)],
+  ]],
   ['robots.link', ['Link', 'link', 'accent', (body) => [named('user', body.user_id), word(body.timezone)]]],
   ['firmware.check', ['Firmware check', 'download', 'quiet', (body) => [
     named('version', body.version),
@@ -1069,11 +1080,13 @@ function eventDetail(event) {
 function eventRow(event, names) {
   const known = event.service == null ? CONNECTION.get(event.kind) : SERVICES.get(event.service);
   const [label, glyph, tone, says] = known ?? [String(event.service ?? event.kind), 'message', 'quiet', () => []];
-  const said = says(record(parsed(event.body_json)), names).filter(Boolean).join(' · ');
+  const body = record(parsed(event.body_json));
+  const of = (value) => (typeof value === 'function' ? value(body) : value);
+  const said = says(body, names).filter(Boolean).join(' · ');
   return {
     id: event.id,
     focus: `event-${event.id}`,
-    cells: [dated(event.at), pill(tone, label, glyph), said || null],
+    cells: [dated(event.at), pill(of(tone), of(label), glyph), said || null],
     detail: () => eventDetail(event),
   };
 }
@@ -3504,10 +3517,7 @@ const TABS = [
   ['schedule', 'Schedule', (mine, body) => schedulePanel(mine, body)],
   ['maps', 'Maps', (mine, body) => mapPanels(mine, body)],
   ['settings', 'Settings', (mine, { robot }) => settingsPanel(mine, robot)],
-  ['events', 'Events', (mine, body) => panel('Events', eventLog(mine, body), {
-    hint: 'Logins, disconnects, commands and what the robot sent, newest first. States and heartbeats are not logged.',
-    wide: true,
-  })],
+  ['events', 'Events', (mine, body) => panel('Events', eventLog(mine, body), { wide: true })],
   ['debug', 'Debug', (mine, { robot }) => rawState(robot)],
 ];
 
