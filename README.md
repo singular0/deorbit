@@ -46,12 +46,12 @@ reports is stored in a database on your machine.
 | Put a robot on your Wi-Fi | ❌ | The robot must already be on your Wi-Fi. |
 | Let in only robots whose key you have | ✅ | Off by default: see [Robot keys](#robot-keys). |
 | Robot list and status | ✅ | |
-| Start, pause and cancel a cleaning | ✅ | |
+| Start, pause, resume and cancel a cleaning | ✅ | |
 | Return to base | ✅ | |
 | Cleaning schedule | ✅ | |
 | Maps of past cleanings | ✅ | |
 | Floor plans | ✅ | |
-| Zones and no-go lines | 🟡 | Ony simple rectangular shaped zones are supported. |
+| Zones and no-go lines | 🟡 | Only simple rectangular shaped zones are supported. |
 | History | ✅ | Connections, messages, errors and the commands sent. |
 | Notifications | 🟡 | Shown in the history only; nothing goes to a phone or by e-mail. |
 | Name robots and maps | ✅ | Names are kept on the server only. |
