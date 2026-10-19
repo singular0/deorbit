@@ -36,7 +36,6 @@ const app = document.getElementById('app');
 const toasts = document.getElementById('toasts'); // where what is said of how something went is put
 const live = document.getElementById('live');
 const liveText = document.getElementById('live-text');
-const dialog = document.getElementById('add'); // what "Bind a robot" opens, over the page
 
 // The server's clock minus this browser's, so that "5 s ago" is right even
 // when the two disagree.
@@ -49,8 +48,9 @@ let clockOffset = 0;
 // sent from it and when the robot last accepted one, the robot's schedule and
 // its settings and what is being done to them, what is being asked of the
 // robot about a floor plan, what is being drawn of the zones and no-go lines
-// of one, whether the robot is being deleted, the server's last answer, what
-// was last drawn and the fetch under way. Navigating makes a new one, and a
+// of one, whether the robot is being deleted, on the page that binds a robot
+// the run it shows, the server's last answer, what was last drawn and the
+// fetch under way. Navigating makes a new one, and a
 // fetch that returns to find its view replaced drops the result.
 let view = null;
 
@@ -664,35 +664,38 @@ function listPage(mine, robots) {
       h('div', null,
         h('h1', null, 'Robots'),
         h('p', { class: 'lead' }, lead)),
-      addButton(mine)),
+      bindButton()),
     robots.length > 0 && h('div', { class: 'grid' }, robots.map(card)));
 }
 
-// ---- Adding a robot over USB ----
+// ---- Binding a robot over USB ----
 //
-// Pointing a robot at this server is done entirely in the browser: it connects
-// to the plugged-in robot over WebUSB and rewrites the robot's hosts file,
-// vendor config and trusted certificate. The helpers that do it live beside this
-// file; they are imported only when the dialog is opened, so the rest of the UI
-// does not depend on them being served, and so the device prompt in `runAdd`
-// stays the first await of the click that starts it (WebUSB needs a gesture).
+// Pointing a robot at this server is done entirely in the browser, on a page
+// of its own: it connects to the plugged-in robot over WebUSB and rewrites the
+// robot's hosts file, its vendor settings and the certificate it trusts, which
+// are the three steps the page shows. The helpers that do it live beside this
+// file; they are imported only when the page is opened, so the rest of the UI
+// does not depend on them being served, and so the device prompt in `runBind`
+// stays the first await of the press that starts it (WebUSB needs a gesture).
 //
-// The dialog is a modal over the page and no part of it: `drawAdd` draws it
-// from the view's `adding` when that has changed, and a poll that draws the
-// list anew leaves it as it is.
+// A run outlives its page, which can be left while a robot is written to: the
+// page opened again meanwhile shows that run, and starts no other.
 
-let helpers = null; // the add-robot helper modules, once loaded
+// The steps of a run, in the order they are done: each is one of the helpers' writes.
+const STEPS = ['Update server name resolution', 'Update Tron server configuration', 'Install server certificate'];
+
+let helpers = null; // the helper modules, once loaded
 let helpersError = null; // why they could not be loaded, if so
-let configuring = 0; // how many robots are being written to, which a run does whether its dialog is still open or not
+let binding = null; // the run under way, if one is, as the page holds it
 
 // Leaving the page, as a reload does, would cut a robot off in the middle of being written to, so the browser asks first.
 addEventListener('beforeunload', (event) => {
-  if (configuring > 0) event.preventDefault();
+  if (binding) event.preventDefault();
 });
 
 // Whether this browser has WebUSB. Chrome and Edge do, and only on a page from
-// https or localhost. Without it the button is disabled, so the dialog is never
-// open and nothing below has to ask again.
+// https or localhost. Without it the list's button is disabled, and the page,
+// which an address can still open, holds Configure robot back.
 const WEBUSB = Boolean(navigator.usb);
 const NO_WEBUSB = 'this browser has no WebUSB. Use Chrome or Edge, over http://localhost or https';
 
@@ -720,30 +723,39 @@ async function fetchSetup() {
   return status === 200 ? body : null;
 }
 
-function addButton(mine) {
-  return h('button', {
-    class: 'button add-robot',
-    type: 'button',
-    disabled: !WEBUSB,
-    title: !WEBUSB && `Bind a robot: ${NO_WEBUSB}`,
-    'data-focus': 'add-robot',
-    onclick: () => openAdd(mine),
-  }, icon('link'), 'Bind a robot');
+/** What opens the page, beside the list's heading: disabled, with why, in a browser without WebUSB. */
+function bindButton() {
+  if (!WEBUSB) {
+    return h('button', { class: 'button bind-robot', type: 'button', disabled: true, title: `Bind a robot: ${NO_WEBUSB}` },
+      icon('link'), 'Bind a robot');
+  }
+  return h('a', { class: 'button bind-robot', href: '#/bind', 'data-focus': 'bind-robot' }, icon('link'), 'Bind a robot');
 }
 
-function openAdd(mine) {
-  if (mine.adding) return;
-  const add = { log: [], busy: false, done: false, asking: true, setup: null };
-  mine.adding = add;
-  drawAdd(mine);
-  dialog.showModal();
-  // Outside a modal dialog nothing can be pressed or read aloud, so the toasts are in it while it is open.
-  dialog.append(toasts);
-  dialog.querySelector('[data-focus="add-configure"]')?.focus();
-  // The helpers are loaded now, so the gesture in `runAdd` is spent on the device prompt, not on an import.
+/** Each step as it is before a run: waiting, with nothing to say. */
+function waitingSteps() {
+  return STEPS.map(() => ({ state: 'waiting', note: null }));
+}
+
+/**
+ * What the page holds of a run that has not started: the field's address,
+ * which the server has yet to give; whether it has yet to say that and its
+ * certificate, and what it said, which is null for no answer; whether a robot
+ * is being written to; how far each step got; the log, and whether it is open.
+ */
+function freshBind() {
+  return { address: '', asking: true, setup: null, busy: false, steps: waitingSteps(), log: [], logOpen: false };
+}
+
+/** Show the page on `mine`, and ask for what it needs that it does not have. */
+function openBind(mine) {
+  const bind = mine.bind;
+  drawBind(mine);
+  if (!WEBUSB) toast('bind-webusb', { tone: 'bad', text: `Configure robot: ${NO_WEBUSB}.` }, 'Bind a robot');
+  // Loaded now, so the gesture in `runBind` is spent on the device prompt, not on an import.
   loadHelpers().then(() => {
-    if (mine.adding !== add) return;
-    drawAdd(mine);
+    if (mine !== view) return;
+    drawBind(mine);
     if (helpersError) {
       toast('bind-helpers', {
         tone: 'bad',
@@ -751,81 +763,103 @@ function openAdd(mine) {
       }, 'Bind a robot');
     }
   });
+  // The run under way that the page shows has had its answer.
+  if (!bind.asking) return;
   // The address to point a robot at and the certificate it is to trust are the server's to say.
   fetchSetup().then((setup) => {
-    if (mine.adding !== add) return;
-    add.asking = false;
-    add.setup = setup;
-    drawAdd(mine);
-    const why = noAddress(add);
-    if (why) toast('bind-address', { tone: 'bad', text: why }, 'Bind a robot');
+    if (mine !== view) return;
+    bind.asking = false;
+    bind.setup = setup;
+    // The field starts from the address the server has, as it is set or as it was found, which may be none.
+    bind.address = setup?.address ?? '';
+    if (!setup) {
+      toast('bind-setup', {
+        tone: 'bad',
+        text: 'The server did not say its address and the certificate to install. Reload the page to ask again.',
+      }, 'Bind a robot');
+    }
+    drawBind(mine);
   });
 }
 
-function closeAdd(mine) {
-  mine.adding = null;
-  // What was said of why the dialog could not configure a robot goes with it; how a robot was configured stays.
-  hush('bind-helpers');
+/** What the toasts that say why the page cannot configure a robot are kept by: they go with the page. */
+const BIND_HELD = ['bind-webusb', 'bind-helpers', 'bind-setup', 'bind-address'];
+
+// The four numbers of an IPv4 address. Not one with a 0 before a digit, which a resolver may read as octal.
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+/** The IP address `text` holds, as it is to be written into the robot's hosts file, or null where it holds none. */
+function ipAddress(text) {
+  const given = text.trim();
+  if (IPV4.test(given)) return given;
+  if (!given.includes(':') || !/^[0-9a-f:.]+$/i.test(given)) return null;
+  try {
+    // The URL parser knows an IPv6 address, and writes it the short way.
+    return new URL(`http://[${given}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+}
+
+/** Why Configure robot cannot be pressed now, or null when it can. An address that is none is said when it is pressed. */
+function bindHeld(bind) {
+  return !WEBUSB ? NO_WEBUSB
+    : bind.busy ? 'the robot is being configured'
+    : helpersError ? 'the USB helpers could not be loaded'
+    : !helpers ? 'the USB helpers are still being loaded'
+    : bind.asking ? 'waiting for the server to say its address'
+    : !bind.setup ? 'the server did not say its address and the certificate to install'
+    : null;
+}
+
+/** Connect to the plugged-in robot over USB and point it at this server, a step at a time. Started by a press, so nothing is awaited before the device prompt. */
+async function runBind(mine) {
+  const bind = mine.bind;
+  if (binding || bindHeld(bind)) return; // the button is held back, and says why
+  const ip = ipAddress(bind.address);
+  if (!ip) {
+    const given = bind.address.trim();
+    toast('bind-address', {
+      tone: 'bad',
+      text: given === '' ? 'Configure robot: enter the address of this server' : `Configure robot: ${given} is not an IP address`,
+    }, 'Bind a robot');
+    app.querySelector('[data-focus="bind-address"]')?.focus();
+    return;
+  }
+
+  // The field is disabled during the run, which would drop the keyboard's focus that Enter in it left there.
+  app.querySelector('[data-focus="bind-configure"]')?.focus();
+  binding = bind;
+  bind.busy = true;
+  bind.address = ip;
+  bind.steps = waitingSteps();
+  bind.log = [];
   hush('bind-address');
-  document.body.append(toasts);
-  if (dialog.open) dialog.close();
-  dialog.replaceChildren();
-  // The button that opened it may have been drawn anew since, so the browser cannot hand the focus back.
-  app.querySelector('[data-focus="add-robot"]')?.focus();
-}
-
-// Escape asks for the dialog to be closed, which is not done while a robot is being written to.
-dialog.addEventListener('cancel', (event) => {
-  event.preventDefault();
-  if (view?.adding && !view.adding.busy) closeAdd(view);
-});
-
-// A browser closes it unasked when Escape is pressed again with nothing done in between.
-// `closeAdd` ends up here as well, with `adding` gone by then.
-dialog.addEventListener('close', () => {
-  const add = view?.adding;
-  if (!add) return;
-  if (add.busy) dialog.showModal();
-  else closeAdd(view);
-});
-
-/**
- * Why there is no address to point a robot at, or null when there is one or the
- * server has yet to say. The address is the server's alone to give: its
- * `public_address`, or what it found for itself when it started.
- */
-function noAddress(add) {
-  if (add.asking || add.setup?.address) return null;
-  return add.setup
-    ? 'This server has no address to give a robot: none is set, and it found none when it started. '
-      + 'Set public_address in its settings and restart it.'
-    : 'The server did not say what its address is. Close this and open it again.';
-}
-
-/** Connect to the plugged-in robot over USB and point it at this server. Started by a click, so nothing is awaited before the device prompt. */
-async function runAdd(mine) {
-  const add = mine.adding;
-  const ip = add.setup?.address;
-  if (add.busy || !ip || !helpers) return; // the dialog says why, and holds the button back
-
-  add.busy = true;
-  add.done = false;
-  add.log = [];
-  configuring += 1;
-  drawAdd(mine);
-
-  const log = (text) => {
-    add.log.push(text);
-    if (mine.adding === add) drawAdd(mine);
+  const steps = bind.steps;
+  let at = 0; // the step under way, which a failure is of
+  // The page this run is on, if it is on screen: one left and opened again shows the run as well.
+  const redraw = () => {
+    if (view?.bind === bind) drawBind(view);
+  };
+  const log = (...parts) => {
+    bind.log.push(parts.join(' '));
+    redraw();
+  };
+  const begin = (step, note = null) => {
+    at = step;
+    steps[step] = { state: 'active', note };
+    redraw();
   };
   let transport = null;
   try {
     // The server's certificate goes onto every robot. A server that has none to give, with no ca.crt beside its own, installs none.
-    const certBytes = add.setup.ca ? new TextEncoder().encode(add.setup.ca) : null;
-    if (!certBytes) log('No certificate from the server, so none is installed on the robot.');
+    const certBytes = bind.setup.ca ? new TextEncoder().encode(bind.setup.ca) : null;
+    // Connecting is the start of the first step, which it fails if it fails.
+    begin(0, 'Choose the robot in the browser’s device prompt');
     log('Choose the robot in the browser’s device prompt…');
     transport = new helpers.WebUSBTransport();
-    await transport.open(); // the device prompt: the first await, so the click still counts as a user gesture
+    await transport.open(); // the device prompt: the first await, so the press still counts as a user gesture
+    begin(0, 'Connecting to the robot…');
     log('Connected over USB. Opening a session…');
     const client = new helpers.MtpClient(transport);
     await client.openSession();
@@ -835,100 +869,152 @@ async function runAdd(mine) {
     // one line if the file's exports differ.
     const fs = new helpers.MtpFileSystem(client);
     fs.log = log;
-    log(`Pointing orbital.deorbit at ${ip}…`);
     // The write contract requires an onConfirm answer for every change;
     // without one each write aborts unanswered. The user already consented by
-    // starting the bind, so every change is approved without asking again.
-    // Backups of replaced files are kept in memory only (for verify/restore),
-    // not downloaded.
-    const onConfirm = async () => true;
-    const result = await helpers.reconfigureNeato(fs, { ip, certBytes, onConfirm });
-    if (result && result.ok === false) {
-      throw new Error(result.aborted ? 'aborted - no changes made' : result.error || 'the robot refused a write');
+    // pressing Configure robot, so every change is approved without asking
+    // again. Backups of replaced files are kept in memory only (for
+    // verify/restore), not downloaded.
+    const options = { onConfirm: async () => true };
+    // Each step is one write, which says how it went as `reconfigureNeato` takes it.
+    const write = async (step, run) => {
+      begin(step);
+      log(`${STEPS[step]}…`);
+      const result = await run();
+      if (!result?.ok) throw new Error(result?.aborted ? 'aborted - no changes made' : result?.error || 'the robot refused a write');
+      steps[step] = { state: 'done', note: null };
+      redraw();
+    };
+    await write(0, () => helpers.setOrbitalHosts(fs, ip, options));
+    await write(1, () => helpers.setVendorHost(fs, options));
+    if (certBytes) await write(2, () => helpers.uploadCert(fs, certBytes, options));
+    else {
+      steps[2] = { state: 'skipped', note: 'The server has no certificate to install' };
+      log('No certificate from the server, so none is installed on the robot.');
     }
-    add.done = true;
     log('Done. Unplug the robot; it connects to this server when it next comes online.');
     toast('bind', { tone: 'good', text: 'The robot is now set up for this server.' }, 'Bind a robot');
   } catch (err) {
-    log(`Failed: ${errText(err)}`);
-    toast('bind', { tone: 'bad', text: `Failed: ${errText(err)}` }, 'Bind a robot');
+    if (err?.name === 'NotFoundError' && !transport?.device) {
+      // The device prompt was dismissed: nothing was tried, so nothing failed.
+      steps[0] = { state: 'waiting', note: null };
+      log('No robot was chosen.');
+    } else {
+      steps[at] = { state: 'failed', note: errText(err) };
+      // What led up to it is in the log, which opens for it.
+      bind.logOpen = true;
+      log(`Failed: ${errText(err)}`);
+      toast('bind', { tone: 'bad', text: `${STEPS[at]}: ${errText(err)}` }, 'Bind a robot');
+    }
   } finally {
     if (transport) {
       try { await transport.close(); } catch { /* best effort */ }
     }
-    configuring -= 1;
-    add.busy = false;
-    if (mine.adding === add) drawAdd(mine);
+    binding = null;
+    bind.busy = false;
+    redraw();
   }
 }
 
-/**
- * What the dialog holds: what is about to happen, the address the robot is
- * pointed at, how it is going, and its two buttons. Why it cannot configure a
- * robot, and how configuring one went, is said in toasts.
- */
-function addForm(mine) {
-  const add = mine.adding;
-  const address = add.setup?.address;
-  // Why a robot cannot be configured at this moment, if so.
-  const why = add.busy ? 'the robot is being configured'
-    : helpersError ? 'the USB helpers could not be loaded'
-    : !helpers ? 'the USB helpers are still being loaded'
-    : add.asking ? 'waiting for the server to say its address'
-    : !address && 'the server gave no address';
-  return h('form', {
-    class: 'add-form',
+/** The address to point the robot at, which starts as the one the server gave, and Configure robot beside it. */
+function bindSettings(mine) {
+  const bind = mine.bind;
+  const why = bindHeld(bind);
+  const button = h('button', {
+    class: bind.busy ? 'command busy' : 'command',
+    type: 'submit',
+    // Held back, not disabled: the keyboard is on it while the robot is configured.
+    'aria-disabled': why && 'true',
+    title: why && `Configure robot: ${why}`,
+    'data-focus': 'bind-configure',
+  }, icon('link'), 'Configure robot');
+  return panel('Configuration', h('form', {
+    class: 'bind-form',
     onsubmit: (event) => {
       event.preventDefault();
-      runAdd(mine);
+      runBind(mine);
     },
   },
-  h('div', null,
-    h('h2', { class: 'add-title', id: 'add-title' }, 'Bind a robot'),
-    h('p', { class: 'add-lead' }, 'Plug the robot into this computer over USB and click Configure robot button '
-      + 'to bind it to this Deorbit server.')),
-  h('div', { class: 'add-address' },
-    h('span', { class: 'add-label' }, 'Server address'),
-    address
-      ? h('span', { class: 'add-value serial' }, address)
-      : h('span', { class: 'add-value none' }, add.asking ? '…' : 'none'),
-    h('span', { class: 'add-note' }, 'This address was either explicitly set as public_address in the server’s '
-      + 'configuration file, or auto-detected at server startup. To change it, set public_address in deorbit.yml and '
-      + 'restart the server. Robot must be able to connect to this address via its Wi-Fi network.')),
-  add.log.length > 0 && h('pre', { class: 'code add-log' }, add.log.join('\n')),
-  h('div', { class: 'add-actions' },
-    // Both are held back, not disabled: the keyboard is put on the first as the dialog opens,
-    // before the server has answered, and stays where it is while the robot is configured.
-    h('button', {
-      class: add.busy ? 'command busy' : 'command',
-      type: 'submit',
-      'aria-disabled': why && 'true',
-      title: why && `Configure robot: ${why}`,
-      'data-focus': 'add-configure',
-    }, icon('link'), 'Configure robot'),
-    h('button', {
-      class: 'button',
-      type: 'button',
-      'aria-disabled': add.busy && 'true',
-      title: add.busy && 'Cancel: the robot is being configured',
-      'data-focus': 'add-cancel',
-      onclick: () => { if (!add.busy) closeAdd(mine); },
-    }, add.done ? 'Close' : 'Cancel')));
+  h('label', { class: 'bind-label', for: 'bind-address' }, 'Server address'),
+  h('div', { class: 'bind-row' },
+    h('input', {
+      id: 'bind-address',
+      type: 'text',
+      value: bind.address,
+      placeholder: bind.asking ? '…' : 'IP address',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      // Nothing to change until the server has given what it has, and nothing while a robot is written to.
+      disabled: bind.asking || bind.busy,
+      'data-focus': 'bind-address',
+      // Kept as it is typed, which draws nothing anew.
+      oninput: (event) => { bind.address = event.target.value; },
+    }),
+    button)), { wide: true });
 }
 
-/** Draw the dialog from the view's `adding`. */
-function drawAdd(mine) {
-  if (mine !== view || !mine.adding) return;
-  // Whatever had the keyboard's focus is replaced too, so hand it to its successor, as `draw` does.
-  const focus = dialog.contains(document.activeElement) && document.activeElement.dataset.focus;
-  // The form alone: the toasts beside it are no part of it.
-  const form = addForm(mine);
-  const old = dialog.querySelector('.add-form');
-  if (old) old.replaceWith(form);
-  else dialog.prepend(form);
-  if (focus) dialog.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
+// What each state of a step has in its circle in place of its number, and what it says under its name where the run said nothing.
+const STEP_GLYPHS = new Map([['done', 'check'], ['failed', 'cross'], ['skipped', 'minus']]);
+const STEP_NOTES = new Map([['active', 'In progress…'], ['done', 'Done']]);
+
+/** The steps one under another, each with its circle, joined by a line, which is lit from a step that is done. */
+function stepper(bind) {
+  return h('ol', { class: 'stepper' }, STEPS.map((title, at) => {
+    const { state, note } = bind.steps[at];
+    const glyph = STEP_GLYPHS.get(state);
+    const said = note ?? STEP_NOTES.get(state);
+    return h('li', { class: 'step', 'data-state': state, 'aria-current': state === 'active' && 'step' },
+      h('span', { class: 'step-marker' }, glyph ? icon(glyph) : String(at + 1)),
+      h('div', { class: 'step-text' },
+        h('span', { class: 'step-title' }, title),
+        said && h('span', { class: 'step-note' }, said)));
+  }));
+}
+
+/** The log of the run, under a heading that opens and shuts it, with Copy beside it once there is something to copy. */
+function bindLog(mine) {
+  const bind = mine.bind;
+  const text = bind.log.join('\n');
+  const toggle = h('button', {
+    class: 'disclosure',
+    type: 'button',
+    'aria-expanded': String(bind.logOpen),
+    'aria-controls': 'bind-log',
+    'data-focus': 'bind-log',
+    onclick: () => {
+      bind.logOpen = !bind.logOpen;
+      drawBind(mine);
+    },
+  }, icon('chevron'), 'Debug log');
+  return h('section', { class: `card panel wide bind-log-panel${bind.logOpen ? '' : ' shut'}` },
+    h('div', { class: 'panel-head' }, h('h2', null, toggle), text !== '' && copyButton(text)),
+    h('div', { id: 'bind-log', hidden: !bind.logOpen },
+      text === '' ? h('p', { class: 'plan-note' }, none('Nothing logged yet.'))
+        : h('pre', { class: 'code bind-log', tabindex: '0' }, text)));
+}
+
+function bindPage(mine) {
+  return h('div', null,
+    h('a', { class: 'back', href: '#/', 'data-focus': 'back' }, icon('back'), 'All robots'),
+    h('div', { class: 'heading bind-heading' },
+      h('h1', null, 'Bind a robot'),
+      h('p', { class: 'lead' }, 'Plug the robot into this computer over USB and click Configure robot button '
+        + 'to bind it to this Deorbit server.')),
+    h('div', { class: 'panels' },
+      bindSettings(mine),
+      panel('Progress', stepper(mine.bind), { wide: true }),
+      bindLog(mine)));
+}
+
+/**
+ * Draw the page from what it holds. Nothing but a press on it, or the run that
+ * one starts, draws it, so it is drawn whatever the reader is at, and the field
+ * keeps its caret.
+ */
+function drawBind(mine) {
+  if (mine !== view) return;
+  if (!draw(mine, [mine.bind, helpers !== null, helpersError !== null], () => bindPage(mine), false)) return;
   // The last line of the log is the one that says where things are.
-  const log = dialog.querySelector('.add-log');
+  const log = app.querySelector('.bind-log');
   if (log) log.scrollTop = log.scrollHeight;
 }
 
@@ -3692,18 +3778,27 @@ function dragging() {
   return app.contains(dragged);
 }
 
-/** Put `build()` on screen unless `data`, which it is built from, is what is already there. */
-function draw(mine, data, build) {
+/**
+ * Put `build()` on screen unless `data`, which it is built from, is what is
+ * already there, or unless the reader is at something a new page would undo,
+ * where it is to `hold`. Say whether it was put there.
+ */
+function draw(mine, data, build, hold = true) {
   const drawn = JSON.stringify(data);
-  if (drawn === mine.drawn || selecting() || entering() || dragging()) return;
-  // Whatever had the keyboard's focus is replaced too, so hand it to its successor.
+  if (drawn === mine.drawn || (hold && (selecting() || entering() || dragging()))) return false;
+  // Whatever had the keyboard's focus is replaced too, so hand it to its successor, and a field keeps where its caret was.
   // It is asked for first: building the page takes the pictures of the maps out of the old one.
-  const focus = document.activeElement?.dataset?.focus;
+  const at = document.activeElement;
+  const focus = at?.dataset?.focus;
+  const caret = at?.matches('input[type="text"]') ? [at.selectionStart, at.selectionEnd] : null;
   const page = build();
   if (mine.drawn === null) page.classList.add('enter');
   mine.drawn = drawn;
   app.replaceChildren(page);
-  if (focus) app.querySelector(`[data-focus="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
+  const next = focus && app.querySelector(`[data-focus="${CSS.escape(focus)}"]`);
+  next?.focus({ preventScroll: true });
+  if (caret && next?.matches('input[type="text"]')) next.setSelectionRange(...caret);
+  return true;
 }
 
 /** Draw the robot's page from the server's last answer and what its view holds, which a press on the page changes between answers. */
@@ -3803,10 +3898,12 @@ function show(mine, status, body) {
       if (since && mine.schedule.asked !== since) askSchedule(mine, 'show', 'Schedule');
       settingsDue(mine);
       drawRobot(mine);
-    } else {
+    } else if (!mine.bind) {
       mine.body = body;
       draw(mine, body.robots, () => listPage(mine, body.robots));
     }
+    // The page that binds a robot is drawn by what is done on it. It asks for the list only to know that the server is
+    // there and which version of the page it has.
   }
 }
 
@@ -3850,10 +3947,12 @@ function navigate() {
   if (view) {
     clearTimeout(view.timer);
     view.controller?.abort();
-    // The dialog is no part of the page, so it does not go with it, and neither does a popover.
-    if (view.adding) closeAdd(view);
+    // What was said of why the page that binds a robot could not do it goes with it; how a robot was configured stays.
+    if (view.bind) for (const key of BIND_HELD) hush(key);
+    // A popover is no part of the page, so it does not go with it unless it is shut.
     closePopover(false);
   }
+  const binds = location.hash === '#/bind';
   const mine = {
     robot: robotInAddress(),
     tab: TABS[0][0],
@@ -3888,9 +3987,8 @@ function navigate() {
     tracks: { waiting: false, edit: null },
     // Whether the server has yet to answer the deleting of the robot.
     deleting: { waiting: false },
-    // The add-robot dialog, over the list: null while shut, else the log lines, whether it is running or done,
-    // whether the server has yet to say its address and certificate, and what it gave.
-    adding: null,
+    // On the page that binds a robot, what it holds of the run under way, or else of a new one (see `freshBind`).
+    bind: binds ? binding ?? freshBind() : null,
     body: null,
     drawn: null,
     controller: null,
@@ -3899,9 +3997,11 @@ function navigate() {
   };
   view = mine;
   // By its serial until the server has said what the robot is called.
-  document.title = `${mine.robot ? mine.robot.serial : 'Robots'} · deorbit`;
+  document.title = `${binds ? 'Bind a robot' : mine.robot ? mine.robot.serial : 'Robots'} · deorbit`;
   app.replaceChildren();
   scrollTo(0, 0);
+  // That page has nothing to wait for before it is drawn.
+  if (binds) openBind(mine);
   setTimeout(() => {
     if (mine === view && mine.drawn === null) app.replaceChildren(skeleton(mine.robot));
   }, SKELETON_MS);

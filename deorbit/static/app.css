@@ -540,117 +540,207 @@ h1 {
   flex-wrap: wrap;
 }
 
-.add-robot {
+.bind-robot {
   flex: none;
 }
 
-/* ---- The dialog that "Bind a robot" opens, over the page ---- */
+/* ---- The page that binds a robot over USB ---- */
 
-.add-dialog {
-  width: min(540px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
-  padding: 0;
+/* Under the link back to the list, as the top of a robot's page is. */
+.heading.bind-heading {
+  margin: 0 0 10px;
+}
+
+.bind-form {
+  display: grid;
+  gap: 6px;
+}
+
+.bind-label {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+/* The address, and Configure robot beside it, under it where there is no room. */
+.bind-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bind-row > input {
+  flex: 0 1 300px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
+  border-radius: 11px;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 32px 80px -24px #000000d9;
-  overscroll-behavior: contain;
+  font: 14px var(--mono);
 }
 
-/* The page behind it, dimmed and out of focus. */
-.add-dialog::backdrop {
-  background: var(--scrim);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+.bind-row > input:disabled {
+  color: var(--faint);
 }
 
-.add-dialog[open] {
-  animation: rise 0.24s cubic-bezier(0.2, 0.7, 0.2, 1);
-}
-
-.add-dialog[open]::backdrop {
-  animation: fade 0.24s ease-out;
-}
-
-@keyframes fade {
-  from { opacity: 0; }
-}
-
-.add-form {
+/*
+  The steps, one under another as Bootstrap's vertical stepper has them: a circle to each, with its number, or with
+  how it went once it has, and its name beside it with what it says under that. A line goes from each circle to the
+  next, lit from a step that is done.
+*/
+.stepper {
   display: grid;
-  gap: 18px;
-  padding: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.add-title {
-  color: var(--text);
-  font-size: 20px;
-  font-weight: 680;
-  letter-spacing: -0.02em;
-  text-transform: none;
-}
-
-.add-lead {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 14px;
-}
-
-/* The address a robot is pointed at, which the server gives and the page only shows. */
-.add-address {
+.step {
+  --tone: var(--faint);
+  position: relative;
   display: grid;
-  gap: 4px;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 14px;
+  padding-bottom: 22px;
+}
+
+.step:last-child {
+  padding-bottom: 0;
+}
+
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 38px;
+  bottom: 6px;
+  left: 15px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--line-strong);
+}
+
+.step[data-state="active"] { --tone: var(--accent); }
+.step[data-state="done"] { --tone: var(--good); }
+.step[data-state="failed"] { --tone: var(--bad); }
+
+.step[data-state="done"]::before {
+  background: color-mix(in srgb, var(--good) 55%, transparent);
+}
+
+.step-marker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
   background: var(--raised);
+  color: var(--muted);
+  font-size: 13.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
 }
 
-.add-label {
-  color: var(--muted);
-  font-size: 12.5px;
+.step:not([data-state="waiting"], [data-state="skipped"]) .step-marker {
+  border-color: color-mix(in srgb, var(--tone) 45%, transparent);
+  background: color-mix(in srgb, var(--tone) 15%, var(--surface));
+  color: var(--tone);
+}
+
+.step[data-state="skipped"] .step-marker {
+  border-style: dashed;
+  background: transparent;
+  color: var(--faint);
+}
+
+/* The step under way has an arc that goes round its circle. */
+.step[data-state="active"] .step-marker::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.step-text {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-height: 32px;
+  padding-top: 5px;
+}
+
+.step-title {
   font-weight: 600;
 }
 
-.add-value {
-  font-size: 17px;
+.step[data-state="waiting"] .step-title,
+.step[data-state="skipped"] .step-title {
+  color: var(--muted);
 }
 
-.add-note {
-  margin-top: 4px;
-  color: var(--faint);
-  font-size: 13px;
+.step-note {
+  color: var(--muted);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
 }
 
-.add-log {
-  max-height: 200px;
-  padding: 12px 14px;
+.step[data-state="failed"] .step-note {
+  color: var(--bad);
+}
+
+/* A heading that opens and shuts what is under it, which looks like a heading, an arrow before it. */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  transition: color 0.16s ease;
+}
+
+.disclosure:hover {
+  color: var(--text);
+}
+
+.disclosure .icon {
+  transition: transform 0.16s ease;
+}
+
+.disclosure[aria-expanded="true"] .icon {
+  transform: rotate(90deg);
+}
+
+/* Shut, the log is its heading alone. */
+.bind-log-panel.shut .panel-head {
+  margin-bottom: 0;
+}
+
+.bind-log {
+  max-height: 360px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* The dialog's two buttons, under a line at its foot. */
-.add-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-}
-
-/* As tall as the command beside it. */
-.add-actions .button {
-  padding: 7px 14px;
-  border-radius: 11px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
 /* ---- Toasts: how something went, at the foot of the screen over the page ---- */
 
-/* Fixed to the screen, also from inside the dialog, where it is while that is open. A press goes through it where it has no toast. */
+/* Fixed to the screen. A press goes through it where it has no toast. */
 .toasts {
   position: fixed;
   right: 24px;
@@ -1969,10 +2059,6 @@ td.cell-clock {
     padding: 20px;
   }
 
-  .add-form {
-    padding: 20px;
-  }
-
   /* The toasts take the width of the screen, less its margins. */
   .toasts {
     left: 16px;
@@ -2038,8 +2124,7 @@ td.cell-clock {
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after,
-  ::backdrop {
+  *::after {
     animation: none !important;
     transition: none !important;
   }

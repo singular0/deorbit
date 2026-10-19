@@ -180,12 +180,13 @@ The robot must already be on your Wi-Fi.
    allow USB only on `localhost` or HTTPS, and elsewhere the **Bind a robot**
    button is greyed out. If the server is on another machine, forward the port
    first: `ssh -L 8080:localhost:8080 user@that-machine`.
-2. Click **Bind a robot**. Check that the address it shows is your
-   `public_address`; if not, fix the setting and restart the server.
+2. Click **Bind a robot**. The page fills in your `public_address` as the
+   server address; check it, and correct it there if it's wrong.
 3. Plug the robot in with a USB cable, click **Configure robot**, and choose
    the robot when the browser asks.
-4. When it says the robot is set up, unplug it. The robot shows up in the list
-   once it next connects.
+4. When the steps are done, unplug the robot. It shows up in the list once it
+   next connects. If a step fails, the debug log under the steps opens and
+   says why.
 
 Binding changes three files on the robot: its hosts file and vendor settings,
 so it looks for its cloud at your server, and the certificate it trusts. No
@@ -199,8 +200,9 @@ If a bound robot doesn't show up, check the log:
 
 - `TLS handshake failed`: the robot refused the certificate, because it was
   bound to a different `certs/`. Bind it again.
-- Nothing from the robot at all: it can't reach the server. Check
-  `public_address`, the robot's Wi-Fi, and that port 3443 isn't blocked.
+- Nothing from the robot at all: it can't reach the server. Check the server
+  address it was bound with, the robot's Wi-Fi, and that port 3443 isn't
+  blocked.
 
 ### Day to day
 
