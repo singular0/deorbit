@@ -190,7 +190,8 @@ You need:
 
 ### Starting the server
 
-1. Put this repository on the machine.
+1. Put this repository on the machine, and `mtp-fs.js` in its `deorbit/static/`
+   folder (see [Binding a robot](#binding-a-robot)).
 2. Set the two things a container can't detect, in `deorbit.yml`:
 
    ```yaml
@@ -238,7 +239,8 @@ copy of the old files is kept.
 
 Binding needs `deorbit/static/mtp-fs.js`, which is not in this repository (see
 [Implementation details](#implementation-details)). Put it in that folder before
-building the image. Without it, everything but binding works.
+building the image: without it, the build stops and says why. Without Docker,
+everything but binding works without it.
 
 If a bound robot doesn't show up, check the log:
 
