@@ -355,10 +355,12 @@ function batteryPill(robot) {
 // over the page: who or what it is from and when, then what it says. One that
 // says something went well goes by itself, though not while a pointer rests on
 // it or the keyboard is in it; one that says something went wrong stays until
-// it is closed, so that it can be read. Each is of a key, and a new one takes
-// the place of the one of its key that is still there, as how the last command
-// went does of how the one before it went. A toast is no part of the page, so a
-// redraw leaves it be and leaving the page does not take it away.
+// it is closed, so that it can be read, and so does one with a button for what
+// there is to do, as the one that offers to reload a page that is out of date.
+// Each is of a key, and a new one takes the place of the one of its key that is
+// still there, as how the last command went does of how the one before it went.
+// A toast is no part of the page, so a redraw leaves it be and leaving the page
+// does not take it away.
 
 const onScreen = new Map(); // the toasts by key, the oldest first
 
@@ -376,13 +378,16 @@ function hush(key) {
 /**
  * Say `text` in a toast of the `tone` good or bad, as `outcome` gives the two,
  * in place of the toast of `key`. It is `from` a robot, which is called what
- * the page calls it, or from what a word names, such as the server.
+ * the page calls it, or from what a word names, such as the server. A toast of
+ * another tone, which stays until it is closed as a bad one does, says what
+ * there is to do: it has the icon `glyph`, and the button of its `action`, a
+ * label, an icon and what a press does.
  */
-function toast(key, { tone, text }, from) {
+function toast(key, { tone, text, glyph = null, action = null }, from) {
   hush(key);
   const node = h('div', { class: `toast ${tone}`, role: tone === 'bad' && 'alert' },
     h('div', { class: 'toast-head' },
-      icon(tone === 'good' ? 'check' : 'alert'),
+      icon(glyph ?? (tone === 'good' ? 'check' : 'alert')),
       typeof from === 'string' ? h('strong', null, from) : called('strong', from),
       when(new Date(Date.now() + clockOffset).toISOString()),
       h('button', {
@@ -392,7 +397,9 @@ function toast(key, { tone, text }, from) {
         title: 'Close',
         onclick: () => { if (onScreen.get(key) === node) hush(key); },
       }, icon('cross'))),
-    h('p', { class: 'toast-body' }, text));
+    h('p', { class: 'toast-body' }, text),
+    action && h('div', { class: 'toast-actions' },
+      h('button', { class: 'command', type: 'button', onclick: action[2] }, icon(action[1]), action[0])));
   if (tone === 'good') {
     let timer = 0;
     // Started again whenever the pointer or the keyboard leaves it, and not ended while either is on it.
@@ -672,6 +679,12 @@ function listPage(mine, robots) {
 
 let helpers = null; // the add-robot helper modules, once loaded
 let helpersError = null; // why they could not be loaded, if so
+let configuring = 0; // how many robots are being written to, which a run does whether its dialog is still open or not
+
+// Leaving the page, as a reload does, would cut a robot off in the middle of being written to, so the browser asks first.
+addEventListener('beforeunload', (event) => {
+  if (configuring > 0) event.preventDefault();
+});
 
 // Whether this browser has WebUSB. Chrome and Edge do, and only on a page from
 // https or localhost. Without it the button is disabled, so the dialog is never
@@ -794,6 +807,7 @@ async function runAdd(mine) {
   add.busy = true;
   add.done = false;
   add.log = [];
+  configuring += 1;
   drawAdd(mine);
 
   const log = (text) => {
@@ -838,6 +852,7 @@ async function runAdd(mine) {
     if (transport) {
       try { await transport.close(); } catch { /* best effort */ }
     }
+    configuring -= 1;
     add.busy = false;
     if (mine.adding === add) drawAdd(mine);
   }
@@ -3668,6 +3683,30 @@ function drawRobot(mine) {
 // What the toast that says the server cannot be reached said, while it cannot, or null while it can.
 let down = null;
 
+// The version of this page, which the server wrote into it. Each answer the page polls for gives the version that the
+// server has, which is another once the server has been started with other files: this page is then out of date.
+const VERSION = document.querySelector('meta[name="deorbit-version"]')?.content;
+// The other version the server was last found to have, or null while it has this one.
+let newer = null;
+
+/** Offer to reload the page while the server has a `version` of it other than this one. */
+function outdated(version) {
+  if (version === VERSION) {
+    newer = null;
+    hush('version');
+    return;
+  }
+  // Said once of each version, as the server being out of reach is, so that a toast that was closed stays closed.
+  if (version === newer) return;
+  newer = version;
+  toast('version', {
+    tone: 'accent',
+    text: 'The server has a new version of this page. Reload it to use that one.',
+    glyph: 'refresh',
+    action: ['Reload', 'refresh', () => location.reload()],
+  }, 'Server');
+}
+
 function show(mine, status, body) {
   const missing = status === 404 && mine.robot && body?.error;
   if (status !== 200 && !missing) {
@@ -3692,6 +3731,7 @@ function show(mine, status, body) {
       true));
   } else {
     clockOffset = Date.parse(body.now) - Date.now();
+    outdated(body.version);
     if (mine.robot) {
       mine.body = body;
       document.title = `${nameOf(body.robot)} · deorbit`;

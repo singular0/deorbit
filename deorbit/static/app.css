@@ -719,6 +719,13 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* What there is to do about it, under what it says, at its right. */
+.toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 12px;
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;

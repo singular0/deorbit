@@ -137,6 +137,40 @@ class PageTests(WebTestCase):
                 self.assertTrue(body)
 
 
+class VersionTests(WebTestCase):
+    async def test_page_and_what_it_polls_for_give_one_version(self) -> None:
+        await self.start()
+        self.server.store.save_state(self.ROBOT, STATE)
+        _, _, page = await self.fetch("/")
+        written = re.findall(r'<meta name="deorbit-version" content="([^"]*)">', page.decode())
+        self.assertEqual(len(written), 1)
+        self.assertRegex(written[0], r"^[0-9a-f]{16}$")
+        for target in ("/api/robots", "/api/robot?vendor=n&serial=board1"):
+            with self.subTest(target):
+                self.assertEqual((await self.api(target))["version"], written[0])
+        # The script reads it where the server wrote it.
+        _, _, script = await self.fetch("/app.js")
+        self.assertIn("""document.querySelector('meta[name="deorbit-version"]')""", script.decode())
+
+    async def test_other_files_are_another_version(self) -> None:
+        await self.start()
+        version = self.web._version
+        self.assertEqual(Web(self.server)._version, version)
+        with mock.patch.dict(web._PAGES, {"/app.css": web._PAGES["/map.js"]}):
+            self.assertNotEqual(Web(self.server)._version, version)
+
+    def test_version_is_of_every_byte_of_every_file(self) -> None:
+        pages = {"/": ("text/html", b"<p>a</p>"), "/app.js": ("text/javascript", b"b")}
+        version = web._version(pages)
+        for changed in (
+            {**pages, "/app.js": ("text/javascript", b"c")},
+            {"/": ("text/html", b"<p>a</p>b"), "/app.js": ("text/javascript", b"")},  # a byte moved to the file before
+            {**pages, "/map.js": ("text/javascript", b"")},
+        ):
+            with self.subTest(changed):
+                self.assertNotEqual(web._version(changed), version)
+
+
 class SetupTests(WebTestCase):
     async def test_setup_gives_the_address_and_the_ca(self) -> None:
         await self.start()
@@ -236,7 +270,7 @@ class RobotTests(WebTestCase):
         await self.start()
         answer = await self.api("/api/robots")
         self.assertJustNow(answer.pop("now"))
-        self.assertEqual(answer, {"robots": []})
+        self.assertEqual(answer, {"version": self.web._version, "robots": []})
 
     async def test_robots_in_the_database(self) -> None:
         await self.start()
@@ -776,8 +810,8 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "robot", "events", "more", "maps", "more_maps", "floorplans", "floorplan_maps", "tracks",
-                                       "map_names"})
+        self.assertEqual(set(answer), {"now", "version", "robot", "events", "more", "maps", "more_maps", "floorplans",
+                                       "floorplan_maps", "tracks", "map_names"})
         self.assertEqual((answer["events"], answer["more"], answer["tracks"], answer["map_names"]), ([], False, [], []))
 
     async def test_events_newest_first_as_stored(self) -> None:
@@ -804,7 +838,7 @@ class EventTests(WebTestCase):
         # The other robot has its own, and the list of robots carries none.
         other = await self.api("/api/robot?vendor=n&serial=board0")
         self.assertEqual([(event["id"], event["serial"]) for event in other["events"]], [(2, "board0")])
-        self.assertEqual(set(await self.api("/api/robots")), {"now", "robots"})
+        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "robots"})
 
     async def test_no_more_events_than_asked_for(self) -> None:
         with mock.patch.multiple(web, _EVENTS=3, _MAX_EVENTS=5):
@@ -918,7 +952,7 @@ class MapTests(WebTestCase):
         # The other robot has its own, and the list of robots carries none.
         other = await self.api("/api/robot?vendor=n&serial=board0")
         self.assertEqual([(row["id"], row["serial"]) for row in other["maps"]], [(2, "board0")])
-        self.assertEqual(set(await self.api("/api/robots")), {"now", "robots"})
+        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "robots"})
 
     async def test_no_more_maps_than_asked_for(self) -> None:
         with mock.patch.multiple(web, _MAPS=3, _MAX_MAPS=5):

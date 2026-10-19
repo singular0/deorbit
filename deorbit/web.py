@@ -1,6 +1,7 @@
 """Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot and its maps, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -39,6 +40,8 @@ _PAGES = {
     "/webusb-transport.js": ("webusb-transport.js", "text/javascript; charset=utf-8"),
     "/mtp-fs.js": ("mtp-fs.js", "text/javascript; charset=utf-8"),
 }
+# What index.html holds where the server writes the version of the page into it.
+_VERSION_MARK = b"{version}"
 _JSON = "application/json"
 _TEXT = "text/plain; charset=utf-8"
 
@@ -117,6 +120,16 @@ def _name(asked: dict[str, list[str]]) -> str | None:
     return name or None
 
 
+def _version(pages: dict[str, tuple[str, bytes]]) -> str:
+    """The version of the page that is made of ``pages``: a digest of every file, which any change to one of them changes."""
+    digest = hashlib.sha256()
+    for path, (_, body) in pages.items():
+        # Each file with its length before it, so that bytes moved from one file to the next are a change too.
+        digest.update(f"{path}\n{len(body)}\n".encode())
+        digest.update(body)
+    return digest.hexdigest()[:16]
+
+
 def _response(status: int, kind: str, body: bytes, *, extra: str = "", bodiless: bool = False) -> bytes:
     head = (
         f"HTTP/1.1 {status} {HTTPStatus(status).phrase}\r\n"
@@ -157,6 +170,11 @@ class Web:
         self._delete_robot = server.delete
         static = resources.files(__package__) / "static"
         self._pages = {path: (kind, (static / name).read_bytes()) for path, (name, kind) in _PAGES.items()}
+        # The files are read once, so a page that a server started with other files gave is out of date. The page
+        # is given the version it is of in index.html, and the answers it polls for give the one the server has.
+        self._version = _version(self._pages)
+        kind, page = self._pages["/"]
+        self._pages["/"] = kind, page.replace(_VERSION_MARK, self._version.encode())
         # What is sent on to a robot, and what changes the database. Reading a
         # schedule or a setting is the first of those, so that is no GET either.
         self._posts = {
@@ -253,7 +271,7 @@ class Web:
             return 200, _JSON, _json({"address": self._config.public_address, "ca": self._ca()})
         if path == "/api/robots":
             robots = [self._robot(row) for row in self._store.robots()]
-            return 200, _JSON, _json({"now": now(), "robots": robots})
+            return 200, _JSON, _json({"now": now(), "version": self._version, "robots": robots})
         if path == "/api/robot":
             asked = parse_qs(query)
             limits = {}
@@ -271,6 +289,7 @@ class Web:
             listed, older = maps[: limits["maps"]], len(maps) > limits["maps"]
             answer = {
                 "now": now(),
+                "version": self._version,
                 "robot": self._robot(row),
                 "events": events[: limits["events"]],
                 "more": len(events) > limits["events"],
