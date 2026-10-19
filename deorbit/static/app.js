@@ -2330,13 +2330,19 @@ function floorShown(runs, plans, whole = false) {
   ];
 }
 
-/** The days of an event, a chip to each, or one chip for all seven. */
+/**
+ * The days of an event, a chip to each in the order of a week, whatever order
+ * the robot gave them in, or one chip for all seven. A name that is no day
+ * comes after them, as the robot gave it.
+ */
 function daysOf(event) {
   const days = Array.isArray(event.days) ? event.days : [];
+  const known = DAYS.filter(([name]) => days.includes(name)).map(([, label]) => label);
+  const other = days.filter((day) => !DAY_LABELS.has(day)).map(String);
   return h('span', { class: 'days' },
     days.length === 0 ? none('No days')
-      : DAYS.every(([name]) => days.includes(name)) ? h('span', { class: 'day' }, 'Every day')
-      : days.map((day) => h('span', { class: 'day' }, DAY_LABELS.get(day) ?? String(day))));
+      : known.length === DAYS.length ? h('span', { class: 'day' }, 'Every day')
+      : [...known, ...other].map((label) => h('span', { class: 'day' }, label)));
 }
 
 /** An event as the server takes one: the fields the spec gives one, and of its command the runs alone. */
