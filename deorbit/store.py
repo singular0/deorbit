@@ -3,6 +3,7 @@
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -229,9 +230,20 @@ class Store:
                 db.close()
             raise StoreError(f"cannot open the database {path}: {exc}") from exc
         self._db = db
+        self._watchers: list[Callable[[RobotId], None]] = []
 
     def close(self) -> None:
         self._db.close()
+
+    def watch(self, watcher: Callable[[RobotId], None]) -> None:
+        """Have ``watcher`` called with a robot after each write of something of it, whether or not the write was done.
+
+        A write that failed is told of too: a robot logs in and out with a
+        write, so it says that the robot's session may have changed even when
+        the file did not. ``watcher`` is called inside the write's caller, so
+        it does no more than take note.
+        """
+        self._watchers.append(watcher)
 
     def save_state(self, robot: RobotId, state: dict) -> None:
         """Replace the robot's stored state with the body of the ``peer.state`` it just sent."""
@@ -335,6 +347,8 @@ class Store:
         except sqlite3.Error as exc:
             log.error("[%s] not deleted from the database: %s", robot, exc)
             return False
+        finally:
+            self._touched(robot)
         return True
 
     def robots(self) -> list[dict[str, object]]:
@@ -400,6 +414,16 @@ class Store:
         sql = "SELECT * FROM tracks WHERE vendor = ? AND serial = ? ORDER BY rank_uuid, type, rowid"
         return self._select(sql, (robot.vendor, robot.serial))
 
+    def last_event(self) -> int:
+        """The ``id`` of the event logged last, of any robot, or 0 when there is none."""
+        return self._select("SELECT coalesce(max(id), 0) AS id FROM events")[0]["id"]
+
+    def alerts(self, after: int) -> list[dict[str, object]]:
+        """The ``robots.error_codes`` and ``robots.notify`` messages of every robot logged after the event ``after``, oldest first."""
+        # Through the primary key, which is where these begin.
+        sql = "SELECT * FROM events WHERE id > ? AND service IN ('robots.error_codes', 'robots.notify') ORDER BY id"
+        return self._select(sql, (after,))
+
     @staticmethod
     def _dropped(robot: RobotId, rank_uuid: str) -> list[tuple[str, tuple[object, ...]]]:
         """What deletes the floor plan ``rank_uuid`` of the robot's, and its tracks with it."""
@@ -418,6 +442,8 @@ class Store:
         except (sqlite3.Error, UnicodeError) as exc:
             log.error("[%s] not saved to the database: %s", robot, exc)
             return False
+        finally:
+            self._touched(robot)
         return True
 
     def _select(self, sql: str, parameters: tuple[object, ...] = ()) -> list[dict[str, object]]:
@@ -449,4 +475,10 @@ class Store:
         except (sqlite3.Error, UnicodeError) as exc:
             log.error("[%s] not saved to the database: %s", robot, exc)
             return False
+        finally:
+            self._touched(robot)
         return True
+
+    def _touched(self, robot: RobotId) -> None:
+        for watcher in self._watchers:
+            watcher(robot)

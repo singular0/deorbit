@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .certs import DEFAULT_HOSTS, generate
 from .config import DEFAULT_PATH, Config, ConfigError, load, local_address
+from .mqtt import Mqtt
 from .server import Server
 from .store import StoreError
 from .web import Web, WebError
@@ -16,12 +17,17 @@ from .web import Web, WebError
 async def _serve(config: Config) -> None:
     server = Server(config)
     web = Web(server) if config.web else None
+    mqtt = Mqtt(server) if config.mqtt_host else None
     try:
         server.start()
         if web is not None:
             await web.start()
+        if mqtt is not None:
+            mqtt.start()  # it connects in the background, and keeps trying while the broker cannot be reached
         await server.serve_forever()
     finally:
+        if mqtt is not None:
+            await mqtt.stop()
         if web is not None:
             await web.stop()
         await server.stop()

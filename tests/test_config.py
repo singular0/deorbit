@@ -58,6 +58,12 @@ class LoadTests(ConfigTestCase):
             "web_host: 127.0.0.1\n"
             "web_port: 8000\n"
             "public_address: 192.168.1.50\n"
+            "mqtt_host: broker.lan\n"
+            "mqtt_port: 8883\n"
+            "mqtt_username: deorbit\n"
+            "mqtt_password: secret\n"
+            "mqtt_topic: home/robots\n"
+            "mqtt_discovery_prefix: ha\n"
             "timezone: Europe/London\n"
             "heartbeat_interval: 5\n"
             "idle_timeout: 12.5\n"
@@ -81,6 +87,12 @@ class LoadTests(ConfigTestCase):
                 web_host="127.0.0.1",
                 web_port=8000,
                 public_address="192.168.1.50",
+                mqtt_host="broker.lan",
+                mqtt_port=8883,
+                mqtt_username="deorbit",
+                mqtt_password="secret",
+                mqtt_topic="home/robots",
+                mqtt_discovery_prefix="ha",
                 timezone="Europe/London",
                 heartbeat_interval=5.0,
                 idle_timeout=12.5,
@@ -116,6 +128,12 @@ class LoadTests(ConfigTestCase):
             "heartbeat_interval: fast": "heartbeat_interval must be a number",
             "heartbeat_interval: true": "heartbeat_interval must be a number",
             "timezone: Mars/Olympus": "timezone must be an IANA time zone name",
+            "mqtt_password: 1234": "mqtt_password must be a string",
+            "mqtt_topic: deorbit/+": "mqtt_topic must be MQTT topic levels without wildcards, not 'deorbit/+'",
+            "mqtt_topic: '#'": "mqtt_topic must be MQTT topic levels without wildcards",
+            "mqtt_topic: ''": "mqtt_topic must be MQTT topic levels without wildcards, not ''",
+            "mqtt_topic: home//robots": "mqtt_topic must be MQTT topic levels without wildcards",
+            "mqtt_discovery_prefix: /homeassistant": "mqtt_discovery_prefix must be MQTT topic levels without wildcards",
             "- port": "expected a mapping",
             "port: [3443": "not valid YAML",
         }

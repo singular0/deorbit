@@ -60,7 +60,8 @@ reports is stored in a database on your machine.
 | Find the robot by sound | ✅ | |
 | Firmware updates | ❌ | Firmware updates will not be supported. |
 | MyNeato app | ❌ | The web page replaces the app. |
-| Home Assistant and other integrations | ❌ | |
+| Home Assistant | ✅ | Over MQTT: see [Home Assistant](#home-assistant). |
+| Other smart-home integrations | ❌ | |
 | Login and HTTPS for the web page | ❌ | Anyone who can reach the page controls the robots: see [Web page security](#web-page-security). |
 | Older robots (Botvac Connected, D3 to D7) | ❌ | |
 
@@ -79,6 +80,12 @@ with a message that names it. Relative paths start at the folder that holds
 | `web` | `true` | Serve the web page. |
 | `web_host` | `0.0.0.0` | IPv4 address the web page listens on. |
 | `web_port` | `8080` | Port of the web page. |
+| `mqtt_host` | empty | Address of the MQTT broker Home Assistant uses: see [Home Assistant](#home-assistant). Empty turns Home Assistant off. |
+| `mqtt_port` | `1883` | Port of the MQTT broker. |
+| `mqtt_username` | empty | User name for the broker. Empty connects without logging in. |
+| `mqtt_password` | empty | Password for the broker. |
+| `mqtt_topic` | `deorbit` | What the robots' MQTT topics start with. |
+| `mqtt_discovery_prefix` | `homeassistant` | Where Home Assistant looks for new devices. Change it only if you changed it in Home Assistant. |
 | `host` | `0.0.0.0` | IPv4 address robots connect to. |
 | `port` | `3443` | Port robots connect to. Robots always use 3443. |
 | `cert` | `certs/server.crt` | The server's TLS certificate chain (PEM). |
@@ -135,6 +142,39 @@ that key get in. The keys are read at startup. Logins must then also be within
 
 Deleting a robot on the web page deletes its key file, so the robot is refused
 from then on.
+
+### Home Assistant
+
+The server can put your robots in Home Assistant through an MQTT broker, such
+as Home Assistant's Mosquitto broker app. Set up Home Assistant's MQTT
+integration first, then give the server the same broker:
+
+```yaml
+mqtt_host: 192.168.1.10    # the broker's address; in a container, not localhost
+mqtt_username: deorbit
+mqtt_password: a-password
+```
+
+Each robot then shows up in Home Assistant as a device, named as on the web
+page, with:
+
+- **a vacuum**: start, pause, stop, return to base, and locate, which makes the
+  robot play a sound. The fan speed is the cleaning mode a start uses (eco,
+  turbo, auto or max). It goes back to eco when the server restarts.
+- **sensors**: battery, charging, docked, errors and connected.
+- **two event entities** for automations: Alert, for the robot's warnings and
+  errors, and Notification, for its messages, such as low battery or a
+  scheduled cleaning starting.
+
+The zones of your floor plans are the vacuum's rooms. Match them to your Home
+Assistant areas in the vacuum's settings, then clean an area with the **Clean
+area** action. Each zone is cleaned in the mode you gave it on the web page. The
+robot has to be on its base, and the zones you clean in one go must all be on
+one floor plan.
+
+While a robot is offline, its entities are unavailable, except Connected. While
+the server is offline, all of them are. Anyone who can publish to the broker
+can command your robots, so give the broker logins.
 
 ## Running the server in a container
 

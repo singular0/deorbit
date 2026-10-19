@@ -385,6 +385,45 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([json.loads(event["body_json"])["n"] for event in store.events(ROBOT, 10)], [3, 1])
         self.assertEqual(store.events(RobotId("3", "board1"), 10), [])
 
+    def test_alerts_and_notifications_after_an_event(self) -> None:
+        store = self.open()
+        self.assertEqual((store.last_event(), store.alerts(0)), (0, []))
+        store.add_event(ROBOT, "login")
+        store.add_event(ROBOT, "request", "robots.notify", {"message_code": "fuel_less_than_10", "payload": None})
+        store.add_event(OTHER, "event", "robots.error_codes", {"code": "dustbin_missing", "severity": "warning"})
+        store.add_event(ROBOT, "request", "maps.create", {"rank_uuid": "x"})
+        store.add_event(ROBOT, "event", "robots.error_codes", {"code": "pm_load_fail", "severity": "error"})
+        self.assertEqual(store.last_event(), 5)
+        # Of every robot, oldest first, as stored.
+        self.assertEqual(store.alerts(0), [row for row in self.logged() if row["id"] in (2, 3, 5)])
+        self.assertEqual([row["id"] for row in store.alerts(2)], [3, 5])
+        self.assertEqual(store.alerts(5), [])
+
+    def test_watchers_are_told_of_every_write(self) -> None:
+        store = self.open()
+        told = []
+        store.watch(told.append)
+        store.save_state(ROBOT, STATE)
+        store.save_heartbeat(OTHER)
+        store.add_event(ROBOT, "login")
+        store.save_map(OTHER, MAP)
+        store.save_name(ROBOT, "Hall")
+        store.save_map_name(OTHER, 1, "Upstairs")
+        store.save_floorplan(OTHER, MAP["rank_uuid"], 1)
+        store.save_track(OTHER, MAP["rank_uuid"], "t1", "cleaning", "Kitchen", "eco", [0, 0, 1, 1])
+        store.delete_tracks(OTHER, ["t1"])
+        store.delete_floorplan(OTHER, MAP["rank_uuid"])
+        store.delete(ROBOT)
+        self.assertEqual(told, [ROBOT, OTHER, ROBOT, OTHER, ROBOT, OTHER, OTHER, OTHER, OTHER, OTHER, ROBOT])
+        # A write that failed is told of too, as a login or a disconnect says what it is without being in the file.
+        told.clear()
+        with self.assertLogs("deorbit", "ERROR"):
+            store.add_event(ROBOT, "disconnect", body={"reason": float("inf")})
+        self.assertEqual(told, [ROBOT])
+        # And a read is no write.
+        store.robots(), store.events(ROBOT, 5), store.alerts(0)
+        self.assertEqual(told, [ROBOT])
+
     def test_event_that_cannot_be_stored(self) -> None:
         store = self.open()
         store.add_event(ROBOT, "login")

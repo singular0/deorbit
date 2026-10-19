@@ -64,6 +64,14 @@ class Config:
     # `main` looks for one at startup (`local_address`), and where it finds none
     # "Bind a robot" has nothing to write.
     public_address: str = ""
+    # Home Assistant, through the MQTT broker it uses: empty for none. The robots
+    # are announced to it by MQTT discovery, and it sends commands back.
+    mqtt_host: str = ""
+    mqtt_port: int = 1883
+    mqtt_username: str = ""  # empty: connect without logging in
+    mqtt_password: str = ""
+    mqtt_topic: str = "deorbit"  # what the topics of the robots start with
+    mqtt_discovery_prefix: str = "homeassistant"  # where Home Assistant looks for devices
     timezone: str = field(default_factory=local_timezone)  # IANA name sent to robots at login
     heartbeat_interval: float = 30.0
     idle_timeout: float = 150.0  # robots send a heartbeat every 60 seconds
@@ -119,6 +127,11 @@ def load(path: Path) -> Config:
     config = Config(**settings)
     if config.timezone not in zoneinfo.available_timezones():
         raise ConfigError(f"{path}: timezone must be an IANA time zone name, not {config.timezone!r}")
+    for name in ("mqtt_topic", "mqtt_discovery_prefix"):
+        # Each is the start of a topic that is subscribed to, where these would be wildcards or empty levels.
+        topic = getattr(config, name)
+        if not topic or "+" in topic or "#" in topic or "" in topic.split("/"):
+            raise ConfigError(f"{path}: {name} must be MQTT topic levels without wildcards, not {topic!r}")
     for name, kind in kinds.items():
         if kind is Path and getattr(config, name) is not None:
             setattr(config, name, path.parent / getattr(config, name))

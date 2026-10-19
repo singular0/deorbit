@@ -1,4 +1,4 @@
-"""What the web UI can send a robot: its commands and the changes to its schedule, its floor plans, their zones and no-go lines and its settings, each an ability invoked through ``Session.call``."""
+"""What the web UI and Home Assistant can send a robot: its commands and the changes to its schedule, its floor plans, their zones and no-go lines and its settings, each an ability invoked through ``Session.call``."""
 
 import base64
 import json
@@ -89,6 +89,27 @@ def _run(given: object, where: str) -> dict:
     return run
 
 
+def _runs(given: object, where: str) -> list[dict]:
+    """The ``runs`` of a ``cleaning.start``, made of those ``given``: one or more, and more than one only of one floor plan."""
+    if not isinstance(given, list) or not given:
+        raise ValueError(f"{where} must be a list of one or more runs")
+    runs = [_run(run, f"{where}[{n}]") for n, run in enumerate(given)]
+    # More runs than one are the zones of one floor plan (section 6.1).
+    maps = [run["map"] for run in runs]
+    if len(runs) > 1 and (None in maps or len({place["rank_id"] for place in maps}) > 1):
+        raise ValueError(f"{where}, when more than one, must each have a map of the same rank_id")
+    return runs
+
+
+def cleaning(runs: list) -> tuple[str, dict]:
+    """``cleaning.start`` of the ``runs`` given, each checked and built anew, or a ``ValueError`` that says what is wrong.
+
+    Home Assistant cleans several zones in one start, which the spec allows
+    for the zones of one floor plan; the web UI's ``command`` sends one run.
+    """
+    return "cleaning.start", {"runs": _runs(runs, "runs")}
+
+
 def command(name: str, run: str) -> tuple[str, dict]:
     """The ability for the command ``name`` and what is sent with it, or a ``ValueError`` that says what is wrong.
 
@@ -135,13 +156,7 @@ def _event(given: object, *, known: bool) -> dict:
     ability, runs = _fields(command, "event.command", "ability", "runs")
     if ability != "cleaning.start":
         raise ValueError("event.command.ability must be cleaning.start")
-    if not isinstance(runs, list) or not runs:
-        raise ValueError("event.command.runs must be a list of one or more runs")
-    runs = [_run(run, f"event.command.runs[{n}]") for n, run in enumerate(runs)]
-    # More runs than one are the zones of one floor plan (section 6.1).
-    maps = [run["map"] for run in runs]
-    if len(runs) > 1 and (None in maps or len({place["rank_id"] for place in maps}) > 1):
-        raise ValueError("event.command.runs, when more than one, must each have a map of the same rank_id")
+    runs = _runs(runs, "event.command.runs")
     return {
         **event,
         "enabled": enabled,

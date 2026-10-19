@@ -39,6 +39,17 @@ web_port: 8080
 # reach, as in a container.
 public_address:
 
+# Home Assistant, through the MQTT broker it uses. Each robot is announced to it
+# by MQTT discovery, as a vacuum with its sensors, and Home Assistant sends the
+# robot commands back. Left empty, there is no MQTT. Anyone who can publish to
+# the broker can command the robots.
+mqtt_host:
+mqtt_port: 1883
+mqtt_username:            # empty: connect without logging in
+mqtt_password:
+mqtt_topic: deorbit       # what the robots' topics start with
+mqtt_discovery_prefix: homeassistant   # where Home Assistant looks for devices
+
 # IANA time zone sent to robots at login, for example Europe/London.
 # Left empty, this machine's zone is used.
 timezone:
