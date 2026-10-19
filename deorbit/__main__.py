@@ -16,8 +16,8 @@ from .web import Web, WebError
 
 async def _serve(config: Config) -> None:
     server = Server(config)
-    web = Web(server) if config.web else None
     mqtt = Mqtt(server) if config.mqtt_host else None
+    web = Web(server, mqtt) if config.web else None  # which shows whether Home Assistant's broker is connected
     try:
         server.start()
         if web is not None:

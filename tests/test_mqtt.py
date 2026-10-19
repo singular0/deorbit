@@ -401,6 +401,33 @@ class AnnounceTests(MqttTestCase):
         # Tried again and again, and said once.
         (line,) = logs.output
         self.assertRegex(line, rf"no connection to the MQTT broker at 127\.0\.0\.1:{port}: .+; trying again every 0\.05 s$")
+        # And the web UI is told why.
+        status = self.mqtt.status()
+        self.assertFalse(status["connected"])
+        self.assertIn(f": {status['error']}; trying again", line)
+
+    async def test_status_follows_the_connection(self) -> None:
+        with mock.patch.object(Mqtt, "start"):
+            await self.start()
+        # Not connected before the first try, and with nothing to say why.
+        self.assertEqual(self.mqtt.status(), {"connected": False, "error": None})
+        with mock.patch.object(mqtt, "_RETRY", 0.3):
+            Mqtt.start(self.mqtt)
+            await self.until(lambda: self.mqtt.status()["connected"], "the broker to be connected")
+            self.assertEqual(self.mqtt.status(), {"connected": True, "error": None})
+            with self.assertLogs("deorbit.mqtt", "INFO") as logs:
+                self.broker.drop()
+                lost = await self.until(lambda: not self.mqtt.status()["connected"] and self.mqtt.status(), "the loss")
+                await self.until(lambda: self.mqtt.status()["connected"], "the broker to be connected again")
+        self.assertIn(f": {lost['error']}; trying again", logs.output[0])
+        self.assertEqual(self.mqtt.status(), {"connected": True, "error": None})
+
+    async def test_status_after_what_was_not_foreseen(self) -> None:
+        with mock.patch.object(mqtt, "_RETRY", 0.3), mock.patch.object(Mqtt, "_announce", side_effect=RuntimeError("bug")):
+            with self.assertLogs("deorbit.mqtt", "ERROR"):
+                await self.start()
+                await self.until(lambda: self.mqtt.status()["error"], "the failure")
+        self.assertEqual(self.mqtt.status(), {"connected": False, "error": "an unexpected error, which is in the server's log"})
 
     async def test_login(self) -> None:
         await self.start(Broker(password=b"secret"), mqtt_username="deorbit", mqtt_password="secret")
@@ -742,6 +769,39 @@ class ServeTests(ServerTestCase):
             with contextlib.suppress(asyncio.CancelledError):
                 await serving
         self.assertEqual(broker.retained["deorbit/status"], b"offline")
+
+    async def test_web_ui_says_whether_the_broker_is_connected(self) -> None:
+        broker = Broker()
+        await broker.start()
+        self.addAsyncCleanup(broker.stop)
+        config = Config(
+            cert=self.dir / "certs" / "server.crt",
+            key=self.dir / "certs" / "server.key",
+            host="127.0.0.1",
+            port=0,
+            web_host="127.0.0.1",
+            web_port=0,
+            database=self.dir / "db" / f"{self.id()}.db",
+            mqtt_host="127.0.0.1",
+            mqtt_port=broker.port,
+        )
+        with self.assertLogs("deorbit", "INFO") as logs:
+            serving = asyncio.create_task(cli._serve(config))
+            try:
+                async with asyncio.timeout(5):
+                    while not any("connected to the MQTT broker" in line for line in logs.output):
+                        await asyncio.sleep(0.01)
+                port = int(re.search(r"web UI on http://127\.0\.0\.1:(\d+)", "\n".join(logs.output))[1])
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(b"GET /api/robots HTTP/1.1\r\n\r\n")
+                async with asyncio.timeout(5):
+                    answer = await reader.read()
+                writer.close()
+            finally:
+                serving.cancel()
+                await asyncio.gather(serving, return_exceptions=True)
+        told = json.loads(answer.partition(b"\r\n\r\n")[2])
+        self.assertEqual(told["home_assistant"], {"connected": True, "error": None})
 
     async def test_no_mqtt_without_a_host(self) -> None:
         config = Config(

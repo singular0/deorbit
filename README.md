@@ -155,6 +155,10 @@ mqtt_username: deorbit
 mqtt_password: a-password
 ```
 
+The **Home Assistant** indicator at the top right of the web page then turns
+green once the server is connected to the broker, and red if it cannot connect;
+point at it to see why.
+
 Each robot then shows up in Home Assistant as a device, named as on the web
 page, with:
 

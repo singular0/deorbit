@@ -152,7 +152,7 @@ a {
   white-space: nowrap;
 }
 
-/* What is at the right of the bar: whether the server answers, then the switch of the colour scheme. */
+/* What is at the right of the bar: whether the server answers, whether it is connected to Home Assistant, then the switch of the colour scheme. */
 .bar-end {
   display: flex;
   flex: none;
@@ -209,6 +209,16 @@ a {
 
 .live[data-state="down"] .dot {
   color: var(--bad);
+}
+
+/* Home Assistant's indicator is the server's, in the look of its own. Its dot is still while it is lit: the one that
+   beats says that the page hears from the server. */
+.home-assistant[data-state="ok"] .dot {
+  animation: none;
+}
+
+.home-assistant .short {
+  display: none;
 }
 
 @keyframes pulse {
@@ -2144,7 +2154,18 @@ td.cell-clock {
   }
 }
 
-/* A phone's width, where the indicator and the switch of the colour scheme take the room they can spare. */
+/* Too narrow for Home Assistant's name in full beside the rest of the bar. */
+@media (max-width: 480px) {
+  .home-assistant .long {
+    display: none;
+  }
+
+  .home-assistant .short {
+    display: inline;
+  }
+}
+
+/* A phone's width, where the indicators and the switch of the colour scheme take the room they can spare. */
 @media (max-width: 400px) {
   .bar-inner {
     gap: 12px;

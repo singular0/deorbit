@@ -227,6 +227,13 @@
           <span class="dot"></span>
           <span id="live-text">Connecting</span>
         </div>
+        <!-- Whether the server is connected to Home Assistant's MQTT broker: shown once the server says it has one.
+             How the connection is, is in its title, which the script sets. -->
+        <div id="home-assistant" class="live home-assistant" role="status" data-state="loading" hidden>
+          <span class="dot"></span>
+          <span class="long">Home Assistant</span>
+          <span class="short">HA</span>
+        </div>
         <!-- The colour scheme of the page, which theme.js sets and keeps. -->
         <div id="theme" class="segments theme" role="radiogroup" aria-label="Colour scheme">
           <label class="segment" title="Light">

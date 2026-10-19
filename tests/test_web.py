@@ -21,6 +21,7 @@ from deorbit.commands import (
     COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, ZONE_NAME_MAX, ZONES_MAX,
 )
 from deorbit.config import Config
+from deorbit.mqtt import Mqtt
 from deorbit.server import Server
 from deorbit.web import Web, WebError
 from tests.test_server import Robot, ServerTestCase, signed_login
@@ -35,9 +36,9 @@ FLOOR = {"rank_id": "fb7f8145-0615-4a32-8f0d-8d833cd51a5e", "track_id": None, "n
 
 
 class WebTestCase(ServerTestCase):
-    async def start(self, **overrides: object) -> Web:
+    async def start(self, *, mqtt: object = None, **overrides: object) -> Web:
         server = await super().start(web_host="127.0.0.1", web_port=0, **overrides)
-        self.web = Web(server)
+        self.web = Web(server, mqtt)
         await self.web.start()
         self.addAsyncCleanup(self.web.stop)
         return self.web
@@ -174,6 +175,37 @@ class VersionTests(WebTestCase):
                 self.assertNotEqual(web._version(changed), version)
 
 
+class HomeAssistantTests(WebTestCase):
+    """Whether the server is connected to Home Assistant's broker, which each answer the page polls for gives."""
+
+    TARGETS = ("/api/robots", "/api/robot?vendor=n&serial=board1")
+
+    async def test_server_without_a_broker(self) -> None:
+        await self.start()
+        self.server.store.save_state(self.ROBOT, STATE)
+        for target in self.TARGETS:
+            with self.subTest(target):
+                self.assertIsNone((await self.api(target))["home_assistant"])
+
+    async def test_server_with_a_broker(self) -> None:
+        mqtt = mock.Mock(spec=Mqtt)
+        await self.start(mqtt=mqtt)
+        self.server.store.save_state(self.ROBOT, STATE)
+        for status in ({"connected": True, "error": None}, {"connected": False, "error": "Connection refused"}):
+            mqtt.status.return_value = status
+            for target in self.TARGETS:
+                with self.subTest(target, status=status):
+                    self.assertEqual((await self.api(target))["home_assistant"], status)
+
+    async def test_page_shows_it(self) -> None:
+        await self.start()
+        _, _, page = await self.fetch("/")
+        self.assertIn('id="home-assistant"', page.decode())
+        _, _, script = await self.fetch("/app.js")
+        self.assertIn("document.getElementById('home-assistant')", script.decode())
+        self.assertIn("setHomeAssistant(body.home_assistant)", script.decode())
+
+
 class SetupTests(WebTestCase):
     async def test_setup_gives_the_address_and_the_ca(self) -> None:
         await self.start()
@@ -273,7 +305,7 @@ class RobotTests(WebTestCase):
         await self.start()
         answer = await self.api("/api/robots")
         self.assertJustNow(answer.pop("now"))
-        self.assertEqual(answer, {"version": self.web._version, "robots": []})
+        self.assertEqual(answer, {"version": self.web._version, "home_assistant": None, "robots": []})
 
     async def test_robots_in_the_database(self) -> None:
         await self.start()
@@ -813,8 +845,8 @@ class EventTests(WebTestCase):
         await self.start()
         self.log(2, self.OTHER)
         answer = await self.api(self.BOARD1)
-        self.assertEqual(set(answer), {"now", "version", "robot", "events", "more", "maps", "more_maps", "floorplans",
-                                       "floorplan_maps", "tracks", "map_names"})
+        self.assertEqual(set(answer), {"now", "version", "home_assistant", "robot", "events", "more", "maps", "more_maps",
+                                       "floorplans", "floorplan_maps", "tracks", "map_names"})
         self.assertEqual((answer["events"], answer["more"], answer["tracks"], answer["map_names"]), ([], False, [], []))
 
     async def test_events_newest_first_as_stored(self) -> None:
@@ -841,7 +873,7 @@ class EventTests(WebTestCase):
         # The other robot has its own, and the list of robots carries none.
         other = await self.api("/api/robot?vendor=n&serial=board0")
         self.assertEqual([(event["id"], event["serial"]) for event in other["events"]], [(2, "board0")])
-        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "robots"})
+        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "home_assistant", "robots"})
 
     async def test_no_more_events_than_asked_for(self) -> None:
         with mock.patch.multiple(web, _EVENTS=3, _MAX_EVENTS=5):
@@ -955,7 +987,7 @@ class MapTests(WebTestCase):
         # The other robot has its own, and the list of robots carries none.
         other = await self.api("/api/robot?vendor=n&serial=board0")
         self.assertEqual([(row["id"], row["serial"]) for row in other["maps"]], [(2, "board0")])
-        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "robots"})
+        self.assertEqual(set(await self.api("/api/robots")), {"now", "version", "home_assistant", "robots"})
 
     async def test_no_more_maps_than_asked_for(self) -> None:
         with mock.patch.multiple(web, _MAPS=3, _MAX_MAPS=5):

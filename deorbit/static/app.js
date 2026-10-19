@@ -36,6 +36,7 @@ const app = document.getElementById('app');
 const toasts = document.getElementById('toasts'); // where what is said of how something went is put
 const live = document.getElementById('live');
 const liveText = document.getElementById('live-text');
+const homeAssistant = document.getElementById('home-assistant');
 
 // The server's clock minus this browser's, so that "5 s ago" is right even
 // when the two disagree.
@@ -3785,6 +3786,26 @@ function setLive(state, text) {
   liveText.textContent = text;
 }
 
+/**
+ * Show how the server's connection to Home Assistant's MQTT broker is, as an answer gives it: `null` from a server
+ * that has no broker, which hides the indicator, and nothing while the server cannot be reached, which makes it not known.
+ */
+function setHomeAssistant(told) {
+  if (told === null) {
+    homeAssistant.hidden = true;
+    return;
+  }
+  const [state, text] = told === undefined ? ['loading', 'not known while the server cannot be reached']
+    : told.connected ? ['ok', 'connected to the MQTT broker']
+    : told.error ? ['down', `no connection to the MQTT broker: ${told.error}`]
+    : ['loading', 'connecting to the MQTT broker'];
+  // One that is hidden stays hidden until the server says it has a broker.
+  if (told !== undefined) homeAssistant.hidden = false;
+  homeAssistant.dataset.state = state;
+  homeAssistant.title = `Home Assistant: ${text}`;
+  homeAssistant.setAttribute('aria-label', homeAssistant.title);
+}
+
 /** Whether the reader has text on the page selected, which redrawing would undo. */
 function selecting() {
   const selection = getSelection();
@@ -3875,6 +3896,7 @@ function show(mine, status, body) {
   if (status !== 200 && !missing) {
     // No answer at all, or one that says what went wrong. What is on screen stays.
     setLive('down', body?.error ? 'Server error' : 'Reconnecting');
+    setHomeAssistant();
     const text = body?.error
       ? `The server could not answer: ${body.error}`
       : 'Cannot reach the server. Trying again every few seconds.';
@@ -3895,6 +3917,7 @@ function show(mine, status, body) {
   } else {
     clockOffset = Date.parse(body.now) - Date.now();
     outdated(body.version);
+    setHomeAssistant(body.home_assistant);
     if (mine.robot) {
       mine.body = body;
       document.title = `${nameOf(body.robot)} · deorbit`;

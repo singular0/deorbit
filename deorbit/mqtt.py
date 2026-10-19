@@ -179,8 +179,13 @@ class Mqtt:
         self._firmware: dict[RobotId, str] = {}  # each robot's, as its last connection gave it
         self._seen = 0  # the last event of the log that was looked at for alerts and notifications
         self._calls: set[asyncio.Task] = set()
+        self._live = False  # whether this server is connected to the broker, which the web UI shows
         self._failure: str | None = None  # why the broker could not be reached last, which is logged once
         self._store.watch(self._changed)
+
+    def status(self) -> dict[str, object]:
+        """Whether this server is connected to the broker, as the web UI shows it, and while it is not, why the last try failed: ``None`` before one has."""
+        return {"connected": self._live, "error": self._failure}
 
     def start(self) -> None:
         # What happened before is no news.
@@ -229,8 +234,10 @@ class Mqtt:
             except Exception:
                 # Home Assistant is not worth the robots' server: it is tried again, as after a lost connection.
                 log.exception("Home Assistant: the connection to the MQTT broker failed")
+                self._failure = "an unexpected error, which is in the server's log"
             finally:
                 self._client = None
+                self._live = False
             await asyncio.sleep(_RETRY)
 
     async def _connected(self, client: aiomqtt.Client) -> None:
@@ -238,7 +245,7 @@ class Mqtt:
         await client.subscribe([*commands, (self._birth, 0)])
         await client.publish(self._status, b"online", qos=_QOS, retain=True)
         log.info("Home Assistant: connected to the MQTT broker at %s:%d", self._config.mqtt_host, self._config.mqtt_port)
-        self._failure = None
+        self._live, self._failure = True, None
         try:
             # What happened while there was no connection is no news either.
             self._seen = self._store.last_event()

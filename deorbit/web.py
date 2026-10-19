@@ -21,6 +21,7 @@ from .session import describe
 from .store import StoreError, now
 
 if TYPE_CHECKING:
+    from .mqtt import Mqtt
     from .server import Server
 
 log = logging.getLogger(__name__)
@@ -164,11 +165,12 @@ def _own_page(head: bytes) -> bool:
 
 
 class Web:
-    def __init__(self, server: "Server") -> None:
+    def __init__(self, server: "Server", mqtt: "Mqtt | None" = None) -> None:
         self._config = server.config
         self._store = server.store
         self._sessions = server.sessions
         self._delete_robot = server.delete
+        self._mqtt = mqtt  # Home Assistant, where the server is set to put the robots there
         static = resources.files(__package__) / "static"
         self._pages = {path: (kind, (static / name).read_bytes()) for path, (name, kind) in _PAGES.items()}
         # The files are read once, so a page that a server started with other files gave is out of date. The page
@@ -272,7 +274,8 @@ class Web:
             return 200, _JSON, _json({"address": self._config.public_address, "ca": self._ca()})
         if path == "/api/robots":
             robots = [self._robot(row) for row in self._store.robots()]
-            return 200, _JSON, _json({"now": now(), "version": self._version, "robots": robots})
+            answer = {"now": now(), "version": self._version, "home_assistant": self._home_assistant(), "robots": robots}
+            return 200, _JSON, _json(answer)
         if path == "/api/robot":
             asked = parse_qs(query)
             limits = {}
@@ -291,6 +294,7 @@ class Web:
             answer = {
                 "now": now(),
                 "version": self._version,
+                "home_assistant": self._home_assistant(),
                 "robot": self._robot(row),
                 "events": events[: limits["events"]],
                 "more": len(events) > limits["events"],
@@ -504,6 +508,10 @@ class Web:
             return self._config.cert.with_name("ca.crt").read_text()
         except OSError:
             return None
+
+    def _home_assistant(self) -> dict[str, object] | None:
+        """Whether the server is connected to Home Assistant's MQTT broker, which the page shows at the top, or ``None`` where it is set to have no broker."""
+        return None if self._mqtt is None else self._mqtt.status()
 
     def _robot(self, row: dict[str, object]) -> dict[str, object]:
         """A robot from the store as the API gives it: with its live session, or ``None`` when it has none."""
