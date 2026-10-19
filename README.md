@@ -75,7 +75,7 @@ it reports is kept in a database file on your machine.
 | Let in only the robots whose key you have | ✅ | Off by default: see [Checking robots' keys](#checking-robots-keys). |
 | List of robots: connected or not, what each is doing, its charge | ✅ | The page refreshes itself every few seconds. |
 | A robot's status: battery, base, errors, how its last run went | ✅ | |
-| Start a cleaning | ✅ | Start cleans the whole house in eco mode with normal navigation. The arrow beside it opens a menu to choose the mode, the navigation, and a floor plan the page lists or a zone of one. |
+| Start a cleaning | ✅ | Start cleans the whole house in eco mode with normal navigation. The arrow beside it opens a menu to choose the mode, the navigation, and, while the robot is docked, a floor plan the page lists or a zone of one. |
 | Pause, resume, return to base | ✅ | |
 | Cancel a cleaning | ✅ | |
 | See the robot's cleaning schedule | ✅ | Read from the robot, so only while it is connected. |

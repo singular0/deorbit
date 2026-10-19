@@ -3230,24 +3230,32 @@ function startToggle(mine, why) {
  * of the button itself cleans on no floor plan, in the first mode and
  * navigation mode. `why` is why the robot would not take a start now, and
  * `hold` why a press would do nothing for now, as for the other commands.
+ * `away` is why the floor plan cannot be chosen, which is while the robot is
+ * not on its base, when the run is on none: `show` sees to that. On no floor
+ * plan there is no No-go lines, and the run minds none.
  */
-function startMenu(mine, plans, why, hold) {
+function startMenu(mine, plans, why, hold, away) {
   const start = mine.start;
   // A group of buttons is no one control that a label could hold, so its field is a block it names.
   const field = (label, control) => h(control.matches('input, select') ? 'label' : 'div', { class: 'start-field' },
     h('span', null, label), control);
   const choice = (name, label, values) => oneOf(label, `start-${name}`, values, start[name], (value) => { start[name] = value; });
   const nogoField = yesNo('No-go lines', 'start-nogo', start.nogo, (on) => { start.nogo = on; });
-  // On no floor plan, a run has no no-go lines to mind.
-  nogoField.disabled = start.floor === '';
+  const nogoLine = field('No-go lines', nogoField);
+  nogoLine.hidden = start.floor === '';
   const placeChoice = placeField('start-floor', plans.map(placeOf), start.floor, start.zone, (floor, zone) => {
-    // Another floor plan minds its no-go lines where the server had the robot keep some, and another zone of the same one leaves them as they are.
+    // Another floor plan minds its no-go lines where the server had the robot keep some, and another zone of the same one
+    // leaves them as they are. None is no floor plan of `plans`, so it minds none.
     if (floor !== start.floor) start.nogo = Boolean(plans.find((plan) => plan.rank_uuid === floor)?.nogo);
     start.floor = floor;
     start.zone = zone;
-    nogoField.disabled = floor === '';
+    nogoLine.hidden = floor === '';
     nogoField.checked = start.nogo;
   });
+  if (away !== null) {
+    placeChoice.disabled = true;
+    placeChoice.title = `Floor plan: ${away}`;
+  }
   // Held back, not disabled, as the other commands are.
   const held = why === null && hold !== null;
   const button = h('button', {
@@ -3278,7 +3286,7 @@ function startMenu(mine, plans, why, hold) {
   field('Mode', choice('mode', 'Mode', MODES)),
   field('Navigation', choice('navigation', 'Navigation', NAVIGATION_MODES)),
   field('Floor plan', placeChoice),
-  field('No-go lines', nogoField),
+  nogoLine,
   plans.length === 0 && h('p', { class: 'hint' }, 'No floor plans yet: a map is made one on the Maps tab.'),
   h('div', { class: 'slot-tools' }, button));
 }
@@ -3319,7 +3327,8 @@ function commands(mine, robot) {
     }, icon(glyph), label);
     return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why)) : button;
   }),
-  mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold));
+  mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold,
+    isOn(robot.is_docked) ? null : 'the robot is not docked'));
 }
 
 /**
@@ -3739,10 +3748,12 @@ function show(mine, status, body) {
       const edit = mine.tracks.edit;
       if (edit && !body.floorplans.some((plan) => plan.rank_uuid === edit.rank && plan.map_id === edit.map)) mine.tracks.edit = null;
       // A floor plan or a zone that is kept no more, as after a Demote, is one the robot does not have to start on either.
+      // A robot off its base starts on none, and on none a run has no no-go lines to mind.
       const start = mine.start;
-      const kept = plansOf(body).find((plan) => plan.rank_uuid === start.floor);
+      const kept = isOn(body.robot.is_docked) && plansOf(body).find((plan) => plan.rank_uuid === start.floor);
       if (!kept) start.floor = '';
       if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
+      if (start.floor === '') start.nogo = false;
       // A start the robot accepted may still not clean, which the robot says only afterwards. That is said in the toast
       // of the commands, in place of its having been accepted, and stays until it is closed, as a command that failed does.
       const started = mine.started;

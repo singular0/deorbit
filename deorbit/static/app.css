@@ -1629,7 +1629,7 @@ td.cell-clock {
   min-width: 0;
 }
 
-/* A choice that a run on no floor plan does not have, or a setting while the robot is asked. */
+/* A choice that a run on no floor plan does not have, a floor plan to start on off the base, or a setting while the robot is asked. */
 .slot-form dd > select:disabled,
 .setting-form dd > select:disabled,
 .start-field > select:disabled {
