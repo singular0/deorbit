@@ -438,15 +438,17 @@ function report(mine, kind, said) {
 // button again, and a press or the keyboard anywhere else shut it. The name of
 // a robot or a map is entered in one too, in a field above Cancel and Save, and
 // so are the name and the mode of a zone of a floor plan, which is drawn on the
-// picture of the map meanwhile: a press there leaves the popover open.
+// picture of the map meanwhile, as the no-go lines are from another: those two
+// stay open wherever else a press or the keyboard goes, so that what they hold
+// is not lost.
 
 const POPOVER_MARGIN = 16; // how close a popover comes to the edge of the screen
 const POPOVER_GAP = 10; // how far it stands from its button, with its arrow between them
 const ARROW_INSET = 20; // how close its arrow comes to a corner of it, which is rounded
 
 // The popover that is open, or null: its node, the view it is of, its button by `data-focus`, whether it opened
-// under the button or over it, what says whether what it asks still stands, what says whether a press or the
-// keyboard elsewhere leaves it open, and what is done when it shuts.
+// under the button or over it, what says whether what it asks still stands, whether it stays open when a press or
+// the keyboard goes elsewhere, and what is done when it shuts.
 let popped = null;
 
 /**
@@ -455,35 +457,37 @@ let popped = null;
  * `build` makes what stands under the heading, with an element of the id
  * `popover-text` that says what the popover is about, and gives the field or
  * the button the keyboard is put on. `stands` says, each time the page is
- * drawn, whether what the popover is about still stands; `keeps`, of the
- * element a press or the keyboard went to outside the popover, whether it
- * stays open all the same; and `shut` is done when it shuts, however it does.
- * It opens `under` its button whatever the room there, where that is given.
+ * drawn, whether what the popover is about still stands; where it `stays`, a
+ * press or the keyboard outside it leaves it open, the Tab key past its ends
+ * included; and `shut` is done when it shuts, however it does. It opens
+ * `under` its button whatever the room there, where that is given, and where
+ * it is `wide`, it is as wide as its buttons are in one line.
  */
-function openPopover(mine, anchor, title, build, { stands = () => true, keeps = () => false, shut = null, under = false } = {}) {
+function openPopover(mine, anchor, title, build, { stands = () => true, stays = false, shut = null, under = false, wide = false } = {}) {
   const again = popped !== null && popped.mine === mine && popped.anchor === anchor;
   closePopover(false);
   if (again) return;
   const [content, first] = build();
   const node = h('div', {
-    class: 'popover',
+    class: wide ? 'popover wide' : 'popover',
     role: 'dialog',
     'aria-labelledby': 'popover-title',
     'aria-describedby': 'popover-text',
     onkeydown: (event) => {
       // The Tab key past its last field or button goes on from the button that opened it, and past its first goes back
-      // to that button, as if the popover stood after it in the page.
+      // to that button, as if the popover stood after it in the page. That shuts it, unless it stays.
       if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
       const stops = node.querySelectorAll('input, select, button');
       if (document.activeElement !== (event.shiftKey ? stops[0] : stops[stops.length - 1])) return;
       if (event.shiftKey) event.preventDefault();
-      closePopover();
+      if (stays) app.querySelector(`[data-focus="${CSS.escape(anchor)}"]`)?.focus();
+      else closePopover();
     },
   },
   h('h2', { class: 'popover-head', id: 'popover-title' }, title),
   h('div', { class: 'popover-body' }, content));
   document.body.append(node);
-  popped = { node, mine, anchor, under: under || null, stands, keeps, shut };
+  popped = { node, mine, anchor, under: under || null, stands, stays, shut };
   placePopover();
   if (popped?.node !== node) return;
   first.focus();
@@ -617,9 +621,9 @@ function placePopover() {
   node.style.setProperty('--arrow', `${Math.max(ARROW_INSET, Math.min(middle - left, width - ARROW_INSET))}px`);
 }
 
-/** Whether `target`, which an event was at, is neither in the popover nor the button that opened it, nor where the popover keeps. */
+/** Whether `target`, which an event was at, is neither in the popover nor the button that opened it, of one that does not stay. */
 function elsewhere(target) {
-  if (!popped || popped.node.contains(target) || popped.keeps(target)) return false;
+  if (!popped || popped.stays || popped.node.contains(target)) return false;
   // A press that drew the page anew has a target that is no longer in it, but still has the ancestors it had.
   return !target.closest?.(`[data-focus="${CSS.escape(popped.anchor)}"]`);
 }
@@ -1251,10 +1255,12 @@ const PAN_KEYS = new Map([['ArrowLeft', [-1, 0]], ['ArrowRight', [1, 0]], ['Arro
  * screen's pixels, and is drawn anew at each change, so that the marks keep
  * their size. `which` tells the buttons of one window from those of another.
  *
+ * A drag moves the map while the button beside the zoom buttons, Move the
+ * map, is pressed, which it is at first, and does nothing while it is not.
  * `layer`, where there is one, is what is drawn over the map, between it and
  * the marks: the zones and the no-go lines of a floor plan (`trackLayer`).
- * While it is being drawn on, a drag draws rather than moves the map, until
- * the button beside the zoom buttons is pressed. What is returned is the
+ * When it begins to be drawn on, the button is let go, so that a drag draws on
+ * it, and when that ends, the button is pressed again. What is returned is the
  * window and what draws it anew, for when what the layer draws has changed.
  */
 function viewer(source, marks, palette, which, layer = null) {
@@ -1265,18 +1271,31 @@ function viewer(source, marks, palette, which, layer = null) {
   let [middleX, middleY] = [across / 2, down / 2]; // the point of the map in the middle of the window, in cells
   let drag = null; // the pointer that drags the map or draws on it, and where it was last
   let shown = { left: 0, top: 0, cell: 1 }; // where the map was last drawn on the canvas, in the screen's pixels
+  let panning = true; // whether Move the map is pressed
+  let editing = false; // whether the layer was drawn on, when that was last asked
 
   // A whole number of the screen's pixels to a cell keeps the cells alike, where a cell is a pixel or more.
   // The map shown whole is not held to that, which would leave much of the window empty around a large one.
   const even = (cell) => (cell * ratio >= 1 ? Math.round(cell * ratio) / ratio : cell);
   const whole = () => Math.min(wide / across, high / down, FIT_MOST);
   const larger = () => across * scale > wide + 0.5 || down * scale > high + 0.5;
+  // The layer drawn on from now on lets Move the map go, and no longer drawn on, presses it again.
+  const sync = () => {
+    const now = layer !== null && layer.editing();
+    if (now !== editing) [editing, panning] = [now, !now];
+  };
+  // Whether a drag draws on the layer.
+  const drawing = () => {
+    sync();
+    return editing && !panning;
+  };
   // Along a side the map is larger than, the window stays on the map; along one it is not, the map is in its middle.
   const keep = (middle, cells, room) => {
     const half = room / 2 / scale;
     return cells * scale <= room + 0.5 ? cells / 2 : Math.min(cells - half, Math.max(half, middle));
   };
   const show = () => {
+    sync();
     if (wide === 0) return;
     const fit = whole();
     // A step out that ends barely short of showing the map whole shows it whole.
@@ -1303,18 +1322,14 @@ function viewer(source, marks, palette, which, layer = null) {
     layer?.paint(pen, (x, y) => [left + x * cell, top + y * cell], cell, ratio);
     for (const mark of marks) stamp(pen, { ...mark, x: left + mark.x * cell, y: top + mark.y * cell }, palette, ratio);
     shown = { left, top, cell };
-    const drawing = layer !== null && layer.draws();
-    frame.classList.toggle('drawing', drawing);
-    frame.classList.toggle('pannable', larger() && !drawing);
+    frame.classList.toggle('drawing', drawing());
+    frame.classList.toggle('pannable', larger() && panning);
     // The Tab key stops at the map only where the arrow keys move it.
     if (larger()) canvas.tabIndex = 0;
     else canvas.removeAttribute('tabindex');
     hold(zoomIn, scale >= CELL_MOST);
     hold(zoomOut, fitted);
-    if (moveButton) {
-      moveButton.hidden = !layer.editing();
-      moveButton.setAttribute('aria-pressed', String(layer.editing() && !drawing));
-    }
+    moveButton.setAttribute('aria-pressed', String(panning));
   };
   const zoom = (by) => {
     scale = Math.min(CELL_MOST, even(scale * by));
@@ -1350,14 +1365,14 @@ function viewer(source, marks, palette, which, layer = null) {
     'aria-label': 'The map',
     'data-focus': `map-view ${which}`,
     onpointerdown: (event) => {
-      const drawing = layer !== null && layer.draws();
-      if (event.button !== 0 || (!drawing && !larger())) return;
+      const draws = drawing();
+      if (event.button !== 0 || (!draws && !(panning && larger()))) return;
       // Nor does the drag select text, or move the keyboard's focus.
       event.preventDefault();
       canvas.setPointerCapture(event.pointerId);
-      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, drawing };
+      drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, drawing: draws };
       dragged = canvas;
-      if (drawing) {
+      if (draws) {
         layer.begin(...cellAt(event));
         show();
       } else {
@@ -1397,12 +1412,12 @@ function viewer(source, marks, palette, which, layer = null) {
   }, icon(glyph));
   const zoomIn = zoomButton('Zoom in', 'plus', 'zoom-in', () => zoom(ZOOM_STEP));
   const zoomOut = zoomButton('Zoom out', 'minus', 'zoom-out', () => zoom(1 / ZOOM_STEP));
-  // While the layer is drawn on: pressed, a drag moves the map, as it does otherwise; let go, a drag draws.
-  const moveButton = layer && zoomButton('Move the map', 'move', 'map-move', () => {
-    layer.move();
+  // Pressed, a drag moves the map; let go, a drag draws on the layer while that is drawn on, and else does nothing.
+  const moveButton = zoomButton('Move the map', 'move', 'map-move', () => {
+    panning = !panning;
     show();
   });
-  if (moveButton) moveButton.hidden = true;
+  moveButton.setAttribute('aria-pressed', String(panning));
   const frame = h('div', { class: 'map-view' }, canvas, h('div', { class: 'map-zoom' }, zoomIn, zoomOut, moveButton));
   // Drawn once the window is laid out, and again when its size changes. In a row that is shut it has none.
   new ResizeObserver(([seen]) => {
@@ -1905,11 +1920,6 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
   };
   return {
     editing: () => editing() !== null,
-    draws: () => editing() !== null && !editing().moving,
-    move: () => {
-      const edit = editing();
-      if (edit) edit.moving = !edit.moving;
-    },
     begin: (x, y) => {
       const at = cellAt(x, y);
       stroke = [...at, ...at];
@@ -1926,8 +1936,8 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
         else if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
       }
       pictured.repaint?.();
-      // The form of the lines says how many have been drawn. That of a zone is in a popover, which is no part of the page.
-      if (edit?.kind === 'nogo') drawRobot(mine);
+      // The popover of the lines says how many have been drawn.
+      if (edit?.kind === 'nogo' && popped?.anchor === edit.anchor) sayLines(popped.node, edit);
     },
     paint: (pen, plot, size, ratio) => {
       const plan = mine.body && plansOf(mine.body).find((known) => known.map_id === id);
@@ -1963,72 +1973,77 @@ function trackSwatch(colour) {
 }
 
 /**
- * Open the form that draws the no-go lines of the floor plan `plan`, which is
- * made of the map of that `id`, under them.
+ * Open the popover that draws the no-go lines of the floor plan `plan`, which
+ * is made of the map of that `id`, as `drawTrack` has it.
  */
 function drawLines(mine, id, plan) {
-  mine.tracks.edit = { map: id, rank: plan.rank_uuid, kind: 'nogo', moving: false, track: plan.nogo?.track_uuid ?? null,
-    lines: linesOf(plan.nogo) };
-  drawRobot(mine);
-  app.querySelector('[data-focus="track-save"]')?.focus();
+  drawTrack(mine, 'Edit no-go lines', {
+    map: id,
+    rank: plan.rank_uuid,
+    kind: 'nogo',
+    anchor: `nogo-edit-${id}`,
+    track: plan.nogo?.track_uuid ?? null,
+    lines: linesOf(plan.nogo),
+  }, linesForm, true);
 }
 
 /**
  * Open the popover that draws a zone of the floor plan `plan`, which is made
- * of the map of that `id`: the zone `zone`, or a new one where there is none.
- * It has the zone's name and mode, and the zone is drawn on the picture of the
- * map meanwhile, which a press on does not shut it. A second press on the
- * button that opened it shuts it, and what it shuts with is not kept. It opens
- * under its button, so as not to stand on the picture where that is above it.
+ * of the map of that `id`: the zone `zone`, or a new one where there is none,
+ * as `drawTrack` has it. It has the zone's name and mode.
  */
 function drawZone(mine, id, plan, zone = null) {
-  const anchor = zone ? `zone-${zone.track_uuid}-edit` : `zone-add-${id}`;
-  if (popped?.mine === mine && popped.anchor === anchor) {
-    closePopover(false);
-    return;
-  }
-  const edit = {
+  drawTrack(mine, zone ? 'Edit zone' : 'Add zone', {
     map: id,
     rank: plan.rank_uuid,
     kind: 'zone',
-    moving: false,
+    anchor: zone ? `zone-${zone.track_uuid}-edit` : `zone-add-${id}`,
     track: zone?.track_uuid ?? null,
     name: zone?.name ?? '',
     mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
     rect: zone ? rectOf(zone) : null,
-  };
+  }, zoneForm);
+}
+
+/**
+ * Open the popover headed `title` that draws what `edit` holds, a zone or the
+ * no-go lines, by the button its `anchor` names, with what `build` makes in
+ * it; or shut it, where that button opened it. What it holds is drawn on the
+ * picture of the map meanwhile. It stays open wherever else a press or the
+ * keyboard goes, so that what it holds is not lost, and the other buttons that
+ * would draw something are held back while it is open. Cancel, Escape and a
+ * second press on the button that opened it shut it, and what it shuts with
+ * is not kept. It opens under its button, so as not to stand on the picture
+ * where that is above it. Where it is `wide`, its buttons are in one line.
+ */
+function drawTrack(mine, title, edit, build, wide = false) {
+  const { anchor } = edit;
+  if (popped?.mine === mine && popped.anchor === anchor) {
+    closePopover(false);
+    return;
+  }
   mine.tracks.edit = edit;
-  // Nothing on the page itself changes with it, so it is not drawn anew, which would take a press elsewhere from
-  // the button it was meant for; the picture is, which is now drawn on.
-  repaint(mine);
-  openPopover(mine, anchor, zone ? 'Edit zone' : 'Add zone', () => zoneForm(mine, edit, anchor), {
+  // The other buttons of the zones and the no-go lines are held back now, and the picture is drawn on.
+  drawRobot(mine);
+  openPopover(mine, anchor, title, () => build(mine, edit, anchor), {
     stands: () => mine.tracks.edit === edit,
-    keeps: (target) => Boolean(mine.drawings.get(id)?.node.contains(target)),
+    stays: true,
     shut: () => {
       if (mine.tracks.edit !== edit) return;
       mine.tracks.edit = null;
-      repaint(mine);
+      drawRobot(mine);
     },
     under: true,
+    wide,
   });
-}
-
-/** Shut the form, and put the keyboard back on the button that opened it, which `back` names. */
-function endTracks(mine, back) {
-  mine.tracks.edit = null;
-  // A selection would hold the page as it is, and so would the field for the name while the keyboard is in it.
-  getSelection().removeAllRanges();
-  if (entering()) document.activeElement.blur();
-  drawRobot(mine);
-  app.querySelector(`[data-focus="${back}"]`)?.focus();
 }
 
 /**
  * Ask the robot, through the server, to keep a zone or the no-go lines of a
  * floor plan, or to drop a track, as `more` says, and say in a toast how that
  * went. The view's `tracks` holds whether an answer is waited for, and one is
- * asked at a time. Once the robot accepts, the form or the popover is shut and
- * the keyboard goes to the button `back` names.
+ * asked at a time. Once the robot accepts, the popover is shut and the
+ * keyboard goes to the button `back` names.
  */
 async function askTracks(mine, label, more, back) {
   const job = mine.tracks;
@@ -2046,7 +2061,7 @@ async function askTracks(mine, label, more, back) {
     return;
   }
   job.edit = null;
-  // The popover of a zone goes with it, as what it was about stands no more.
+  // The popover goes with it, as what it was about stands no more.
   drawRobot(mine);
   app.querySelector(`[data-focus="${back}"]`)?.focus();
   // The zones and the no-go lines come with the robot, and so do the events of this.
@@ -2059,10 +2074,10 @@ async function askTracks(mine, label, more, back) {
   if (zone && events.some((event) => runsOf(event).some((run) => zoneOf(run) === zone))) askSchedule(mine, 'show', 'Schedule');
 }
 
-/** Ask for what the form or the popover has drawn to be kept, or say what it lacks. */
+/** Ask for what the popover has drawn to be kept, or say what it lacks. */
 function saveTracks(mine, back) {
   const edit = mine.tracks.edit;
-  const label = edit.kind === 'nogo' ? 'Save no-go lines' : edit.track ? 'Edit zone' : 'Add zone';
+  const label = edit.kind === 'nogo' ? 'Edit no-go lines' : edit.track ? 'Edit zone' : 'Add zone';
   const lacks = (text) => report(mine, 'tracks', { tone: 'bad', text: `${label}: ${text}` });
   if (edit.kind === 'zone') {
     // As the server keeps it: one line, its words a space apart.
@@ -2077,7 +2092,7 @@ function saveTracks(mine, back) {
   }
   // With no line left, the floor plan's are dropped, where it has any.
   if (edit.track) return askTracks(mine, label, { action: 'delete', track_uuid: edit.track }, back);
-  return endTracks(mine, back);
+  return closePopover();
 }
 
 /**
@@ -2121,54 +2136,59 @@ function zoneForm(mine, edit, back) {
 }
 
 /**
- * The form that draws the no-go lines: how many there are, Save, and the
- * buttons that take back the last and all of them. `back` names the button
- * that opened it.
+ * What the popover that draws the no-go lines holds: how many there are and
+ * what is to be drawn on the map, Undo and Clear, which take back the last
+ * line and all of them, then Cancel and Save. `back` names the button that
+ * opened it. Save is held back while that button is, which is while the robot
+ * has yet to answer; the popover shuts where the robot is not connected.
  */
-function linesForm(mine, robot, edit, back) {
-  const job = mine.tracks;
-  const button = h('button', {
-    class: 'command',
-    type: 'submit',
-    disabled: !robot.session,
-    'aria-disabled': robot.session && job.waiting && 'true',
-    title: !robot.session ? 'Save: the robot is not connected' : job.waiting && 'Save: waiting for the robot to answer',
-    'data-focus': 'track-save',
-  }, 'Save');
-  const count = edit.lines.length;
-  // Held back, not disabled, so that the keyboard stays on one that takes back the last line.
-  const takeBack = (label, focus, press) => h('button', {
+function linesForm(mine, edit, back) {
+  const save = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
+  const takeBack = (label, glyph, press) => h('button', {
     class: 'button',
     type: 'button',
-    'aria-disabled': count === 0 && 'true',
-    title: count === 0 ? `${label}: there is no line` : null,
-    'data-focus': focus,
+    'data-takes': label,
     onclick: () => {
       if (edit.lines.length === 0) return;
-      getSelection().removeAllRanges();
       press();
-      drawRobot(mine);
+      sayLines(form, edit);
+      repaint(mine);
     },
-  }, label);
+  }, icon(glyph), label);
+  const form = h('form', {
+    class: 'popover-form',
+    onsubmit: (event) => {
+      event.preventDefault();
+      if (!save.hasAttribute('aria-disabled')) saveTracks(mine, back);
+    },
+  },
+  h('p', { id: 'popover-text' }),
+  h('div', { class: 'popover-tools' },
+    h('span', { class: 'popover-aside' },
+      takeBack('Undo', 'undo', () => edit.lines.pop()),
+      takeBack('Clear', 'eraser', () => { edit.lines = []; })),
+    h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
+    save));
+  sayLines(form, edit);
+  return [form, save];
+}
+
+/**
+ * Say in `node`, what the popover that draws the no-go lines `edit` holds,
+ * how many there are, which changes as they are drawn and taken back, and
+ * hold back Undo and Clear while there is none. Held back, not disabled, they
+ * keep the keyboard, which may be on the one that took back the last line.
+ */
+function sayLines(node, edit) {
+  const count = edit.lines.length;
   const said = count === 0 ? (edit.track ? 'No lines: saving deletes them from the robot.' : 'Drag on the map to draw a line.')
     : count < LINES_MAX ? `${count} ${count === 1 ? 'line' : 'lines'}. Drag on the map to draw another.`
     : `${count} lines, the most there may be.`;
-  return h('form', {
-    class: 'track-form',
-    onsubmit: (submit) => {
-      submit.preventDefault();
-      // A selection would hold the page as it is, and the press has to show.
-      button.focus();
-      getSelection().removeAllRanges();
-      if (!job.waiting) saveTracks(mine, back);
-    },
-  },
-  h('p', { class: 'hint' }, said, ' To move an enlarged map instead, press the button with the arrows beside it.'),
-  h('div', { class: 'slot-tools' },
-    button,
-    takeBack('Undo', 'track-undo', () => edit.lines.pop()),
-    takeBack('Clear', 'track-clear', () => { edit.lines = []; }),
-    h('button', { class: 'button', type: 'button', 'data-focus': 'track-cancel', onclick: () => endTracks(mine, back) }, 'Cancel')));
+  node.querySelector('#popover-text').textContent = `${said} To move an enlarged map instead, press the button with the arrows beside it.`;
+  for (const button of node.querySelectorAll('[data-takes]')) {
+    hold(button, count === 0);
+    button.title = count === 0 ? `${button.dataset.takes}: there is no line` : '';
+  }
 }
 
 /**
@@ -2189,15 +2209,16 @@ function askDropZone(mine, zone, name, id) {
  * map of that `id`, beside the picture of that map: a line to each zone,
  * with the buttons that draw it again in a popover and that ask in one whether
  * to delete it, and how many no-go lines there are, with the button that draws
- * them, and under it the form that draws them while it is open. One thing is
- * drawn at a time, in the whole page: a popover shuts at a press elsewhere, and
- * the form holds back every other button that would draw something.
+ * them in a popover. One thing is drawn at a time, in the whole page: while
+ * one is, every other button that would draw something is held back.
  */
 function trackPanel(mine, robot, id, plan) {
   const job = mine.tracks;
-  const edit = job.edit !== null && job.edit.map === id ? job.edit : null;
   const colours = schemePalette();
-  const why = job.edit?.kind === 'nogo' ? 'no-go lines are being drawn' : null;
+  // One thing is drawn at a time on the whole page, so while something is, the buttons that would draw something else
+  // are held back. The one that opened the popover it is drawn in is not, as a second press on it shuts that.
+  const drawing = job.edit?.kind === 'nogo' ? 'no-go lines are being drawn' : job.edit?.kind === 'zone' ? 'a zone is being drawn' : null;
+  const why = (focus) => (job.edit?.anchor === focus ? null : drawing);
   const lines = linesOf(plan.nogo);
   const full = plan.zones.length >= ZONES_MAX && `the floor plan has ${ZONES_MAX} zones, the most it may have`;
   const zoneLine = (zone, n) => {
@@ -2209,19 +2230,20 @@ function trackPanel(mine, robot, id, plan) {
       h('span', { class: 'track-mode' }, plain(zone.mode)),
       h('div', { class: 'entry-tools' },
         robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawZone(mine, id, plan, zone),
-          { why: why ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
-        robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone, name, id), { why, glyph: 'trash', alone: true })));
+          { why: why(`${focus}-edit`) ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
+        robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone, name, id),
+          { why: why(`${focus}-drop`), glyph: 'trash', alone: true })));
   };
   return h('section', { class: 'tracks' },
     h('div', { class: 'tracks-head' },
       h('h3', null, 'Zones'),
-      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawZone(mine, id, plan), { why: why ?? (full || null), glyph: 'plus' })),
+      robotButton(job, robot, 'Add zone', `zone-add-${id}`, () => drawZone(mine, id, plan),
+        { why: why(`zone-add-${id}`) ?? (full || null), glyph: 'plus' })),
     plan.zones.length > 0 ? h('ul', { class: 'track-list' }, plan.zones.map(zoneLine)) : h('p', { class: 'track-none' }, none('No zones.')),
     h('div', { class: 'tracks-head' },
       h('h3', null, 'No-go lines'),
-      robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawLines(mine, id, plan), { why, glyph: 'pencil' })),
-    edit?.kind === 'nogo' ? linesForm(mine, robot, edit, `nogo-edit-${id}`)
-      : lines.length > 0 ? h('p', { class: 'track' }, trackSwatch(colours.nogo), `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`)
+      robotButton(job, robot, 'Edit', `nogo-edit-${id}`, () => drawLines(mine, id, plan), { why: why(`nogo-edit-${id}`), glyph: 'pencil' })),
+    lines.length > 0 ? h('p', { class: 'track' }, trackSwatch(colours.nogo), `${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`)
       : h('p', { class: 'track-none' }, none('None.')));
 }
 
@@ -3851,7 +3873,7 @@ function navigate() {
     settings: { asked: null, waiting: null, shown: {}, drafts: {} },
     // Whether the robot has yet to answer what was asked of it about a floor plan.
     floors: { waiting: false },
-    // The same for the zones and no-go lines of a floor plan, and what the form that draws them has, while it is open.
+    // The same for the zones and no-go lines of a floor plan, and what the popover that draws them has, while it is open.
     tracks: { waiting: false, edit: null },
     // Whether the server has yet to answer the deleting of the robot.
     deleting: { waiting: false },
@@ -3888,9 +3910,19 @@ document.addEventListener('focusin', ({ target }) => {
   if (elsewhere(target)) closePopover(false);
 });
 document.addEventListener('keydown', (event) => {
-  if (!popped || event.key !== 'Escape' || event.isComposing) return;
+  if (!popped || event.isComposing) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closePopover();
+    return;
+  }
+  // The Tab key from the button of a popover that is open goes into it, as if it stood after the button in the page,
+  // which is how the keyboard comes back to one that stays open while it is elsewhere.
+  const { target } = event;
+  if (event.key !== 'Tab' || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!app.contains(target) || target.dataset?.focus !== popped.anchor) return;
   event.preventDefault();
-  closePopover();
+  popped.node.querySelector('input, select, button')?.focus();
 });
 // The button a popover is by moves when the page is laid out anew without being drawn anew, as when a row above it
 // is opened or a map above it is drawn, and when the window changes its size.

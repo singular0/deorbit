@@ -740,7 +740,7 @@ h1 {
   }
 }
 
-/* ---- Popovers: what is asked before what cannot be undone, a name and a zone, by the button that was pressed ---- */
+/* ---- Popovers: what is asked before what cannot be undone, a name, a zone and the no-go lines, by the button that was pressed ---- */
 
 /* Placed by the script against the page, so that it scrolls with its button; over the bar at the top, under the toasts. */
 .popover {
@@ -812,7 +812,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* A name entered in one, or a zone: the field or fields, what they do, then Cancel and Save. */
+/* A name entered in one, a zone or the no-go lines: the field or fields, what they do, then Cancel and Save. */
 .popover-form {
   display: grid;
   gap: 10px;
@@ -843,6 +843,24 @@ h1 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Buttons that do not end it, such as Undo and Clear of the no-go lines, at its left. */
+.popover-aside {
+  display: flex;
+  gap: 8px;
+  margin-right: auto;
+}
+
+/* One as wide as its buttons are in one line, as that of the no-go lines is, and no narrower than the others. What it
+   says does not widen it, but wraps. */
+.popover.wide {
+  width: max-content;
+  min-width: min(320px, 100% - 32px);
+}
+
+.popover.wide p {
+  contain: inline-size;
 }
 
 /* An answer that does what cannot be undone. Held back, it looks like any other button that is. */
@@ -1346,7 +1364,7 @@ td.cell-clock {
   background: var(--surface);
 }
 
-/* Move the map, while it is pressed: a drag moves the map rather than draw on it. */
+/* Move the map, while it is pressed: a drag moves the map, and does not draw on it where it is drawn on. */
 .map-zoom .button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: color-mix(in srgb, var(--accent) 16%, var(--surface));
@@ -1493,19 +1511,6 @@ td.cell-clock {
 .track-none {
   margin: 0;
   font-size: 14px;
-}
-
-.track-form {
-  margin-top: 8px;
-}
-
-.track-form > .hint {
-  margin: 12px 0 0;
-}
-
-.track-form > .slot-tools {
-  flex-wrap: wrap;
-  margin-top: 12px;
 }
 
 /* ---- The schedule of one robot ---- */
