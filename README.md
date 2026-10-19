@@ -57,7 +57,7 @@ reports is stored in a database on your machine.
 | Name robots and maps | ✅ | Names are kept on the server only. |
 | Delete a robot and all its data | ✅ | |
 | Robot settings | 🟡 | No sounds or factory reset. |
-| Find the robot by sound | ❌ | |
+| Find the robot by sound | ✅ | |
 | Firmware updates | ❌ | Firmware updates will not be supported. |
 | MyNeato app | ❌ | The web page replaces the app. |
 | Home Assistant and other integrations | ❌ | |

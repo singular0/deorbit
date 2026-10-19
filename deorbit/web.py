@@ -325,6 +325,7 @@ class Web:
             return 400, _JSON, _json({"error": str(exc)})
         # Whether the robot's last state said it would accept the command is not
         # looked at: that state may be out of date, and the robot answers for itself.
+        # Of ``find_me`` it says nothing at all.
         return await self._call(_named(asked), ability, params)
 
     async def _schedule(self, query: str) -> tuple[int, str, bytes]:

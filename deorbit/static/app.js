@@ -3082,14 +3082,21 @@ function settingsPanel(mine, robot) {
 
 // The commands a robot takes, by the name the server knows each under: the
 // label and the icon. The field that says whether the robot would accept one
-// now is that name after `can_`.
+// now is that name after `can_`, but for those of UNLISTED.
 const COMMANDS = [
   ['start', 'Start', 'play'],
   ['pause', 'Pause', 'pause'],
   ['resume', 'Resume', 'resume'],
   ['cancel', 'Cancel', 'cross'],
   ['return_to_base', 'Return to base', 'dock'],
+  ['find_me', 'Find me', 'sound'],
 ];
+
+// The command a robot's status does not say whether it would accept: the sound
+// it is found by. It is sent whenever the robot is connected, and since it
+// changes nothing of what the robot would accept, the robot's next status is
+// not waited for, before it or after it.
+const UNLISTED = new Set(['find_me']);
 
 // The steps of a run that a robot gives the time of, under the names it gives
 // them, each with its field. The order is the one a run seems to take them
@@ -3162,11 +3169,13 @@ function startFailed(started, body) {
  * one before it went. A start may be given the `run` it is to clean.
  */
 async function send(mine, name, label, run = null) {
-  if (mine.command?.waiting || awaiting(mine)) return;
+  const listed = !UNLISTED.has(name);
+  if (mine.command?.waiting || (listed && awaiting(mine))) return;
   // A selection would hold the page as it is, and the press has to show.
   getSelection().removeAllRanges();
   const had = loadFailing(mine.body?.robot);
-  mine.started = null;
+  // The sound changes nothing of a start, which may still fail to load what it was to clean on.
+  if (listed) mine.started = null;
   mine.command = { name, waiting: true };
   drawRobot(mine);
   const address = `api/command?${new URLSearchParams({ ...mine.robot, command: name, ...(run && { run: JSON.stringify(run) }) })}`;
@@ -3179,7 +3188,7 @@ async function send(mine, name, label, run = null) {
   report(mine, 'command', said);
   mine.command = null;
   // Both times are the server's, as text that sorts by time. The browser's own is for how long to keep asking eagerly.
-  if (said.tone === 'good') mine.accepted = { sent: answer.sent, at: Date.now() };
+  if (said.tone === 'good' && listed) mine.accepted = { sent: answer.sent, at: Date.now() };
   if (said.tone === 'good' && name === 'start') mine.started = { sent: answer.sent, at: Date.now(), had, label };
   if (mine !== view) return;
   drawRobot(mine);
@@ -3191,7 +3200,7 @@ async function send(mine, name, label, run = null) {
 function barred(robot, name) {
   const value = robot[`can_${name}`];
   return !robot.session ? 'the robot is not connected'
-    : isOn(value) ? null
+    : UNLISTED.has(name) || isOn(value) ? null
     : isOff(value) ? 'the robot would not accept it now'
     : 'the robot has not said whether it would accept it';
 }
@@ -3317,14 +3326,15 @@ function startMenu(mine, plans, why, hold, away) {
  * The commands as buttons. One can be pressed when the robot is connected and
  * its last state said it would accept that command. From when one is sent until the robot has answered and,
  * if it accepted, sent its next status, pressing any of them does nothing.
+ * Find me, which a state says nothing of, can be pressed whenever the robot is
+ * connected and no command waits for the robot's answer.
  * Start is two buttons in one, the second of which opens a menu under them
  * that sets what a start is to clean.
  */
 function commands(mine, robot) {
   const sent = mine.command;
-  const hold = sent?.waiting ? 'waiting for the robot to answer'
-    : awaiting(mine) ? 'waiting for the robot\'s next status'
-    : null;
+  const answering = sent?.waiting ? 'waiting for the robot to answer' : null;
+  const hold = answering ?? (awaiting(mine) ? 'waiting for the robot\'s next status' : null);
   return h('div', {
     class: 'commands',
     // Not the Escape that ends the composing of a character.
@@ -3336,14 +3346,15 @@ function commands(mine, robot) {
   },
   COMMANDS.map(([name, label, glyph]) => {
     const why = barred(robot, name);
+    const wait = UNLISTED.has(name) ? answering : hold;
     // Held back, not disabled: a disabled button could not keep the keyboard's focus.
-    const held = why === null && hold !== null;
+    const held = why === null && wait !== null;
     const button = h('button', {
       class: `command${sent?.waiting && sent.name === name ? ' busy' : ''}`,
       type: 'button',
       disabled: why !== null,
       'aria-disabled': held && 'true',
-      title: held ? `${label}: ${hold}` : why && `${label}: ${why}`,
+      title: held ? `${label}: ${wait}` : why && `${label}: ${why}`,
       'data-focus': `can_${name}`,
       onclick: () => send(mine, name, label),
     }, icon(glyph), label);

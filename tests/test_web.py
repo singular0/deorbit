@@ -1093,6 +1093,7 @@ class CommandTests(WebTestCase):
             "resume": "cleaning.resume",
             "cancel": "cleaning.cancel",
             "return_to_base": "navigation.return_to_base",
+            "find_me": "utilities.find_me",
         }
         self.assertEqual(set(abilities), set(COMMANDS))
         for name, ability in abilities.items():
@@ -1148,7 +1149,7 @@ class CommandTests(WebTestCase):
         a_run = "run must be an object of settings, map and nothing else"
         refused = {
             "run is taken only with start": [
-                f"{self.BOARD1}&command={name}&run={quote(json.dumps(RUN))}" for name in ("pause", "resume", "cancel", "return_to_base")
+                f"{self.BOARD1}&command={name}&run={quote(json.dumps(RUN))}" for name in ("pause", "resume", "cancel", "return_to_base", "find_me")
             ],
             "run must be JSON": [self.started(text) for text in ("nonsense", "{'map': null}", json.dumps(RUN)[:-1], "[" * 5000)],
             # One run, not a list of them.
@@ -1169,7 +1170,7 @@ class CommandTests(WebTestCase):
             "run.map.track_id must be null or a string that is not empty": [self.started({**RUN, "map": {**FLOOR, "track_id": ""}})],
             "run.map.nogo_enabled must be true or false": [self.started({**RUN, "map": {**FLOOR, "nogo_enabled": None}})],
             # The command is looked at first.
-            "command must be one of start, pause, resume, cancel, return_to_base": [
+            "command must be one of start, pause, resume, cancel, return_to_base, find_me": [
                 f"{self.BOARD1}&command=START&run={quote(json.dumps(RUN))}"
             ],
         }
@@ -1249,7 +1250,7 @@ class CommandTests(WebTestCase):
     async def test_command_the_server_does_not_have(self) -> None:
         await self.start()
         robot, _ = await self.login()
-        told = (400, {"error": "command must be one of start, pause, resume, cancel, return_to_base"})
+        told = (400, {"error": "command must be one of start, pause, resume, cancel, return_to_base, find_me"})
         # Asked of a robot that is there and of one that is not: the command is wrong either way.
         for robot_named in (self.BOARD1, "/api/command?vendor=n&serial=board2"):
             for command in ("&command=factory_reset", "&command=cleaning.pause", "&command=PAUSE", "&command=", ""):

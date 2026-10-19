@@ -11,7 +11,9 @@ from datetime import datetime
 
 # By the name a robot's state gives the command under ``available_commands``:
 # the ability to invoke and what is sent with it, which is nothing for all but
-# the first.
+# the first. The last is the one a state does not list: ``utilities.find_me``,
+# which has the robot make the sound it is found by (section 6.4 of the spec),
+# under the name of its action.
 #
 # ``cleaning.start`` takes ``runs``, at least one, each with its ``settings``
 # and its ``map`` (section 6.1 of the spec). A map of ``None`` is a cleaning on
@@ -25,6 +27,7 @@ COMMANDS: dict[str, tuple[str, dict]] = {
     "resume": ("cleaning.resume", {}),
     "cancel": ("cleaning.cancel", {}),
     "return_to_base": ("navigation.return_to_base", {}),
+    "find_me": ("utilities.find_me", {}),
 }
 
 # What an event of a robot's schedule may name (section 6.2 of the spec, and
