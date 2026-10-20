@@ -5,7 +5,7 @@
 //   1. setOrbitalHosts(fs, ip)   - /etc/hosts: add (or replace) the
 //      `orbital.deorbit` name pointing at the given IP address
 //   2. setVendorHost(fs)         - /home/root/tron/config/vendors.ini: in
-//      section [N] set `host = orbital.deorbit`
+//      section [N] set `host = deorbit`
 //   3. uploadCert(fs, bytes)     - install a cert at
 //      /home/root/tron/config/ssl/godaddy.crt
 
@@ -15,7 +15,8 @@ const enc = new TextEncoder();
 export const HOSTS_PATH = "/etc/hosts";
 export const VENDORS_INI_PATH = "/home/root/tron/config/vendors.ini";
 export const CERT_PATH = "/home/root/tron/config/ssl/godaddy.crt";
-export const ORBITAL_NAME = "deorbit";
+export const ORBITAL_NAME = "orbital.deorbit";
+export const VENDOR_HOST = "deorbit";
 
 /**
  * 1. Point `orbital.deorbit` at `ip` in /etc/hosts.
@@ -52,7 +53,7 @@ export async function setOrbitalHosts(fs, ip, opts = {}) {
 }
 
 /**
- * 2. In vendors.ini section [N] set `host = orbital.deorbit`.
+ * 2. In vendors.ini section [N] set `host = deorbit`.
  * Replaces every `host = ...` line inside the section; inserts one right
  * after the section header if the section has no host line. Throws if the
  * section does not exist.
@@ -62,7 +63,7 @@ export async function setOrbitalHosts(fs, ip, opts = {}) {
  */
 export async function setVendorHost(fs, opts = {}) {
   const section = opts.section ?? "N";
-  const host = opts.host ?? ORBITAL_NAME;
+  const host = opts.host ?? VENDOR_HOST;
   const path = opts.path ?? VENDORS_INI_PATH;
   const text = dec.decode(await fs.read(path));
 

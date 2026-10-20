@@ -4,7 +4,9 @@
 // Publishable: everything here is bog-standard MTP (PIMA 15740 / MTP 1.1)
 // as spoken by any MTP responder. No exploit logic lives in this file.
 
-import { concatBytes } from "./webusb-transport.js";
+import { concatBytes, hex4 } from "./webusb-transport.js";
+
+export { hex4 };
 
 export const STORAGE_ID = 0xffff0001;
 export const MAX_CONTAINER = 64 * 1024 * 1024;
@@ -220,7 +222,7 @@ export class MtpClient {
 
   async openSession(sid = null) {
     sid = sid || Math.floor(Date.now() / 1000) % 0x7fffffff || 1;
-    this.log(`OpenSession (id ${sid})...`);
+    this.log(`session: OpenSession (id ${sid}) ...`);
     const { code } = await this.transOut(OP.OPEN_SESSION, [sid]);
     this.session = sid;
     return code;
@@ -237,7 +239,7 @@ export class MtpClient {
     } catch {
       /* drained */
     }
-    if (n) this.log(`drain: discarded ${n} stale packet(s)`);
+    if (n) this.log(`session: drained ${n} stale packet(s)`);
   }
 
   /** Pre-session wedge workaround: CloseSession takes no parameters. */
@@ -245,9 +247,9 @@ export class MtpClient {
     try {
       await this.drainIn();
       const { code } = await this.transOut(OP.CLOSE_SESSION, []);
-      this.log(`pre-session CloseSession -> 0x${code.toString(16).padStart(4, "0")}`);
+      this.log(`session: pre-session CloseSession -> 0x${hex4(code)}`);
     } catch (e) {
-      this.log(`pre-session CloseSession: ${e.message} (ok if device was idle)`);
+      this.log(`session: pre-session CloseSession failed: ${e.message} (ok if the device was idle)`);
     }
   }
 

@@ -857,19 +857,18 @@ async function runBind(mine) {
     const certBytes = bind.setup.ca ? new TextEncoder().encode(bind.setup.ca) : null;
     // Connecting is the start of the first step, which it fails if it fails.
     begin(0, 'Choose the robot in the browser’s device prompt');
-    log('Choose the robot in the browser’s device prompt…');
-    transport = new helpers.WebUSBTransport();
+    log('Choose the robot in the browser’s device prompt...');
+    transport = new helpers.WebUSBTransport({ log });
     await transport.open(); // the device prompt: the first await, so the press still counts as a user gesture
     begin(0, 'Connecting to the robot…');
-    log('Connected over USB. Opening a session…');
-    const client = new helpers.MtpClient(transport);
+    log('Connected over USB. Opening a session...');
+    const client = new helpers.MtpClient(transport, { log });
     await client.openSession();
     // NOTE: mtp-fs.js was not read (see CLAUDE.md). This builds its file system
     // from the contract neato-config.js documents: an MtpFileSystem over an
     // already-open MTP session, with a `log` it calls as it works. Correct this
     // one line if the file's exports differ.
-    const fs = new helpers.MtpFileSystem(client);
-    fs.log = log;
+    const fs = new helpers.MtpFileSystem(client, { log });
     // The write contract requires an onConfirm answer for every change;
     // without one each write aborts unanswered. The user already consented by
     // pressing Configure robot, so every change is approved without asking
@@ -879,7 +878,7 @@ async function runBind(mine) {
     // Each step is one write, which says how it went as `reconfigureNeato` takes it.
     const write = async (step, run) => {
       begin(step);
-      log(`${STEPS[step]}…`);
+      log(`${STEPS[step]}...`);
       const result = await run();
       if (!result?.ok) throw new Error(result?.aborted ? 'aborted - no changes made' : result?.error || 'the robot refused a write');
       steps[step] = { state: 'done', note: null };

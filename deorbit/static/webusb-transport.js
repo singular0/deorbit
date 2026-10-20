@@ -17,6 +17,9 @@ export const USB_DEFAULTS = {
 // bEndpointAddress - passing 0x81 throws "endpoint number is out of range".
 const epNum = (addr) => addr & 0x0f;
 
+/** A 16-bit value as four lowercase hex digits, for log messages. */
+export const hex4 = (v) => v.toString(16).padStart(4, "0");
+
 export class USBTransportError extends Error {
   constructor(msg) {
     super(msg);
@@ -32,8 +35,11 @@ export class USBTimeoutError extends USBTransportError {
 }
 
 export class WebUSBTransport {
+  /** @param opts USB_DEFAULTS overrides, plus an optional log(message). */
   constructor(opts = {}) {
-    this.cfg = { ...USB_DEFAULTS, ...opts };
+    const { log, ...cfg } = opts;
+    this.cfg = { ...USB_DEFAULTS, ...cfg };
+    this.log = log ?? (() => {});
     this.device = null;
   }
 
@@ -68,6 +74,10 @@ export class WebUSBTransport {
       await dev.selectConfiguration(c.config);
     }
     await dev.claimInterface(c.iface);
+    this.log(
+      `usb: opened ${dev.productName || "device"} (${hex4(c.vid)}:${hex4(c.pid)}), ` +
+        `claimed interface ${c.iface}`
+    );
     return dev;
   }
 
@@ -85,6 +95,7 @@ export class WebUSBTransport {
       /* already closed */
     }
     this.device = null;
+    this.log("usb: closed");
   }
 
   /** Bulk OUT write; appends a ZLP when the payload is an exact multiple of
