@@ -29,7 +29,10 @@ const PAN_STEP = 48; // how far an arrow key moves a map that is larger than its
 const NAME_MAX = 64; // the most characters the server takes for the name of a robot or a map
 const ZONE_NAME_MAX = 32; // the same for the name of a zone of a floor plan
 const ZONES_MAX = 6; // the most zones a floor plan may have, each in a colour of its own of the `zones` of PALETTES
+const CORNERS_MAX = 100; // the most corners a zone may have
 const LINES_MAX = 100; // and the most no-go lines a floor plan may have
+const GRAB = 10; // how near a corner of a zone, or the middle of a side, a press on a map has to be to take hold of it, in pixels of the page
+const STILL = 4; // how far a press on a map may move and still be a click, in pixels of the page
 const SVG = 'http://www.w3.org/2000/svg';
 
 const app = document.getElementById('app');
@@ -1920,16 +1923,56 @@ function mapTools(mine, robot, plans, row, map) {
 // The robot keeps them with the floor plan and cannot be asked which it has, so
 // they are those the server had it keep, each with what was drawn for it. They
 // are drawn on the picture of the map the floor plan was made of, in the block
-// of the floor plan: a zone as a rectangle, and the lines one at a time, all of
-// them one track. What is drawn is in cells of the map's rank_binary, from its
-// left and from its top, which is what the server draws a track's binary on.
+// of the floor plan: a zone as a polygon, corner by corner or as a rectangle,
+// and the lines one at a time, all of them one track. What is drawn is in
+// cells of the map's rank_binary, from its left and from its top, which is
+// what the server draws a track's binary on: a corner of a zone is where cells
+// meet, and the zone is every cell it covers any part of, while a line goes
+// from the middle of one cell to the middle of another.
 
 const isCells = (value) => Array.isArray(value) && value.length === 4 && value.every(Number.isInteger);
+const isCorner = (value) => Array.isArray(value) && value.length === 2 && value.every(Number.isInteger);
 
-/** The rectangle of a zone, as its top left cell and its bottom right one, or null where the server has none. */
-function rectOf(zone) {
-  const rect = parsed(zone.shape_json);
-  return isCells(rect) ? rect : null;
+/**
+ * The corners of a zone, or null where the server has none. A zone kept before
+ * a zone could be any polygon is a rectangle, as its top left cell and its
+ * bottom right one.
+ */
+function polygonOf(zone) {
+  const shape = parsed(zone.shape_json);
+  if (isCells(shape)) return boxed(shape);
+  return Array.isArray(shape) && shape.length >= 3 && shape.every(isCorner) ? shape : null;
+}
+
+/**
+ * Whether the corners of a zone make a polygon the server does not take: one
+ * with a corner twice, or with two sides that cross or touch but where the one
+ * ends and the next begins. It is the server's own check.
+ */
+function tangled(corners) {
+  const count = corners.length;
+  // Which side of the line through a and b the point c is on, or 0 for on it.
+  const side = ([ax, ay], [bx, by], [cx, cy]) => Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+  // Of a point q on the line through p and r.
+  const between = ([px, py], [qx, qy], [rx, ry]) =>
+    Math.min(px, rx) <= qx && qx <= Math.max(px, rx) && Math.min(py, ry) <= qy && qy <= Math.max(py, ry);
+  const meet = (a, b, c, d) => {
+    const [one, two, three, four] = [side(a, b, c), side(a, b, d), side(c, d, a), side(c, d, b)];
+    return (one !== two && three !== four) || (one === 0 && between(a, c, b)) || (two === 0 && between(a, d, b))
+      || (three === 0 && between(c, a, d)) || (four === 0 && between(c, b, d));
+  };
+  // Whether the side from v to w goes back along the one from u to v.
+  const back = (u, v, w) => side(u, v, w) === 0 && (u[0] - v[0]) * (w[0] - v[0]) + (u[1] - v[1]) * (w[1] - v[1]) > 0;
+  if (new Set(corners.map(String)).size < count) return true;
+  for (let i = 0; i < count; i += 1) {
+    const [a, b] = [corners[i], corners[(i + 1) % count]];
+    for (let j = i + 1; j < count; j += 1) {
+      const [c, d] = [corners[j], corners[(j + 1) % count]];
+      // Two sides that meet, the one ending where the other begins, may have nothing else in common.
+      if (j === i + 1 ? back(a, b, d) : i === 0 && j === count - 1 ? back(c, a, b) : meet(a, b, c, d)) return true;
+    }
+  }
+  return false;
 }
 
 /** The no-go lines of a floor plan, each from one cell to another, or none for a floor plan that has no track of them. */
@@ -1938,9 +1981,10 @@ function linesOf(track) {
   return Array.isArray(lines) ? lines.filter(isCells) : [];
 }
 
-/** The rectangle between two cells, as its top left cell and its bottom right one. */
-function corners([x0, y0, x1, y1]) {
-  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+/** The corners of the rectangle of the cells from one cell to another, both of them among those. */
+function boxed([x0, y0, x1, y1]) {
+  const [left, top, right, bottom] = [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1) + 1, Math.max(y0, y1) + 1];
+  return [[left, top], [right, top], [right, bottom], [left, bottom]];
 }
 
 // How a zone is drawn on a map: its fill, how opaque it is all told and the
@@ -1965,33 +2009,101 @@ function zoneColour(palette, n) {
   return palette.zones[n % palette.zones.length];
 }
 
-/** Draw a zone on a map's picture: the rectangle `rect`, with its name in its top left corner, as `look` has it. */
-function paintZone(pen, at, rect, name, colour, palette, ratio, look = 'plain') {
+/**
+ * Draw a zone on a map's picture: the polygon of `corners`, with its name in
+ * it, as `look` has it. One that is being drawn may have fewer than three
+ * corners so far, which are a line or a point and have no name.
+ */
+function paintZone(pen, at, corners, name, colour, palette, ratio, look = 'plain') {
   const { fill, alpha, edge, dashed = false } = ZONE_LOOKS[look];
-  const [x0, y0] = at(rect[0], rect[1]);
-  const [x1, y1] = at(rect[2] + 1, rect[3] + 1);
+  const points = corners.map(([x, y]) => at(x, y));
+  const outline = () => {
+    pen.beginPath();
+    points.forEach(([x, y], n) => (n === 0 ? pen.moveTo(x, y) : pen.lineTo(x, y)));
+    if (points.length > 2) pen.closePath();
+  };
   pen.save();
   pen.globalAlpha = alpha;
+  outline();
   pen.fillStyle = `rgba(${colour}, ${fill})`;
-  pen.fillRect(x0, y0, x1 - x0, y1 - y0);
+  pen.fill();
   pen.strokeStyle = `rgb(${colour})`;
   pen.lineWidth = edge * ratio;
   pen.setLineDash(dashed ? [5 * ratio, 4 * ratio] : []);
-  pen.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  if (name) {
+  pen.stroke();
+  pen.font = `600 ${12 * ratio}px ui-sans-serif, system-ui, sans-serif`;
+  const spot = name && points.length > 2 ? nameSpot(points, pen.measureText(name).width, 12 * ratio, ratio) : null;
+  if (spot) {
     // Within the zone, and readable over whatever is under it.
-    pen.beginPath();
-    pen.rect(x0, y0, x1 - x0, y1 - y0);
+    outline();
     pen.clip();
     pen.setLineDash([]);
-    pen.font = `600 ${12 * ratio}px ui-sans-serif, system-ui, sans-serif`;
-    pen.textBaseline = 'top';
+    pen.textBaseline = 'middle';
     pen.lineJoin = 'round';
     pen.lineWidth = 3 * ratio;
     pen.strokeStyle = `rgb(${palette.unseen})`;
-    pen.strokeText(name, x0 + 5 * ratio, y0 + 4 * ratio);
+    pen.strokeText(name, ...spot);
     pen.fillStyle = `rgb(${colour})`;
-    pen.fillText(name, x0 + 5 * ratio, y0 + 4 * ratio);
+    pen.fillText(name, ...spot);
+  }
+  pen.restore();
+}
+
+/**
+ * Where a zone whose corners are `points` on the canvas has its name written,
+ * which is `wide` across and `high` down there: at the left of the first room
+ * across the zone, from its top down, that is wide enough for the name, as a
+ * rectangle has it in its top left corner; and where there is none, at the
+ * left of the widest room there is. It is the middle of the name's left end.
+ */
+function nameSpot(points, wide, high, ratio) {
+  const ys = points.map(([, y]) => y);
+  const [top, bottom] = [Math.min(...ys), Math.max(...ys)];
+  const inset = 5 * ratio;
+  let best = null;
+  // At most so many lines across it are looked at, however large it is on the canvas.
+  const step = Math.max(high / 2, (bottom - top) / 64);
+  for (let y = Math.min(top + 4 * ratio + high / 2, (top + bottom) / 2); y < bottom; y += step) {
+    // The zone is across the line from the first side that crosses it to the second, from the third to the fourth, and so on.
+    const xs = [];
+    points.forEach(([x0, y0], n) => {
+      const [x1, y1] = points[(n + 1) % points.length];
+      if ((y0 <= y) !== (y1 <= y)) xs.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
+    });
+    xs.sort((a, b) => a - b);
+    for (let n = 0; n + 1 < xs.length; n += 2) {
+      const room = xs[n + 1] - xs[n];
+      if (room >= wide + 2 * inset) return [xs[n] + inset, y];
+      if (best === null || room > best.room) best = { room, spot: [xs[n] + inset, y] };
+    }
+  }
+  return best?.spot ?? null;
+}
+
+/**
+ * Mark on a map's picture the corners of the zone that is being drawn, which a
+ * press takes hold of, and more faintly the middles of its sides, `middles`,
+ * where a press puts a corner; those that are null are not marked.
+ */
+function paintGrips(pen, at, corners, middles, colour, palette, ratio) {
+  pen.save();
+  pen.lineWidth = 1.5 * ratio;
+  for (const middle of middles) {
+    if (middle === null) continue;
+    pen.beginPath();
+    pen.arc(...at(...middle), 3.5 * ratio, 0, 2 * Math.PI);
+    pen.fillStyle = `rgb(${palette.unseen})`;
+    pen.fill();
+    pen.strokeStyle = `rgb(${colour})`;
+    pen.stroke();
+  }
+  const half = 4 * ratio;
+  for (const corner of corners) {
+    const [x, y] = at(...corner);
+    pen.fillStyle = `rgb(${colour})`;
+    pen.fillRect(x - half, y - half, half * 2, half * 2);
+    pen.strokeStyle = `rgb(${palette.unseen})`;
+    pen.strokeRect(x - half, y - half, half * 2, half * 2);
   }
   pen.restore();
 }
@@ -2014,15 +2126,60 @@ function paintLine(pen, at, [x0, y0, x1, y1], colour, size, ratio) {
  * plan: its zones and its no-go lines. `grid` says where the picture starts
  * among the cells of the map and how many cells there are, and has the
  * colours. On the Maps tab, where it is `editable`, it is drawn on while
- * the view's `tracks.edit` is about that map: a drag draws the zone in place of
- * what it was, or one more line. Elsewhere the zone `pictured.chosen` is shown as
- * chosen. All of it is read from the view as it is drawn, since the picture
- * outlives every page it is put on.
+ * the view's `tracks.edit` is about that map. A drag draws one more line. Of
+ * a zone, a click puts a corner after the last one, or on a side whose middle
+ * it is on, and takes out a corner it is on; a drag moves the corner it starts
+ * on, or puts one where it ends on the side whose middle it starts on; and a
+ * drag that starts elsewhere draws a rectangle of cells in place of the zone.
+ * Elsewhere the zone `pictured.chosen` is shown as chosen. All of it is read
+ * from the view as it is drawn, since the picture outlives every page it is
+ * put on.
  */
 function trackLayer(mine, id, pictured, editable, { left, top, width, height, palette }) {
-  let stroke = null; // what is being drawn: the cell the pointer went down on, and the one it is on
+  let stroke = null; // the line being drawn: the cell the pointer went down on, and the one it is on
+  // What a press on the zone being drawn took hold of, a corner or the middle of a side by its place, or nothing,
+  // where the press went down and where it is now, in cells of the map, and whether it has moved far enough for a drag.
+  let grip = null;
+  let perCell = 1; // the pixels of the page to a cell, as the picture was last painted
   const clamp = (value, most) => Math.min(most - 1, Math.max(0, value));
-  const cellAt = (x, y) => [clamp(Math.floor(x) + left, width), clamp(Math.floor(y) + top, height)];
+  const cellOf = ([x, y]) => [clamp(Math.floor(x), width), clamp(Math.floor(y), height)];
+  const cellAt = (x, y) => cellOf([x + left, y + top]);
+  // The corner of cells nearest a point.
+  const cornerOf = ([x, y]) => [clamp(Math.round(x), width + 1), clamp(Math.round(y), height + 1)];
+  // How far apart two points of the map are on the page.
+  const apart = ([x0, y0], [x1, y1]) => Math.hypot(x1 - x0, y1 - y0) * perCell;
+  // The middle of each side of a zone, by the corner it begins at, where the zone may have one more corner and the side
+  // is long enough on the page for its middle to be marked apart from its ends; else null.
+  const middles = (corners) => (corners.length < 3 || corners.length >= CORNERS_MAX ? [] : corners.map((corner, n) => {
+    const next = corners[(n + 1) % corners.length];
+    return apart(corner, next) >= 3 * GRAB ? [(corner[0] + next[0]) / 2, (corner[1] + next[1]) / 2] : null;
+  }));
+  // The place of the nearest of these points that a press at `at` is near enough to, or -1.
+  const nearest = (points, at) => {
+    let [found, least] = [-1, GRAB];
+    points.forEach((point, n) => {
+      const far = point === null ? Infinity : apart(point, at);
+      if (far <= least) [found, least] = [n, far];
+    });
+    return found;
+  };
+  // One more corner, after the one in place `n`, unless it is one of them already.
+  const put = (corners, n, [x, y]) => (corners.some(([cx, cy]) => cx === x && cy === y) ? corners
+    : [...corners.slice(0, n + 1), [x, y], ...corners.slice(n + 1)]);
+  // The corners of the zone as they would be if the drag `held` ended now, and as they are while a click has not ended.
+  const reshaped = (corners, held) => {
+    if (held === null || !held.moved) return corners;
+    const to = cornerOf(held.to);
+    if (held.kind === 'corner') return corners.map((corner, n) => (n === held.n ? to : corner));
+    if (held.kind === 'side') return put(corners, held.n, to);
+    return boxed([...cellOf(held.from), ...cellOf(held.to)]);
+  };
+  // And as they are once the click `held` has ended.
+  const clicked = (corners, held) => {
+    if (held.kind === 'corner') return corners.filter((_, n) => n !== held.n);
+    if (corners.length >= CORNERS_MAX) return corners;
+    return put(corners, held.kind === 'side' ? held.n : corners.length - 1, cornerOf(held.from));
+  };
   const editing = () => {
     const edit = mine.tracks.edit;
     return editable && edit !== null && edit.map === id ? edit : null;
@@ -2030,25 +2187,45 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
   return {
     editing: () => editing() !== null,
     begin: (x, y) => {
+      const edit = editing();
+      if (edit?.kind === 'zone') {
+        const at = [x + left, y + top];
+        const corner = nearest(edit.polygon, at);
+        const side = corner < 0 ? nearest(middles(edit.polygon), at) : -1;
+        grip = { kind: corner >= 0 ? 'corner' : side >= 0 ? 'side' : null, n: corner >= 0 ? corner : side, from: at, to: at, moved: false };
+        return;
+      }
       const at = cellAt(x, y);
       stroke = [...at, ...at];
     },
     extend: (x, y) => {
+      if (grip) {
+        grip.to = [x + left, y + top];
+        grip.moved ||= apart(grip.from, grip.to) > STILL;
+      }
       if (stroke) stroke = [stroke[0], stroke[1], ...cellAt(x, y)];
     },
     end: (keep) => {
-      const [edit, drawn] = [editing(), stroke];
-      stroke = null;
-      // A press that does not leave its cell draws nothing.
-      if (keep && edit !== null && drawn !== null && (drawn[0] !== drawn[2] || drawn[1] !== drawn[3])) {
-        if (edit.kind === 'zone') edit.rect = corners(drawn);
-        else if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
+      const [edit, drawn, held] = [editing(), stroke, grip];
+      [stroke, grip] = [null, null];
+      if (keep && edit?.kind === 'zone' && held !== null) {
+        const corners = held.moved ? reshaped(edit.polygon, held) : clicked(edit.polygon, held);
+        // What it was before is what Undo takes it back to.
+        if (String(corners) !== String(edit.polygon)) {
+          edit.history.push(edit.polygon);
+          edit.polygon = corners;
+        }
+      }
+      // A press that does not leave its cell draws no line.
+      if (keep && edit?.kind === 'nogo' && drawn !== null && (drawn[0] !== drawn[2] || drawn[1] !== drawn[3])) {
+        if (edit.lines.length < LINES_MAX) edit.lines.push(drawn);
       }
       pictured.repaint?.();
-      // The popover of the lines says how many have been drawn.
-      if (edit?.kind === 'nogo' && popped?.anchor === edit.anchor) sayLines(popped.node, edit);
+      // The popover says what has been drawn.
+      if (edit && popped?.anchor === edit.anchor) (edit.kind === 'zone' ? sayZone : sayLines)(popped.node, edit);
     },
     paint: (pen, plot, size, ratio) => {
+      perCell = size / ratio;
       const plan = mine.body && plansOf(mine.body).find((known) => known.map_id === id);
       if (!plan) return;
       const edit = editing();
@@ -2056,19 +2233,21 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
       // Each zone in the colour of its place. Where one is chosen, it stands out and the others stand back.
       const chosen = plan.zones.some((zone) => zone.track_uuid === pictured.chosen) ? pictured.chosen : null;
       plan.zones.forEach((zone, n) => {
-        const rect = rectOf(zone);
+        const corners = polygonOf(zone);
         // The zone that is being drawn is where it is drawn now.
-        if (!rect || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) return;
+        if (!corners || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) return;
         const look = chosen === null ? 'plain' : zone.track_uuid === chosen ? 'chosen' : 'aside';
-        paintZone(pen, at, rect, zone.name, zoneColour(palette, n), palette, ratio, look);
+        paintZone(pen, at, corners, zone.name, zoneColour(palette, n), palette, ratio, look);
       });
       const lines = edit?.kind === 'nogo' ? [...edit.lines, ...(stroke ? [stroke] : [])] : linesOf(plan.nogo);
       for (const line of lines) paintLine(pen, at, line, palette.nogo, size, ratio);
-      const rect = edit?.kind === 'zone' && (stroke ? corners(stroke) : edit.rect);
-      if (rect) {
+      if (edit?.kind === 'zone') {
         // In the colour it has, or a new one in that of the place it is to have, the last.
         const n = plan.zones.findIndex((zone) => zone.track_uuid === edit.track);
-        paintZone(pen, at, rect, edit.name.trim(), zoneColour(palette, n < 0 ? plan.zones.length : n), palette, ratio, 'drawn');
+        const colour = zoneColour(palette, n < 0 ? plan.zones.length : n);
+        const corners = reshaped(edit.polygon, grip);
+        paintZone(pen, at, corners, edit.name.trim(), colour, palette, ratio, 'drawn');
+        paintGrips(pen, at, corners, middles(corners), colour, palette, ratio);
       }
     },
   };
@@ -2099,7 +2278,8 @@ function drawLines(mine, id, plan) {
 /**
  * Open the popover that draws a zone of the floor plan `plan`, which is made
  * of the map of that `id`: the zone `zone`, or a new one where there is none,
- * as `drawTrack` has it. It has the zone's name and mode.
+ * as `drawTrack` has it. It has the zone's name, its mode, its corners and
+ * what they were before each change, for Undo.
  */
 function drawZone(mine, id, plan, zone = null) {
   drawTrack(mine, zone ? 'Edit zone' : 'Add zone', {
@@ -2110,8 +2290,9 @@ function drawZone(mine, id, plan, zone = null) {
     track: zone?.track_uuid ?? null,
     name: zone?.name ?? '',
     mode: MODES.includes(zone?.mode) ? zone.mode : MODES[0],
-    rect: zone ? rectOf(zone) : null,
-  }, zoneForm);
+    polygon: zone ? polygonOf(zone) : [],
+    history: [],
+  }, zoneForm, true);
 }
 
 /**
@@ -2192,8 +2373,9 @@ function saveTracks(mine, back) {
     // As the server keeps it: one line, its words a space apart.
     const name = edit.name.split(/\s+/).filter(Boolean).join(' ');
     if (name === '') return lacks('give the zone a name');
-    if (edit.rect === null) return lacks('draw the zone on the map');
-    const zone = JSON.stringify({ name, cleaning_mode: edit.mode, rect: edit.rect });
+    if (edit.polygon.length < 3) return lacks('draw the zone on the map, with three corners at least');
+    if (tangled(edit.polygon)) return lacks('the sides of the zone cross or touch; move a corner, or undo');
+    const zone = JSON.stringify({ name, cleaning_mode: edit.mode, polygon: edit.polygon });
     return askTracks(mine, label, { action: 'zone', rank_uuid: edit.rank, zone, ...(edit.track && { track_uuid: edit.track }) }, back);
   }
   if (edit.lines.length > 0) {
@@ -2205,8 +2387,9 @@ function saveTracks(mine, back) {
 }
 
 /**
- * What the popover that draws a zone holds: the zone's name and its mode, what
- * is to be drawn on the map, then Cancel and Save. `back` names the button
+ * What the popover that draws a zone holds: the zone's name and its mode, how
+ * it is drawn on the map, Undo and Clear, which take back the last change to
+ * its corners and all of them, then Cancel and Save. `back` names the button
  * that opened it. Save is held back while that button is, which is while the
  * robot has yet to answer; the popover shuts where the robot is not connected.
  */
@@ -2224,6 +2407,18 @@ function zoneForm(mine, edit, back) {
     },
   });
   const save = h('button', { class: 'command', type: 'submit', 'data-answer': 'Save' }, 'Save');
+  // Where `can` says that there is something for it to take back.
+  const takeBack = (label, glyph, can, press) => h('button', {
+    class: 'button',
+    type: 'button',
+    'data-takes': label,
+    onclick: () => {
+      if (!can()) return;
+      press();
+      sayZone(form, edit);
+      repaint(mine);
+    },
+  }, icon(glyph), label);
   const form = h('form', {
     class: 'popover-form',
     onsubmit: (event) => {
@@ -2235,13 +2430,41 @@ function zoneForm(mine, edit, back) {
   // A group of buttons is no one control that a label could hold, so its field is a block it names.
   h('div', { class: 'popover-field' }, h('span', null, 'Mode'),
     oneOf('Mode', 'zone-mode', MODES, edit.mode, (mode) => { edit.mode = mode; })),
-  h('p', { id: 'popover-text' },
-    edit.rect ? 'Drag on the map to draw the zone again.' : 'Drag on the map to draw the zone.',
-    ' To move an enlarged map instead, press the button with the arrows beside it.'),
+  h('p', { id: 'popover-text' }),
   h('div', { class: 'popover-tools' },
+    h('span', { class: 'popover-aside' },
+      takeBack('Undo', 'undo', () => edit.history.length > 0, () => { edit.polygon = edit.history.pop(); }),
+      takeBack('Clear', 'eraser', () => edit.polygon.length > 0, () => {
+        edit.history.push(edit.polygon);
+        edit.polygon = [];
+      })),
     h('button', { class: 'button', type: 'button', onclick: () => closePopover() }, 'Cancel'),
     save));
+  sayZone(form, edit);
   return [form, name];
+}
+
+/**
+ * Say in `node`, what the popover that draws the zone `edit` holds, how far
+ * the zone is drawn and how to draw it further, which changes as it is drawn
+ * and taken back, and hold back Undo while there is nothing to take back and
+ * Clear while there is no corner. Held back, not disabled, they keep the
+ * keyboard.
+ */
+function sayZone(node, edit) {
+  const count = edit.polygon.length;
+  const said = count === 0 ? 'Drag on the map to draw a rectangle, or click on it to put the corners of the zone one by one.'
+    : count < 3 ? `${count} ${count === 1 ? 'corner' : 'corners'} of the three a zone has at least. Click on the map to put the next.`
+    : tangled(edit.polygon) ? 'Its sides cross or touch, which the sides of a zone may not. Drag a corner away, or undo.'
+    : count < CORNERS_MAX ? `${count} corners. Click on the map to put one after the last, on the middle of a side to put one there, or on a corner to take it out; drag a corner to move it; drag elsewhere to draw a rectangle in place of the zone.`
+    : `${count} corners, the most there may be. Click on a corner to take it out, or drag it to move it; drag elsewhere to draw a rectangle in place of the zone.`;
+  node.querySelector('#popover-text').textContent = `${said} To move an enlarged map instead, press the button with the arrows beside it.`;
+  const why = new Map([['Undo', edit.history.length === 0 && 'nothing has been drawn'], ['Clear', count === 0 && 'there is no corner']]);
+  for (const button of node.querySelectorAll('[data-takes]')) {
+    const held = why.get(button.dataset.takes);
+    hold(button, Boolean(held));
+    button.title = held ? `${button.dataset.takes}: ${held}` : '';
+  }
 }
 
 /**
@@ -2339,7 +2562,7 @@ function trackPanel(mine, robot, id, plan) {
       h('span', { class: 'track-mode' }, plain(zone.mode)),
       h('div', { class: 'entry-tools' },
         robotButton(job, robot, 'Edit', `${focus}-edit`, () => drawZone(mine, id, plan, zone),
-          { why: why(`${focus}-edit`) ?? (rectOf(zone) ? null : 'the server has no rectangle of it'), glyph: 'pencil', alone: true }),
+          { why: why(`${focus}-edit`) ?? (polygonOf(zone) ? null : 'the server does not know its shape'), glyph: 'pencil', alone: true }),
         robotButton(job, robot, 'Delete', `${focus}-drop`, () => askDropZone(mine, zone, name, id),
           { why: why(`${focus}-drop`), glyph: 'trash', alone: true })));
   };

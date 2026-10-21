@@ -18,7 +18,7 @@ from deorbit import __main__ as cli
 from deorbit import web
 from deorbit.auth import RobotId
 from deorbit.commands import (
-    COMMANDS, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, ZONE_NAME_MAX, ZONES_MAX,
+    COMMANDS, CORNERS_MAX, DAYS, LINES_MAX, MODES, NAVIGATION_MODES, SETTINGS, ZONE_NAME_MAX, ZONES_MAX,
 )
 from deorbit.config import Config
 from deorbit.mqtt import Mqtt
@@ -2099,7 +2099,7 @@ class TrackTests(WebTestCase):
     HEADER = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\r\n20 10\r\n255\r"
     RANK = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=1.535890\r\n20 10\r\n255\r"
     TRACK = b"P5\r\n# Neato metadata: origin_x=-400 origin_y=-200 resolution=40 alignment=0.000000\r\n20 10\r\n65535\r"
-    KITCHEN = {"name": "Kitchen", "cleaning_mode": "eco", "rect": [2, 1, 5, 3]}
+    KITCHEN = {"name": "Kitchen", "cleaning_mode": "eco", "polygon": [[2, 1], [6, 1], [6, 4], [2, 4]]}
     UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
     @staticmethod
@@ -2166,20 +2166,64 @@ class TrackTests(WebTestCase):
             *["." * 20] * 6,
         ])
         kitchen = made["track_uuid"]
-        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Kitchen", "eco", [2, 1, 5, 3])])
+        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Kitchen", "eco", self.KITCHEN["polygon"])])
         # Changed, it is the same track, its name made one line; as large as the floor plan, it is all of it.
-        whole = {"name": " Pantry\t corner\n", "cleaning_mode": "max", "rect": [0, 0, 19, 9]}
+        whole = {"name": " Pantry\t corner\n", "cleaning_mode": "max", "polygon": [[0, 0], [20, 0], [20, 10], [0, 10]]}
         request, _ = await self.answered(robot, self.zone(whole, kitchen), self.DONE)
         self.assertEqual((self.sent(request)["track_uuid"], self.sent(request)["track_name"]), (kitchen, "Pantry corner"))
         self.assertEqual(self.drawn(request["body"]["tracks"][0]), ["#" * 20] * 10)
         # Another is one more, as small as a cell.
-        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "name": "Hall", "rect": [19, 9, 19, 9]}), self.DONE)
+        hall_cell = [[19, 9], [20, 9], [20, 10], [19, 10]]
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "name": "Hall", "polygon": hall_cell}), self.DONE)
         hall = self.sent(request)["track_uuid"]
         self.assertNotEqual(hall, kitchen)
         self.assertEqual(self.drawn(request["body"]["tracks"][0])[9], "." * 19 + "#")
         # The one first added stays first, whatever it is called now.
-        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Pantry corner", "max", [0, 0, 19, 9]),
-                                               (hall, self.PLAN, "cleaning", "Hall", "eco", [19, 9, 19, 9])])
+        self.assertEqual(await self.tracks(), [(kitchen, self.PLAN, "cleaning", "Pantry corner", "max", whole["polygon"]),
+                                               (hall, self.PLAN, "cleaning", "Hall", "eco", hall_cell)])
+
+    async def test_zone_is_every_cell_its_polygon_covers_any_of(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        # A floor plan of an L, and one with a side that slopes, its corners given the other way round,
+        # which covers each cell that side goes through.
+        ell = [[0, 0], [3, 0], [3, 2], [6, 2], [6, 4], [0, 4]]
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "polygon": ell}), self.DONE)
+        self.assertEqual(self.drawn(request["body"]["tracks"][0])[:5], [
+            "###" + "." * 17,
+            "###" + "." * 17,
+            "######" + "." * 14,
+            "######" + "." * 14,
+            "." * 20,
+        ])
+        sloped = [[10, 0], [10, 6], [13, 6]]
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "polygon": sloped}), self.DONE)
+        self.assertEqual(self.drawn(request["body"]["tracks"][0])[:7], [
+            "." * 10 + "#" + "." * 9,
+            "." * 10 + "#" + "." * 9,
+            "." * 10 + "##" + "." * 8,
+            "." * 10 + "##" + "." * 8,
+            "." * 10 + "###" + "." * 7,
+            "." * 10 + "###" + "." * 7,
+            "." * 20,
+        ])
+        # A side on the diagonal goes through the corners of cells, and through each cell it halves.
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "polygon": [[0, 10], [0, 6], [4, 10]]}), self.DONE)
+        self.assertEqual(self.drawn(request["body"]["tracks"][0])[6:], ["#" + "." * 19, "##" + "." * 18, "###" + "." * 17,
+                                                                        "####" + "." * 16])
+        # A thin one is still cells that each meet another along a side.
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "polygon": [[0, 0], [1, 0], [20, 10], [19, 10]]}), self.DONE)
+        runs = [(0, 2), (1, 4), (3, 6), (5, 8), (7, 10), (9, 12), (11, 14), (13, 16), (15, 18), (17, 19)]
+        self.assertEqual(self.drawn(request["body"]["tracks"][0]),
+                         ["." * first + "#" * (last - first + 1) + "." * (19 - last) for first, last in runs])
+        # As many corners as there may be, most of them on one line, on a floor plan wide enough for them.
+        wide = base64.b64encode(zlib.compress(b"P5\n100 10\n255\r" + bytes(1000))).decode()
+        self.server.store.save_map(self.ROBOT, {**MAP, "map": {**MAP["map"], "rank_binary": wide, "real_binary": wide}})
+        self.server.store.save_floorplan(self.ROBOT, self.PLAN, self.server.store.maps(self.ROBOT, 1)[0]["id"])
+        many = [[x, 0] for x in range(CORNERS_MAX - 2)] + [[CORNERS_MAX - 3, 1], [0, 1]]
+        request, _ = await self.answered(robot, self.zone({**self.KITCHEN, "polygon": many}), self.DONE)
+        file = zlib.decompress(base64.b64decode(request["body"]["tracks"][0]["track_binary"]))
+        self.assertEqual(file, b"P5\n100 10\n65535\r" + (1024).to_bytes(2, "little") * (CORNERS_MAX - 3) + bytes(2000 - 2 * (CORNERS_MAX - 3)))
 
     async def test_floor_plan_has_so_many_zones_at_most(self) -> None:
         await self.start()
@@ -2279,9 +2323,10 @@ class TrackTests(WebTestCase):
                 f"{self.BOARD1}&action=zone&rank_uuid={self.PLAN}&zone=" + "%5B" * 5000,
             ],
             "lines must be JSON": [f"{self.BOARD1}&action=nogo&rank_uuid={self.PLAN}", self.lines([[0, 0, 1, 1]])[:-3]],
-            "zone must be an object of name, cleaning_mode, rect and nothing else": [
-                self.zone(given) for given in ({}, [], "Kitchen", None, {"name": "Kitchen", "rect": [0, 0, 1, 1]},
-                                               {**self.KITCHEN, "track_uuid": self.ELSE}, {**self.KITCHEN, "Rect": [0, 0, 1, 1]})
+            "zone must be an object of name, cleaning_mode, polygon and nothing else": [
+                self.zone(given) for given in ({}, [], "Kitchen", None, {"name": "Kitchen", "polygon": [[0, 0], [1, 0], [0, 1]]},
+                                               {**self.KITCHEN, "track_uuid": self.ELSE}, {**self.KITCHEN, "Polygon": [[0, 0]]},
+                                               {"name": "Kitchen", "cleaning_mode": "eco", "rect": [2, 1, 5, 3]})
             ],
             f"zone.name must be from 1 to {ZONE_NAME_MAX} characters": [
                 self.zone({**self.KITCHEN, "name": given}) for given in ("", " \t\n", "k" * (ZONE_NAME_MAX + 1), 7, None, ["Hall"])
@@ -2292,17 +2337,31 @@ class TrackTests(WebTestCase):
             "zone.cleaning_mode must be one of eco, turbo, auto, max": [
                 self.zone({**self.KITCHEN, "cleaning_mode": given}) for given in ("ECO", "", None, "normal", ["eco"])
             ],
-            "zone.rect must be a list of four whole numbers": [
-                self.zone({**self.KITCHEN, "rect": given}) for given in ([1, 2, 3], [1, 2, 3, 4, 5], "1,2,3,4", None, {"x": 1})
+            f"zone.polygon must be a list of from 3 to {CORNERS_MAX} corners": [
+                self.zone({**self.KITCHEN, "polygon": given})
+                for given in ([], [[0, 0], [1, 1]], "0,0,1,0,0,1", None, {"x": 1}, [[0, 0], [1, 0], [0, 1]] * 34)
             ],
-            "zone.rect[0] must be a whole number from 0 to 19": [
-                self.zone({**self.KITCHEN, "rect": [given, 0, 1, 1]}) for given in (-1, 20, 1.0, True, "1", None)
+            # Which is what a rectangle used to be given as.
+            "zone.polygon[0] must be a list of two whole numbers": [
+                self.zone({**self.KITCHEN, "polygon": given})
+                for given in ([2, 1, 5, 3], [[0, 0, 1], [1, 0], [0, 1]], [None, [1, 0], [0, 1]], [[[0, 0]], [1, 0], [0, 1]])
             ],
-            "zone.rect[1] must be a whole number from 0 to 9": [self.zone({**self.KITCHEN, "rect": [0, 10, 1, 1]})],
-            "zone.rect[2] must be a whole number from 0 to 19": [self.zone({**self.KITCHEN, "rect": [0, 0, 2 ** 64, 1]})],
-            "zone.rect[3] must be a whole number from 0 to 9": [self.zone({**self.KITCHEN, "rect": [0, 0, 1, 1.5]})],
-            "zone.rect must give its top left corner before its bottom right one": [
-                self.zone({**self.KITCHEN, "rect": given}) for given in ([5, 1, 2, 3], [2, 3, 5, 1], [19, 9, 0, 0])
+            "zone.polygon[1][0] must be a whole number from 0 to 20": [
+                self.zone({**self.KITCHEN, "polygon": [[0, 0], [given, 0], [0, 1]]}) for given in (-1, 21, 1.0, True, "1", None, 2 ** 64)
+            ],
+            "zone.polygon[2][1] must be a whole number from 0 to 10": [self.zone({**self.KITCHEN, "polygon": [[0, 0], [1, 0], [0, 11]]})],
+            "zone.polygon[3] must not be a corner it has already": [
+                self.zone({**self.KITCHEN, "polygon": given}) for given in ([[0, 0], [4, 0], [4, 4], [0, 0]], [[0, 0], [4, 0], [4, 4], [4, 0]])
+            ],
+            # Sides that cross; a corner on another side; and sides that go back along each other, all on one line or not.
+            "zone.polygon must not have sides that cross or touch, as those from its corners 1 and 3 do": [
+                self.zone({**self.KITCHEN, "polygon": [[0, 0], [4, 0], [0, 4], [4, 4]]}),
+            ],
+            "zone.polygon must not have sides that cross or touch, as those from its corners 0 and 2 do": [
+                self.zone({**self.KITCHEN, "polygon": given}) for given in ([[0, 0], [6, 0], [6, 4], [3, 0], [0, 4]], [[0, 0], [2, 0], [4, 0]])
+            ],
+            "zone.polygon must not have sides that cross or touch, as those from its corners 1 and 2 do": [
+                self.zone({**self.KITCHEN, "polygon": [[0, 0], [4, 0], [4, 4], [4, 2]]}),
             ],
             f"lines must be a list of from 1 to {LINES_MAX} lines": [
                 self.lines(given) for given in ([], {}, "0,0,1,1", None, [[0, 0, 1, 1]] * (LINES_MAX + 1))
@@ -2455,6 +2514,7 @@ class TrackTests(WebTestCase):
         _, _, script = await self.fetch("/app.js")
         self.assertRegex(script.decode(), rf"(?m)^const ZONE_NAME_MAX = {ZONE_NAME_MAX};")
         self.assertRegex(script.decode(), rf"(?m)^const LINES_MAX = {LINES_MAX};")
+        self.assertRegex(script.decode(), rf"(?m)^const CORNERS_MAX = {CORNERS_MAX};")
         self.assertRegex(script.decode(), rf"(?m)^const ZONES_MAX = {ZONES_MAX};")
         # A colour of its own for each zone a floor plan may have, on a dark page and on a light one.
         _, _, painting = await self.fetch("/map.js")

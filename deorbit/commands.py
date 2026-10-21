@@ -6,8 +6,9 @@ import math
 import re
 import unicodedata
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
+from fractions import Fraction
 
 # By the name a robot's state gives the command under ``available_commands``:
 # the ability to invoke and what is sent with it, which is nothing for all but
@@ -294,13 +295,21 @@ def floorplan(action: str, rank_uuid: str, old_rank_uuid: str, uploaded: str | N
 # the reader's maxval check instead, and the run dies with pm_load_fail —
 # which is how this was found: a zone of 255 in an 8-bit file, under the
 # header of the ``rank_binary``, made a real robot (firmware 1.7.0) fail to
-# load it. A zone is a rectangle of cells, and a line goes from cell to cell
-# without a corner that a diagonal step could pass through. These are this
-# server's choices, and so are the limits below.
+# load it. A zone is a polygon whose corners are where cells meet, from 0 to
+# the width and the height of the map, and it is every cell it covers any part
+# of, so a rectangle of cells is the polygon of their outer corners. The
+# polygon has to be simple: no corner twice, and no two sides that cross or
+# touch but where one ends and the next begins. That makes it one area, as the
+# robot takes a zone to be (section 6.3.1), and the cells it covers any part
+# of are then one area too, each joined to another by a side, however thin
+# the polygon is. A line goes from cell to cell without a corner that a
+# diagonal step could pass through. These are this server's choices, and so
+# are the limits below.
 ZONE_NAME_MAX = 32  # the most characters a zone's name may have
 # The most zones a floor plan may have, which is how many colours the page has
 # for them that are told apart from each other and from the rest of a map.
 ZONES_MAX = 6
+CORNERS_MAX = 100  # the most corners a zone may have
 LINES_MAX = 100  # the most no-go lines a floor plan may have
 _MARKED = 1024  # the value of a marked cell, as the robot's zone loader reads it
 _MARKED_BYTES = _MARKED.to_bytes(2, "little")
@@ -361,15 +370,13 @@ def _pgm(given: object, where: str) -> tuple[bytes, bytes, int, int]:
     return start[:maxval_at], start[at : at + 1], width, height
 
 
-def _drawn(header: bytes, width: int, height: int, zone: list[int] | None = None, lines: list[list[int]] = ()) -> str:
-    """A binary of the floor plan whose track header this is, two bytes to a cell: a zone, a rectangle of cells, or lines drawn on it."""
+def _drawn(header: bytes, width: int, height: int, zone: list[list[int]] | None = None, lines: list[list[int]] = ()) -> str:
+    """A binary of the floor plan whose track header this is, two bytes to a cell: a zone, the cells a polygon covers any part of, or lines drawn on it."""
     cells = bytearray(width * height * 2)
     if zone is not None:
-        left, top, right, bottom = zone
-        marked = _MARKED_BYTES * (right - left + 1)
-        for row in range(top, bottom + 1):
-            at = (row * width + left) * 2
-            cells[at : at + len(marked)] = marked
+        for row, first, last in _covered(zone):
+            at = (row * width + first) * 2
+            cells[at : at + (last - first + 1) * 2] = _MARKED_BYTES * (last - first + 1)
     for x, y, x1, y1 in lines:
         # Bresenham's, with the cell at each corner of the line marked too, so that nothing goes through it on the diagonal.
         dx, dy = abs(x1 - x), -abs(y1 - y)
@@ -390,6 +397,90 @@ def _drawn(header: bytes, width: int, height: int, zone: list[int] | None = None
                 error += dx
                 y += sy
     return base64.b64encode(zlib.compress(header + cells)).decode("ascii")
+
+
+def _covered(corners: list[list[int]]) -> Iterator[tuple[int, int, int]]:
+    """The cells a simple polygon covers any part of, a row at a time: the row, then the first and the last cell of a run of them in it.
+
+    No corner is within a row, only on its edges, so the sides that cross a
+    row cross all of it, in one order across it, since none crosses another.
+    The polygon is between the first and the second of them, the third and the
+    fourth, and so on, and each such run reaches as far as its two sides do, at
+    the top of the row or at its bottom. Runs may overlap.
+    """
+    sides = [
+        (x0, y0, x1, y1) if y0 < y1 else (x1, y1, x0, y0)
+        for (x0, y0), (x1, y1) in zip(corners, corners[1:] + corners[:1])
+        if y0 != y1
+    ]
+    for row in range(min(y for _, y in corners), max(y for _, y in corners)):
+        # Where each side is at the top of the row and at its bottom, both times how far down the side goes,
+        # which keeps them whole numbers, and in the order of where it is halfway down the row.
+        across = []
+        for x0, y0, x1, y1 in sides:
+            if y0 <= row < y1:
+                down = y1 - y0
+                upper = x0 * down + (row - y0) * (x1 - x0)
+                lower = upper + x1 - x0
+                across.append((Fraction(upper + lower, down), min(upper, lower), max(upper, lower), down))
+        across.sort()
+        for (_, least, _, down), (_, _, most, under) in zip(across[::2], across[1::2]):
+            yield row, least // down, -(-most // under) - 1
+
+
+def _side(a: tuple[int, int], b: tuple[int, int], c: tuple[int, int]) -> int:
+    """Which side of the line through ``a`` and ``b`` the point ``c`` is on, as 1 or -1, or 0 where it is on that line."""
+    turn = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return (turn > 0) - (turn < 0)
+
+
+def _meet(a: tuple[int, int], b: tuple[int, int], c: tuple[int, int], d: tuple[int, int]) -> bool:
+    """Whether the side from ``a`` to ``b`` and the one from ``c`` to ``d`` have a point in common."""
+    def between(p: tuple[int, int], q: tuple[int, int], r: tuple[int, int]) -> bool:
+        # Of a point q on the line through p and r.
+        return min(p[0], r[0]) <= q[0] <= max(p[0], r[0]) and min(p[1], r[1]) <= q[1] <= max(p[1], r[1])
+
+    one, two, three, four = _side(a, b, c), _side(a, b, d), _side(c, d, a), _side(c, d, b)
+    if one != two and three != four:
+        return True
+    return ((one == 0 and between(a, c, b)) or (two == 0 and between(a, d, b))
+            or (three == 0 and between(c, a, d)) or (four == 0 and between(c, b, d)))
+
+
+def _back(u: tuple[int, int], v: tuple[int, int], w: tuple[int, int]) -> bool:
+    """Whether the side from ``v`` to ``w`` goes back along the one from ``u`` to ``v``, which is all that two sides that meet at ``v`` may have in common but ``v``."""
+    return _side(u, v, w) == 0 and (u[0] - v[0]) * (w[0] - v[0]) + (u[1] - v[1]) * (w[1] - v[1]) > 0
+
+
+def _corners(given: object, width: int, height: int) -> list[list[int]]:
+    """The corners of a zone, each two whole numbers: how far across the floor plan's map and how far down it, where its cells meet, from 0 to its width and its height. Together they have to make a simple polygon."""
+    if not isinstance(given, list) or not 3 <= len(given) <= CORNERS_MAX:
+        raise ValueError(f"zone.polygon must be a list of from 3 to {CORNERS_MAX} corners")
+    for n, corner in enumerate(given):
+        if not isinstance(corner, list) or len(corner) != 2:
+            raise ValueError(f"zone.polygon[{n}] must be a list of two whole numbers")
+        for m, (value, most) in enumerate(zip(corner, (width, height))):
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= most:
+                raise ValueError(f"zone.polygon[{n}][{m}] must be a whole number from 0 to {most}")
+    corners = [tuple(corner) for corner in given]
+    for n, corner in enumerate(corners):
+        if corner in corners[:n]:
+            raise ValueError(f"zone.polygon[{n}] must not be a corner it has already")
+    count = len(corners)
+    for i in range(count):
+        a, b = corners[i], corners[(i + 1) % count]
+        for j in range(i + 1, count):
+            c, d = corners[j], corners[(j + 1) % count]
+            # Two sides that meet, the one ending where the other begins, may have nothing else in common.
+            if j == i + 1:
+                tangled = _back(a, b, d)
+            elif i == 0 and j == count - 1:
+                tangled = _back(c, a, b)
+            else:
+                tangled = _meet(a, b, c, d)
+            if tangled:
+                raise ValueError(f"zone.polygon must not have sides that cross or touch, as those from its corners {i} and {j} do")
+    return [list(corner) for corner in corners]
 
 
 def _cells(given: object, width: int, height: int, where: str) -> list[int]:
@@ -417,15 +508,16 @@ def track(action: str, rank_uuid: str, track_uuid: str, given: str, uploaded: st
     """The ability for an action on the zones and no-go lines of a robot's floor plan, what is sent with it and what is noted once the robot accepts, or a ``ValueError`` that says what is wrong.
 
     ``zone`` has the robot keep the zone ``given``, the JSON of its ``name``,
-    its ``cleaning_mode`` and its ``rect``, as the track ``track_uuid`` of the
-    floor plan ``rank_uuid``; ``nogo`` has it keep the lines ``given``, the
+    its ``cleaning_mode`` and its ``polygon``, as the track ``track_uuid`` of
+    the floor plan ``rank_uuid``; ``nogo`` has it keep the lines ``given``, the
     JSON of a list of them, as that floor plan's no-go lines. Both are drawn on
     ``uploaded``, the JSON of the map the floor plan was made of, as the robot
-    uploaded it, and a rectangle and a line are each four cells of it: from the
-    left and from the top of the one corner, then of the other, which for a
-    rectangle are its top left and its bottom right. What is noted is the
-    track's type, its name and its mode, and what was drawn. ``delete`` has the
-    robot drop the track ``track_uuid``, and nothing is noted but that.
+    uploaded it. A polygon is a list of its corners, each how far it is from the
+    left of the map and from its top, where its cells meet; a line is four
+    cells of the map: from the left and from the top of the one end, then of
+    the other. What is noted is the track's type, its name and its mode, and
+    what was drawn. ``delete`` has the robot drop the track ``track_uuid``, and
+    nothing is noted but that.
     """
     if action == "delete":
         return "maps.delete_track", {"tracks": [_uuid(track_uuid, "track_uuid")]}, None
@@ -437,11 +529,9 @@ def track(action: str, rank_uuid: str, track_uuid: str, given: str, uploaded: st
     except (ValueError, RecursionError):  # as for an event of a schedule
         raise ValueError(f"{'zone' if action == 'zone' else 'lines'} must be JSON") from None
     if action == "zone":
-        name, mode, rect = _fields(shape, "zone", "name", "cleaning_mode", "rect")
+        name, mode, polygon = _fields(shape, "zone", "name", "cleaning_mode", "polygon")
         name, mode = _zone_name(name), _among(mode, MODES, "zone.cleaning_mode")
-        left, top, right, bottom = shape = _cells(rect, width, height, "zone.rect")
-        if left > right or top > bottom:
-            raise ValueError("zone.rect must give its top left corner before its bottom right one")
+        shape = _corners(polygon, width, height)
         kept = ("cleaning", name, mode, shape)
         binary = _drawn(header, width, height, zone=shape)
     else:

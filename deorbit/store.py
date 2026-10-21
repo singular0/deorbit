@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     type       TEXT NOT NULL,  -- cleaning, which is a zone, or no-go
     name       TEXT,           -- a zone's name; NULL for no-go lines
     mode       TEXT,           -- a zone's cleaning mode; NULL for no-go lines
-    shape_json TEXT NOT NULL,  -- what was drawn, in cells of the floor plan's map: a zone's rectangle, or the lines
+    shape_json TEXT NOT NULL,  -- what was drawn, in cells of the floor plan's map: a zone's corners, or the lines
     at         TEXT NOT NULL,  -- when the robot accepted it
     PRIMARY KEY (vendor, serial, track_uuid),
     CONSTRAINT shape_json_is_json CHECK (json_valid(shape_json))

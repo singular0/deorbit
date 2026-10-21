@@ -51,7 +51,7 @@ reports is stored in a database on your machine.
 | Cleaning schedule | ✅ | |
 | Maps of past cleanings | ✅ | |
 | Floor plans | ✅ | |
-| Zones and no-go lines | 🟡 | Only simple rectangular shaped zones are supported. |
+| Zones and no-go lines | ✅ | |
 | History | ✅ | Connections, messages, errors and the commands sent. |
 | Notifications | 🟡 | Shown in the history only; nothing goes to a phone or by e-mail. |
 | Name robots and maps | ✅ | Names are kept on the server only. |
