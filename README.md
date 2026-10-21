@@ -222,9 +222,10 @@ so they survive it. Port 3443 is for robots and 8080 for the web page.
 The robot must already be on your Wi-Fi.
 
 1. Open the web page in Chrome or Edge at `http://localhost:8080`. Browsers
-   allow USB only on `localhost` or HTTPS, and elsewhere the **Bind a robot**
-   button is greyed out. If the server is on another machine, forward the port
-   first: `ssh -L 8080:localhost:8080 user@that-machine`.
+   normally allow USB only on `localhost` or HTTPS, and elsewhere the **Bind a
+   robot** button is greyed out. If the server is on another machine, forward
+   the port first: `ssh -L 8080:localhost:8080 user@that-machine`, or use the
+   HTTP workaround below.
 2. Click **Bind a robot**. The page fills in your `public_address` as the
    server address; check it, and correct it there if it's wrong.
 3. Plug the robot in with a USB cable, click **Configure robot**, and choose
@@ -232,6 +233,20 @@ The robot must already be on your Wi-Fi.
 4. When the steps are done, unplug the robot. It shows up in the list once it
    next connects. If a step fails, the debug log under the steps opens and
    says why.
+
+To enable WebUSB when opening the page over HTTP at a network address:
+
+1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` in Chrome,
+   or `edge://flags/#unsafely-treat-insecure-origin-as-secure` in Edge.
+2. In **Insecure origins treated as secure**, enter the page's exact origin,
+   such as `http://192.168.1.20:8080` (include `http://` and the port, but no
+   path or `#/bind`).
+3. Set the flag to **Enabled** and click **Relaunch** to restart the browser.
+4. Open that address again; **Bind a robot** should now be available.
+
+This bypasses a browser security protection; it does not encrypt HTTP. Use it
+only on a trusted network, and remove the origin and reset the flag to
+**Default** after binding. HTTPS or the localhost SSH tunnel above is safer.
 
 Binding changes three files on the robot: its hosts file and vendor settings,
 so it looks for its cloud at your server, and the certificate it trusts. No
