@@ -413,8 +413,9 @@ class StoreTests(unittest.TestCase):
         store.save_track(OTHER, MAP["rank_uuid"], "t1", "cleaning", "Kitchen", "eco", [0, 0, 1, 1])
         store.delete_tracks(OTHER, ["t1"])
         store.delete_floorplan(OTHER, MAP["rank_uuid"])
+        store.delete_map(OTHER, 1)
         store.delete(ROBOT)
-        self.assertEqual(told, [ROBOT, OTHER, ROBOT, OTHER, ROBOT, OTHER, OTHER, OTHER, OTHER, OTHER, ROBOT])
+        self.assertEqual(told, [ROBOT, OTHER, ROBOT, OTHER, ROBOT, OTHER, OTHER, OTHER, OTHER, OTHER, OTHER, ROBOT])
         # A write that failed is told of too, as a login or a disconnect says what it is without being in the file.
         told.clear()
         with self.assertLogs("deorbit", "ERROR"):
@@ -554,6 +555,56 @@ class StoreTests(unittest.TestCase):
         for read in (lambda: store.maps(ROBOT, 10), lambda: store.floorplan_maps(ROBOT, 2), lambda: store.map_names(ROBOT)):
             with self.assertRaisesRegex(StoreError, "^cannot read the database: no such table: map_names$"):
                 read()
+
+    def test_map_is_deleted_with_its_name(self) -> None:
+        store = self.open()
+        for robot, body in ((ROBOT, MAP), (OTHER, MAP), (ROBOT, {**MAP, "rank_uuid": "second"})):
+            store.save_map(robot, body)
+        for robot, number, name in ((ROBOT, 1, "Kitchen"), (OTHER, 2, "Kitchen"), (ROBOT, 3, "Hall")):
+            store.save_map_name(robot, number, name)
+        _, second, third = self.maps()
+        self.assertTrue(store.delete_map(ROBOT, 1))
+        # The robot's other map stays, and so does the other robot's of the same rank_uuid, each with its name.
+        self.assertEqual(self.maps(), [second, third])
+        self.assertEqual(self.called(), [("n", "board2", 2, "Kitchen"), ("n", "board1", 3, "Hall")])
+        self.assertEqual((store.map(ROBOT, 1), store.has_map(ROBOT, MAP["rank_uuid"])), (None, False))
+        self.assertEqual([row["id"] for row in store.maps(ROBOT, 10)], [3])
+        self.assertEqual(store.map_names(ROBOT), [{"rank_uuid": "second", "name": "Hall"}])
+        # A map is deleted of its robot, so another's of that id is not, and one that is gone is deleted as well as any.
+        for robot, number in ((OTHER, 3), (ROBOT, 2), (ROBOT, 1), (ROBOT, 9)):
+            self.assertTrue(store.delete_map(robot, number))
+        self.assertEqual(self.maps(), [second, third])
+        # Not as a row, and not as what a row leaves behind in the pages it was on.
+        store.save_map(ROBOT, {"map": {"rank_binary": "map-of-the-deleted" * 5000}})
+        store.save_map_name(ROBOT, 4, "label-of-the-deleted")
+        for what in (b"map", b"label"):
+            self.assertIn(what + b"-of-the-deleted", self.path.read_bytes())
+        self.assertTrue(store.delete_map(ROBOT, 4))
+        self.assertNotIn(b"-of-the-deleted", self.path.read_bytes())
+        self.assertEqual(self.maps(), [second, third])
+
+    def test_map_that_cannot_be_deleted_keeps_its_name(self) -> None:
+        with mock.patch("deorbit.store._BUSY_TIMEOUT", 0.05):
+            store = self.open()
+        store.save_map(ROBOT, MAP)
+        store.save_map_name(ROBOT, 1, "Kitchen")
+        before = self.maps(), self.called()
+        with contextlib.closing(sqlite3.connect(self.path)) as db, self.assertLogs("deorbit", "ERROR") as logs:
+            # Another program has the file for longer than the store waits for it.
+            db.execute("BEGIN IMMEDIATE")
+            self.assertFalse(store.delete_map(ROBOT, 1))
+            db.execute("ROLLBACK")
+            # The map does not let go, when its name already has.
+            db.execute("CREATE TRIGGER no_delete BEFORE DELETE ON maps BEGIN SELECT RAISE(ABORT, 'full'); END")
+            self.assertFalse(store.delete_map(ROBOT, 1))
+            self.assertEqual((self.maps(), self.called()), before)
+            db.execute("DROP TRIGGER no_delete")
+        self.assertEqual(len(logs.output), 2)
+        for line, why in zip(logs.output, ("database is locked", "full")):
+            self.assertIn(f"[n/board1] not saved to the database: {why}", line)
+        # Neither left the store in the middle of anything.
+        self.assertTrue(store.delete_map(ROBOT, 1))
+        self.assertEqual((self.maps(), self.called()), ([], []))
 
     def test_file_without_a_map_names_table_gets_one(self) -> None:
         store = self.open()

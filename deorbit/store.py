@@ -290,6 +290,17 @@ class Store:
         )
         return self._write(robot, sql, (*where, name))
 
+    def delete_map(self, robot: RobotId, map_id: int) -> bool:
+        """Delete the robot's map of that ``id`` with its name, both or neither, and say whether they are gone, as they are of a map it never had.
+
+        The ``id`` may be given to the next map that arrives, where this one was the last to.
+        """
+        where = (robot.vendor, robot.serial, map_id)
+        return self._change(robot, [
+            ("DELETE FROM map_names WHERE vendor = ? AND serial = ? AND map_id = ?", where),
+            ("DELETE FROM maps WHERE vendor = ? AND serial = ? AND id = ?", where),
+        ])
+
     def save_floorplan(self, robot: RobotId, rank_uuid: str, map_id: int, replaced: str | None = None) -> bool:
         """Note that the robot keeps the map of that ``id`` as the floor plan ``rank_uuid``, in place of ``replaced`` when one is given, and say whether the file now has it so.
 

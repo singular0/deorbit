@@ -1,4 +1,4 @@
-"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot and its maps, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it."""
+"""Web UI: a plain HTTP listener that shows the robots in the database with their events and maps, names a robot and its maps, sends it commands, reads and changes its schedule and its settings, has it keep and drop floor plans and their zones and no-go lines, and deletes it or one of its maps."""
 
 import asyncio
 import hashlib
@@ -188,10 +188,13 @@ class Web:
             "/api/track": self._track,
             "/api/name": self._rename,
             "/api/map_name": self._rename_map,
+            "/api/map_delete": self._delete_map,
             "/api/delete": self._delete,
         }
         self._listener: asyncio.Server | None = None
         self._connections: set[asyncio.Task] = set()
+        # The maps a robot is being asked to keep as a floor plan, by robot and id, once for each time it is.
+        self._making: list[tuple[RobotId, int]] = []
 
     @property
     def port(self) -> int:
@@ -377,7 +380,15 @@ class Web:
             noted = partial(self._store.delete_floorplan, robot, params["rank_uuid"])
         else:
             noted = partial(self._store.save_floorplan, robot, params["rank_uuid"], number, params["old_rank_uuid"])
-        return await self._call(robot, ability, params, noted)
+        if number is None:
+            return await self._call(robot, ability, params, noted)
+        # The map is not deleted until the robot has answered, so that the floor plan is noted of the map it was
+        # sent, and not of none, or of a later one that was given its id.
+        self._making.append((robot, number))
+        try:
+            return await self._call(robot, ability, params, noted)
+        finally:
+            self._making.remove((robot, number))
 
     async def _track(self, query: str) -> tuple[int, str, bytes]:
         """Have a robot keep a zone of a floor plan or its no-go lines, or drop either, as the query says, and answer as for a command."""
@@ -452,6 +463,25 @@ class Web:
             return 503, _JSON, _json({"error": "the name could not be saved to the database"})
         log.info("[%s] map %d %s", robot, number, "goes by its start time again" if name is None else f"named {name!r}")
         return 200, _JSON, _json({"name": name})
+
+    async def _delete_map(self, query: str) -> tuple[int, str, bytes]:
+        """Delete the robot's map that the query names, with its name."""
+        asked = parse_qs(query)
+        robot = _named(asked)
+        # Of a map in the database, which is named as ``/api/map`` has it named. No ability has a robot delete
+        # a map it uploaded, so the robot is sent nothing and need not be connected.
+        number = _number(asked, "id", _MAX_ID)
+        if number is None or self._store.map(robot, number) is None:
+            return 404, _JSON, _json({"error": "no such map in the database"})
+        # A floor plan is shown as the map it was made of, and its zones and no-go lines are drawn on that map.
+        if any(plan["map_id"] == number for plan in self._store.floorplans(robot)):
+            return 409, _JSON, _json({"error": "a floor plan was made of the map: demote it first"})
+        if (robot, number) in self._making:
+            return 409, _JSON, _json({"error": "the robot is being asked to keep the map as a floor plan"})
+        if not self._store.delete_map(robot, number):
+            return 503, _JSON, _json({"error": "the map could not be deleted from the database"})
+        log.info("[%s] map %d deleted", robot, number)
+        return 200, _JSON, _json({})
 
     async def _delete(self, query: str) -> tuple[int, str, bytes]:
         """Delete the robot the query names: all that the database holds of it, its key, and the session it has."""

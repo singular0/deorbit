@@ -698,6 +698,133 @@ class MapNameTests(WebTestCase):
             self.assertEqual(await self.names(), ["Kitchen"])
 
 
+class MapDeleteTests(WebTestCase):
+    """``POST /api/map_delete``, which is what Delete it sends, in the popover of Delete in the row of a map."""
+
+    OTHER = RobotId("n", "board0")
+    BOARD1 = "/api/map_delete?vendor=n&serial=board1&id=2"
+    PROMOTE = "/api/floorplan?vendor=n&serial=board1&action=promote&map="
+
+    async def start(self, **overrides: object) -> Web:
+        web = await super().start(**overrides)
+        # A map of each robot's, the other robot's first, and a later one of this robot's. Neither robot is connected.
+        store = self.server.store
+        store.save_heartbeat(self.OTHER)
+        store.save_state(self.ROBOT, STATE)
+        store.save_map(self.OTHER, MAP)
+        store.save_map(self.ROBOT, MAP)
+        store.save_map(self.ROBOT, {**MAP, "rank_uuid": FLOOR["rank_id"]})
+        return web
+
+    async def listed(self, serial: str = "board1") -> list[tuple[int, str | None]]:
+        """The robot's maps as its page has them: each by its id, with its name."""
+        return [(row["id"], row["name"]) for row in (await self.api(f"/api/robot?vendor=n&serial={serial}"))["maps"]]
+
+    async def test_map_is_deleted_with_its_name(self) -> None:
+        await self.start()
+        await self.command("/api/map_name?vendor=n&serial=board1&id=2&name=Kitchen")
+        await self.command("/api/map_name?vendor=n&serial=board0&id=1&name=Kitchen")
+        with self.assertLogs("deorbit", "INFO") as logs:
+            self.assertEqual(await self.command(self.BOARD1), (200, {}))
+        self.assertIn("[n/board1] map 2 deleted", logs.output[0])
+        answer = await self.api("/api/robot?vendor=n&serial=board1")
+        self.assertEqual(([row["id"] for row in answer["maps"]], answer["map_names"]), ([3], []))
+        status, headers, body = await self.fetch("/api/map?vendor=n&serial=board1&id=2")
+        self.assertEqual((status, self.read(headers, body)), (404, {"error": "no such map in the database"}))
+        # The other robot's map of the same rank_uuid is its own.
+        self.assertEqual(await self.listed("board0"), [(1, "Kitchen")])
+        # The robot is named as it is in the address of its page, whatever the case.
+        self.assertEqual(await self.command("/api/map_delete?id=3&serial=BOARD1&vendor=N"), (200, {}))
+        self.assertEqual(await self.listed(), [])
+        # Nor is it something the robot did, so it is not among its events.
+        self.assertEqual(answer["events"], [])
+
+    async def test_map_that_is_not_in_the_database(self) -> None:
+        await self.start()
+        for target in (
+            "/api/map_delete?vendor=n&serial=board1&id=1",  # the other robot's
+            "/api/map_delete?vendor=n&serial=board1&id=4",
+            "/api/map_delete?vendor=n&serial=board2&id=2",
+            "/api/map_delete?id=2",
+            "/api/map_delete?vendor=n&serial=board1",
+            "/api/map_delete",
+            # Not the number of any row a table can have.
+            *(f"/api/map_delete?vendor=n&serial=board1&id={asked}" for asked in ("0", "-1", "2.0", "two", "", 2 ** 63)),
+        ):
+            with self.subTest(target):
+                self.assertEqual(await self.command(target), (404, {"error": "no such map in the database"}))
+        self.assertEqual(await self.listed(), [(3, None), (2, None)])
+        self.assertEqual(await self.listed("board0"), [(1, None)])
+
+    async def test_map_of_a_floor_plan_is_kept(self) -> None:
+        await self.start()
+        store = self.server.store
+        store.save_floorplan(self.ROBOT, MAP["rank_uuid"], 2)
+        # The other robot's floor plan of that map is no floor plan of this robot's.
+        store.save_floorplan(self.OTHER, FLOOR["rank_id"], 3)
+        told = (409, {"error": "a floor plan was made of the map: demote it first"})
+        self.assertEqual(await self.command(self.BOARD1), told)
+        self.assertEqual(await self.listed(), [(3, None), (2, None)])
+        self.assertEqual(await self.command("/api/map_delete?vendor=n&serial=board1&id=3"), (200, {}))
+        # Once the floor plan is demoted, its map is one like any other.
+        store.delete_floorplan(self.ROBOT, MAP["rank_uuid"])
+        self.assertEqual(await self.command(self.BOARD1), (200, {}))
+
+    async def test_map_is_kept_while_the_robot_is_asked_to_keep_it(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        told = (409, {"error": "the robot is being asked to keep the map as a floor plan"})
+        # Asked twice, from two pages, and refused the first time.
+        sending = [asyncio.create_task(self.command(self.PROMOTE + "3")) for _ in range(2)]
+        requests = [await robot.recv() for _ in sending]
+        self.assertEqual(await self.command("/api/map_delete?vendor=n&serial=board1&id=3"), told)
+        await robot.send({"type": "response", "id": requests[0]["id"], "code": 422, "body": {}})
+        self.assertEqual((await sending[0])[1]["code"], 422)
+        self.assertEqual(await self.command("/api/map_delete?vendor=n&serial=board1&id=3"), told)
+        await robot.send({"type": "response", "id": requests[1]["id"], "code": 422, "body": {}})
+        await sending[1]
+        self.assertEqual(await self.command("/api/map_delete?vendor=n&serial=board1&id=3"), (200, {}))
+        # Accepted, the map is that of a floor plan.
+        await self.answered(robot, self.PROMOTE + "2", {"code": 200, "body": {}})
+        self.assertEqual(await self.command(self.BOARD1), (409, {"error": "a floor plan was made of the map: demote it first"}))
+        self.assertEqual(await self.listed(), [(2, None)])
+
+    async def test_connected_robot_is_sent_nothing(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        self.assertEqual(await self.command(self.BOARD1), (200, {}))
+        # The map is the server's own: the first thing the robot gets is the answer to what it asks next.
+        self.assertEqual((await robot.request("firmware.check", {}))["id"], "r1")
+        board1 = await self.api("/api/robot?vendor=n&serial=board1")
+        self.assertEqual([row["id"] for row in board1["maps"]], [3])
+        self.assertEqual([(event["kind"], event["service"]) for event in board1["events"]],
+                         [("request", "firmware.check"), ("login", None)])
+
+    async def test_delete_is_taken_from_the_ui_s_own_page_by_post_alone(self) -> None:
+        await self.start()
+        told = (403, {"error": "a command is taken only from this server's own page"})
+        for sent in (("Host: localhost:8080",), ("Host: localhost:8080", "Origin: http://elsewhere.example"), ()):
+            with self.subTest(sent):
+                self.assertEqual(await self.command(self.BOARD1, sent), told)
+        for method in ("GET", "HEAD", "PUT", "DELETE"):
+            with self.subTest(method):
+                status, headers, _ = await self.fetch(self.BOARD1, method, self.PAGE)
+                self.assertEqual((status, headers["Allow"]), (405, "POST"))
+        self.assertEqual(await self.listed(), [(3, None), (2, None)])
+
+    async def test_map_that_cannot_be_deleted(self) -> None:
+        await self.start()
+        await self.command("/api/map_name?vendor=n&serial=board1&id=2&name=Kitchen")
+        with contextlib.closing(sqlite3.connect(self.server.config.database)) as db:
+            # A file that lets no map go, when the name already has.
+            db.execute("CREATE TRIGGER no_delete BEFORE DELETE ON maps BEGIN SELECT RAISE(ABORT, 'full'); END")
+            with self.assertLogs("deorbit", "ERROR") as logs:
+                self.assertEqual(await self.command(self.BOARD1),
+                                 (503, {"error": "the map could not be deleted from the database"}))
+            self.assertIn("[n/board1] not saved to the database: full", logs.output[0])
+        self.assertEqual(await self.listed(), [(3, None), (2, "Kitchen")])
+
+
 class DeleteTests(WebTestCase):
     """``POST /api/delete``, which is what Delete it, in the popover of Delete on a robot's page, sends."""
 

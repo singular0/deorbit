@@ -50,6 +50,7 @@ reports is stored in a database on your machine.
 | Return to base | ✅ | |
 | Cleaning schedule | ✅ | |
 | Maps of past cleanings | ✅ | |
+| Delete maps | ✅ | A floor plan's map once it is demoted. |
 | Floor plans | ✅ | |
 | Zones and no-go lines | ✅ | |
 | History | ✅ | Connections, messages, errors and the commands sent. |

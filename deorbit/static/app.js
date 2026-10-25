@@ -1085,11 +1085,13 @@ function entry(columns, open, tooled, { id, focus, cells, tools, detail, dim, pi
  */
 function table(label, columns, open, rows) {
   const tooled = rows.some((row) => row.tools);
+  // Over the buttons of a row, which need no name to the eye, and as wide as the most a row has.
+  const tools = tooled && h('th', { class: 'cell-tools', scope: 'col', 'aria-label': 'Actions' });
+  if (tools) tools.style.setProperty('--tools', Math.max(...rows.map((row) => (row.tools ?? []).filter(Boolean).length)));
   return h('table', { class: 'table', 'aria-label': label },
     h('thead', null, h('tr', null,
       columns.map(([title, kind]) => h('th', { class: `cell-${kind}`, scope: 'col' }, title)),
-      // Over the buttons of a row, which need no name to the eye.
-      tooled && h('th', { class: 'cell-tools', scope: 'col', 'aria-label': 'Actions' }))),
+      tools)),
     rows.map((row) => entry(columns, open, tooled, row)));
 }
 
@@ -1639,7 +1641,7 @@ function drawing(mine, id, place = null, chosen = null) {
   if (!pictured) {
     // With what draws the picture anew once there is one, what does so in the colours of another scheme, and the zone
     // it shows as chosen.
-    pictured = { node: h('div', { class: 'map-drawing' }), repaint: null, recolour: null, chosen };
+    pictured = { id, node: h('div', { class: 'map-drawing' }), repaint: null, recolour: null, chosen };
     mine.drawings.set(key, pictured);
     loadMap(mine, id, pictured, key, place === null);
   }
@@ -1648,6 +1650,15 @@ function drawing(mine, id, place = null, chosen = null) {
     pictured.repaint?.();
   }
   return pictured.node;
+}
+
+/**
+ * Let go of the pictures of maps the server no longer lists, as one deleted
+ * on this page or another, since it may give the id of one to a later map.
+ */
+function forgetMaps(mine) {
+  const listed = new Set([...mine.body.maps, ...mine.body.floorplan_maps].map((row) => row.id));
+  for (const [key, pictured] of mine.drawings) if (!listed.has(pictured.id)) mine.drawings.delete(key);
 }
 
 /** Draw the pictures of the view's maps anew, for what is drawn over them. */
@@ -1775,6 +1786,81 @@ function renameButton(mine, row, alone = false) {
 }
 
 /**
+ * Ask the server to delete the map of `row`, and say in a toast how that went.
+ * The view's `mapDeleting` holds whether the server has yet to answer. Once
+ * the map is gone, the keyboard goes from its Delete to the row after it in
+ * the table, or else to the one before.
+ */
+async function dropMap(mine, row) {
+  const deleting = mine.mapDeleting;
+  if (deleting.waiting) return;
+  const called = mapText(row.name, record(record(parsed(row.map_json)).timing).start) ?? 'the map';
+  deleting.waiting = true;
+  drawRobot(mine);
+  const address = `api/map_delete?${new URLSearchParams({ ...mine.robot, id: row.id })}`;
+  const [status, answer] = await ask(address, new AbortController(), FETCH_TIMEOUT_MS, 'POST');
+  deleting.waiting = false;
+  report(mine, 'map-delete', status !== 200 ? { tone: 'bad', text: `Delete map: ${answer?.error ?? 'no answer from the server'}` }
+    : { tone: 'good', text: `Delete map: ${called} is gone from this server` });
+  if (mine !== view) return;
+  if (status !== 200) {
+    drawRobot(mine);
+    return;
+  }
+  const body = mine.body;
+  const others = body.maps.filter((listed) => !body.floorplans.some((plan) => plan.map_id === listed.id));
+  const at = others.findIndex((listed) => listed.id === row.id);
+  const next = at < 0 ? null : others[at + 1] ?? others[at - 1];
+  const held = document.activeElement?.dataset?.focus === `map-drop-${row.id}`;
+  // The map goes from the page now, and an answer that was asked for before, which still has it, is dropped.
+  body.maps = body.maps.filter((listed) => listed.id !== row.id);
+  mine.openMaps.delete(row.id);
+  forgetMaps(mine);
+  drawRobot(mine);
+  if (held && next) app.querySelector(`[data-focus="map-${next.id}"]`)?.focus();
+  refresh(mine);
+}
+
+/** Ask in a popover whether the map of `row` is to be deleted from the server. */
+function askDropMap(mine, row) {
+  const called = mapText(row.name, record(record(parsed(row.map_json)).timing).start);
+  popover(mine, `map-drop-${row.id}`, {
+    title: 'Delete map',
+    text: `Delete ${called === null ? 'this map' : `the map ${called}`}? This server deletes it and its name for good. `
+      + 'The robot is sent nothing.',
+    answers: [['Delete it', () => dropMap(mine, row)]],
+  });
+}
+
+/**
+ * The button of the row of a map that asks, in a popover, whether to delete
+ * the map. The robot is sent nothing, so it need not be connected. It does
+ * nothing while the server has yet to answer it, nor while the robot has yet
+ * to answer what was asked of it about a floor plan, which may be to keep
+ * this map as one.
+ */
+function dropMapButton(mine, row) {
+  const why = () => (mine.mapDeleting.waiting ? 'waiting for the server to answer'
+    : mine.floors.waiting ? 'waiting for the robot to answer' : null);
+  const held = why();
+  return h('button', {
+    class: 'button tool',
+    type: 'button',
+    // Held back, not disabled: a disabled button could not keep the keyboard's focus.
+    'aria-disabled': held !== null && 'true',
+    'aria-label': 'Delete',
+    title: held === null ? 'Delete' : `Delete: ${held}`,
+    'data-focus': `map-drop-${row.id}`,
+    onclick: () => {
+      if (why() !== null) return;
+      // A selection would hold the page as it is, and the press has to show.
+      getSelection().removeAllRanges();
+      askDropMap(mine, row);
+    },
+  }, icon('trash'));
+}
+
+/**
  * The maps the robot uploaded: a block to each that it keeps as a floor plan,
  * however old, the one it accepted last first, and then a table of the
  * others, newest first. A floor plan whose map the server has no more, which
@@ -1898,9 +1984,10 @@ function replaceable(plans, map) {
 
 /**
  * The buttons of the row of a map that is no floor plan, `row`: to rename the
- * map, to have the robot keep it as a new floor plan, and to have it keep the
- * map in place of another. The last takes a floor plan from the robot, so it
- * only asks, in a popover. Promote has the name to the keyboard that Demote has
+ * map, to have the robot keep it as a new floor plan, to have it keep the map
+ * in place of another, and to delete it from the server. Replace takes a floor
+ * plan from the robot and Delete cannot be undone, so they only ask, in a
+ * popover. Promote has the name to the keyboard that Demote has
  * in the block of a floor plan: a map goes from the one to the other as it is
  * promoted or demoted, and the keyboard goes with it.
  */
@@ -1913,6 +2000,7 @@ function mapTools(mine, robot, plans, row, map) {
       () => askFloor(mine, 'Promote to floor plan', { action: 'promote', map: id }), { glyph: 'promote', alone: true }),
     robotButton(mine.floors, robot, 'Replace a floor plan with this map', `floor-swap-${id}`,
       () => askReplace(mine, plans, row, map), { why: lone, glyph: 'replace', alone: true }),
+    dropMapButton(mine, row),
   ];
 }
 
@@ -4072,8 +4160,8 @@ function drawRobot(mine) {
   if (mine !== view || !body) return;
   const data = [
     body.robot, body.events, body.more, body.maps, body.more_maps, body.floorplans, body.floorplan_maps, body.tracks,
-    body.map_names, mine.tab, mine.naming, mine.mapNaming, mine.command, mine.accepted, mine.start, mine.schedule,
-    mine.settings, mine.floors, mine.tracks, mine.deleting,
+    body.map_names, mine.tab, mine.naming, mine.mapNaming, mine.mapDeleting, mine.command, mine.accepted, mine.start,
+    mine.schedule, mine.settings, mine.floors, mine.tracks, mine.deleting,
     // For the colours of the zones beside the pictures of floor plans.
     scheme(),
   ];
@@ -4140,6 +4228,8 @@ function show(mine, status, body) {
     if (mine.robot) {
       mine.body = body;
       document.title = `${nameOf(body.robot)} · deorbit`;
+      // A map deleted from another page is no more on this one.
+      forgetMaps(mine);
       // What was being drawn on a floor plan that is one no more, of that map, has nothing to be drawn on.
       const edit = mine.tracks.edit;
       if (edit && !body.floorplans.some((plan) => plan.rank_uuid === edit.rank && plan.map_id === edit.map)) mine.tracks.edit = null;
@@ -4233,6 +4323,8 @@ function navigate() {
     naming: { waiting: false },
     // Whether the server has yet to answer the renaming of a map, whose name is entered in a popover.
     mapNaming: { waiting: false },
+    // Whether the server has yet to answer the deleting of a map.
+    mapDeleting: { waiting: false },
     // The command sent from this view, by its name, while the robot has yet to answer it.
     command: null,
     accepted: null,

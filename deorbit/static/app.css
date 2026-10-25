@@ -1302,9 +1302,9 @@ h2 {
   width: 7rem;
 }
 
-/* Room for the buttons of a row, in a table whose rows have some. */
+/* Room for the buttons of a row, in a table whose rows have some: for as many icons as the most a row has. */
 .table th.cell-tools {
-  width: 7rem;
+  width: max(7rem, calc(var(--tools) * 30px + (var(--tools) - 1) * 6px));
 }
 
 /* A row, with what is said under it and what it opens on. */
