@@ -193,13 +193,6 @@ function ago(at) {
   return `${Math.floor(hours / 24)} d ${hours % 24} h ago`;
 }
 
-function clock(at) {
-  const date = new Date(at);
-  return date.toDateString() === new Date().toDateString()
-    ? date.toLocaleTimeString()
-    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-}
-
 /** A time in full, with its day of the week: what a pointer that rests on a time is told. */
 function fullTime(at) {
   return new Date(at).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'medium' });
@@ -227,11 +220,10 @@ function dated(stamp) {
   return h('time', { datetime: stamp, title: fullTime(at) }, numeric(at));
 }
 
-/** A timestamp both ways: how long ago, and the time on the clock. */
+/** A timestamp both ways: how long ago, and the time on the clock as `dated` gives it. */
 function moment(stamp) {
-  const at = Date.parse(stamp);
-  if (Number.isNaN(at)) return plain(stamp);
-  return h('span', { class: 'moment' }, when(stamp), h('span', { class: 'faint' }, clock(at)));
+  if (Number.isNaN(Date.parse(stamp))) return plain(stamp);
+  return h('span', { class: 'moment' }, when(stamp), h('span', { class: 'faint' }, dated(stamp)));
 }
 
 /** When a robot reached a step of its run: it gives seconds since 1970 by its own clock, and -1 for a step not reached. */
