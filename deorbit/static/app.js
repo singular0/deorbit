@@ -3903,43 +3903,31 @@ function panel(title, body, { hint, wide, tools } = {}) {
     body);
 }
 
-/** Lines of a name and a value, each `[label, value]`, or `[label, value, true]` for a value laid out under its name, the panel's width. */
 function rows(pairs) {
-  return h('dl', { class: 'kv' }, pairs.map(([label, value, under]) =>
-    h('div', { class: under ? 'kv-under' : null }, h('dt', null, label), h('dd', null, value))));
+  return h('dl', { class: 'kv' }, pairs.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value))));
 }
 
 /**
- * The line of the errors the robot reports: a dash for none; a table of them,
- * under the line's name, where they are what the spec has them be, a list of
- * objects; and otherwise as sent.
+ * A line to each error the robot reports, and none where it reports none: a
+ * pill, a yellow Warning for a warning and a red Error for any other severity,
+ * as the events have them, and the error's code with the zone it names, the
+ * spec giving an error no text of its own. Errors that are not the list of
+ * objects the spec has them be are one line, as sent.
  */
-function errorsLine(robot) {
+function errorLines(robot) {
   const value = parsed(robot.errors);
-  if (isEmpty(value)) return ['Errors', none()];
+  if (isEmpty(value)) return [];
   if (!Array.isArray(value) || !value.every((error) => error !== null && typeof error === 'object' && !Array.isArray(error))) {
-    return ['Errors', h('span', { class: 'mono bad' }, typeof value === 'string' ? value : JSON.stringify(value))];
+    return [['Errors', h('span', { class: 'mono bad' }, typeof value === 'string' ? value : JSON.stringify(value))]];
   }
-  return ['Errors', errorTable(value), true];
-}
-
-/**
- * The errors as a table of their code and severity, and the zone where one
- * names one. A warning is yellow and any other severity red, as the events
- * have them.
- */
-function errorTable(list) {
-  const zoned = list.some((error) => word(error.zone_name) !== null);
-  const columns = [['Code', 'code'], ['Severity', 'severity'], ...(zoned ? [['Zone', 'zone']] : [])];
-  return h('table', { class: 'errors', 'aria-label': 'Errors' },
-    h('thead', null, h('tr', null, columns.map(([title, kind]) => h('th', { class: `cell-${kind}`, scope: 'col' }, title)))),
-    h('tbody', null, list.map((error) => {
-      const severity = word(error.severity);
-      return h('tr', null,
-        h('td', { class: 'mono' }, word(error.code) ?? none()),
-        h('td', null, severity === null ? none() : pill(isWarning(error) ? 'warn' : 'bad', severity, 'alert')),
-        zoned && h('td', null, word(error.zone_name) ?? none()));
-    })));
+  return value.map((error) => {
+    const code = word(error.code);
+    const zone = named('zone', error.zone_name);
+    return [
+      isWarning(error) ? pill('warn', 'Warning', 'alert') : pill('bad', 'Error', 'alert'),
+      [code === null ? none() : h('span', { class: 'mono' }, code), zone && ` · ${zone}`],
+    ];
+  });
 }
 
 function connection(robot) {
@@ -3981,7 +3969,7 @@ function statusPanels(robot) {
     panel('Status', rows([
       ['State', plain(robot.state)],
       ['Action', plain(actionShown(robot))],
-      errorsLine(robot),
+      ...errorLines(robot),
     ])),
     panel('Connection', connection(robot)),
     panel('Battery', rows([

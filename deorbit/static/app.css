@@ -1180,17 +1180,6 @@ h2 {
   color: var(--bad);
 }
 
-/* A line whose value stands under its name, as wide as the panel: the errors a robot reports, as a table. */
-.kv > div.kv-under {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.kv-under > dd {
-  text-align: left;
-}
-
 .flag::before {
   content: "";
   display: inline-block;
@@ -1278,16 +1267,14 @@ h2 {
 /* ---- The tables of one robot: its schedule, its maps and its events, which are of one design ---- */
 
 /* A column is as wide as its name is told to be below, and those that are told nothing share what is left. */
-.table,
-.errors {
+.table {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
 }
 
 /* The names of the columns. */
-.table th,
-.errors th {
+.table th {
   padding: 0 16px 10px 0;
   color: var(--faint);
   font-size: 12px;
@@ -1342,22 +1329,6 @@ h2 {
 
 .table th:last-child,
 .entry-row > td:last-child {
-  padding-right: 0;
-}
-
-/* The errors in a robot's status: rows of the same look that do not open, and few enough columns to stay a table on a narrow screen. */
-.errors th.cell-severity {
-  width: 7.5rem;
-}
-
-.errors td {
-  padding: 10px 16px 10px 0;
-  border-top: 1px solid var(--line);
-  overflow-wrap: anywhere;
-}
-
-.errors th:last-child,
-.errors td:last-child {
   padding-right: 0;
 }
 
