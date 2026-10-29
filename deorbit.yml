@@ -36,7 +36,7 @@ web_port: 8080
 # "Bind a robot" shows it and writes it into a robot's hosts file for
 # orbital.deorbit. Left empty, the server looks for this machine's address when
 # it starts and prints what it found; set it where that is not the one robots
-# reach, as in a container.
+# reach, as on a machine with several networks or with Docker Desktop.
 public_address:
 
 # Home Assistant, through the MQTT broker it uses. Each robot is announced to it

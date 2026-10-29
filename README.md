@@ -110,8 +110,8 @@ must not change. Give the machine a fixed address or a reservation in your
 router; if it changes anyway, bind the robots again.
 
 Left empty, the server guesses the address at startup and logs its guess. Set
-it yourself in a container, where the guess is the container's own address, and
-on a machine with several networks or a VPN.
+it yourself on a machine with several networks or a VPN, and with Docker
+Desktop, where the guess is the container's own address.
 
 ### Certificates
 
@@ -151,7 +151,7 @@ as Home Assistant's Mosquitto broker app. Set up Home Assistant's MQTT
 integration first, then give the server the same broker:
 
 ```yaml
-mqtt_host: 192.168.1.10    # the broker's address; in a container, not localhost
+mqtt_host: 192.168.1.10    # the broker's address
 mqtt_username: deorbit
 mqtt_password: a-password
 ```
@@ -193,10 +193,9 @@ You need:
 
 1. Put this repository on the machine, and `mtp-fs.js` in its `deorbit/static/`
    folder (see [Binding a robot](#binding-a-robot)).
-2. Set the two things a container can't detect, in `deorbit.yml`:
+2. Set the time zone in `deorbit.yml`, which a container can't detect:
 
    ```yaml
-   public_address: 192.168.1.20   # this machine's address on your network
    timezone: Europe/Berlin        # otherwise robots are told UTC
    ```
 
@@ -209,11 +208,15 @@ You need:
 4. Open `http://<this machine's address>:8080`.
 
 `deorbit.yml`, `certs/` and `data/` stay in this folder, outside the container,
-so they survive it. Port 3443 is for robots and 8080 for the web page.
+so they survive it. The container uses this machine's network, so the web page
+shows each robot's own address, and the server listens on this machine's ports
+3443, for robots, and 8080, for the web page.
 
-- To keep the web page to this machine, change its port line in
-  `docker-compose.yml` to `"127.0.0.1:8080:8080"`, and leave `web_host` at
-  `0.0.0.0`.
+- That needs Docker on Linux, a NAS included. With Docker Desktop on a Mac or
+  Windows, replace `network_mode: host` in `docker-compose.yml` with the
+  `ports` lines under it, and set `public_address`. The web page then shows
+  Docker's address for every robot.
+- To keep the web page to this machine, set `web_host: 127.0.0.1`.
 - To check robot keys, set `keys: keys` and uncomment the `keys` line in
   `docker-compose.yml`. It mounts the folder read-only, so a robot with a key
   can't be deleted on the web page; remove `:ro` to allow that.

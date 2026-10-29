@@ -3,11 +3,18 @@ services:
     build: .
     image: deorbit
     restart: unless-stopped
-    ports:
-      - "3443:3443"  # the container side must match `port` in deorbit.yml
-      # The web UI, which has no login; the container side must match `web_port`.
-      # Write "127.0.0.1:8080:8080" to offer it to this machine only.
-      - "8080:8080"
+    # This machine's network, so that the server sees each robot's own address,
+    # where Docker's port forwarding gives it that of Docker's gateway, and finds
+    # this machine's address for `public_address`. The server then listens on
+    # `port` and `web_port` of deorbit.yml here; the web UI has no login, so set
+    # `web_host` to 127.0.0.1 there to offer it to this machine only.
+    # Docker does this on Linux. With Docker Desktop on a Mac or Windows, put
+    # the ports below in place of this line; the container side of each must
+    # match `port` and `web_port`.
+    network_mode: host
+    # ports:
+    #   - "3443:3443"
+    #   - "8080:8080"
     volumes:
       - ./deorbit.yml:/data/deorbit.yml:ro
       # Writable: with `generate_certs` on, the first start creates the CA and
