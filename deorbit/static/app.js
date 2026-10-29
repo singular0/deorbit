@@ -3911,14 +3911,43 @@ function panel(title, body, { hint, wide, tools } = {}) {
     body);
 }
 
+/** Lines of a name and a value, each `[label, value]`, or `[label, value, true]` for a value laid out under its name, the panel's width. */
 function rows(pairs) {
-  return h('dl', { class: 'kv' }, pairs.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value))));
+  return h('dl', { class: 'kv' }, pairs.map(([label, value, under]) =>
+    h('div', { class: under ? 'kv-under' : null }, h('dt', null, label), h('dd', null, value))));
 }
 
-function errors(robot) {
+/**
+ * The line of the errors the robot reports: a dash for none; a table of them,
+ * under the line's name, where they are what the spec has them be, a list of
+ * objects; and otherwise as sent.
+ */
+function errorsLine(robot) {
   const value = parsed(robot.errors);
-  if (isEmpty(value)) return none('None');
-  return h('span', { class: 'mono bad' }, typeof value === 'string' ? value : JSON.stringify(value));
+  if (isEmpty(value)) return ['Errors', none()];
+  if (!Array.isArray(value) || !value.every((error) => error !== null && typeof error === 'object' && !Array.isArray(error))) {
+    return ['Errors', h('span', { class: 'mono bad' }, typeof value === 'string' ? value : JSON.stringify(value))];
+  }
+  return ['Errors', errorTable(value), true];
+}
+
+/**
+ * The errors as a table of their code and severity, and the zone where one
+ * names one. A warning is yellow and any other severity red, as the events
+ * have them.
+ */
+function errorTable(list) {
+  const zoned = list.some((error) => word(error.zone_name) !== null);
+  const columns = [['Code', 'code'], ['Severity', 'severity'], ...(zoned ? [['Zone', 'zone']] : [])];
+  return h('table', { class: 'errors', 'aria-label': 'Errors' },
+    h('thead', null, h('tr', null, columns.map(([title, kind]) => h('th', { class: `cell-${kind}`, scope: 'col' }, title)))),
+    h('tbody', null, list.map((error) => {
+      const severity = word(error.severity);
+      return h('tr', null,
+        h('td', { class: 'mono' }, word(error.code) ?? none()),
+        h('td', null, severity === null ? none() : pill(isWarning(error) ? 'warn' : 'bad', severity, 'alert')),
+        zoned && h('td', null, word(error.zone_name) ?? none()));
+    })));
 }
 
 function connection(robot) {
@@ -3959,8 +3988,8 @@ function statusPanels(robot) {
   return [
     panel('Status', rows([
       ['State', plain(robot.state)],
-      ['Action', plain(robot.action)],
-      ['Errors', errors(robot)],
+      ['Action', plain(actionShown(robot))],
+      errorsLine(robot),
     ])),
     panel('Connection', connection(robot)),
     panel('Battery', rows([
