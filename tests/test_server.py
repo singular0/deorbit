@@ -5,6 +5,7 @@ import base64
 import contextlib
 import json
 import shutil
+import socket
 import sqlite3
 import ssl
 import struct
@@ -747,6 +748,12 @@ class AbilityCallTests(ServerTestCase):
 
 
 class ConnectionTests(ServerTestCase):
+    async def test_frames_are_not_held_back(self) -> None:
+        await self.start()
+        _, session = await self.login()
+        sock = session._writer.get_extra_info("socket")
+        self.assertTrue(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+
     async def test_heartbeats_while_idle(self) -> None:
         await self.start(heartbeat_interval=0.05)
         robot, _ = await self.login()

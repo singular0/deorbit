@@ -106,6 +106,9 @@ class Server:
         reader = asyncio.StreamReader(loop=loop)
         protocol = asyncio.StreamReaderProtocol(reader, loop=loop)
         try:
+            # No Nagle, so a small frame or the tail of a large one is not held back for the robot's ACK.
+            # asyncio sets this only on a socket whose proto is TCP, and create_server's sockets have 0.
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             transport, _ = await loop.connect_accepted_socket(
                 lambda: protocol, sock, ssl=self._ssl, ssl_shutdown_timeout=_TLS_SHUTDOWN_TIMEOUT
             )

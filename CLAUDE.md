@@ -76,7 +76,7 @@ What has met a real robot (firmware 1.7.0); everything else only the scripted ro
 
 The robot-facing protocol is not HTTP: a persistent TLS connection carrying frames of a 4-byte big-endian length plus a payload, which is a JSON object or one control byte (`0x06` heartbeat, `0x00` graceful close).
 
-**Connection path.** `Server.serve_forever` accepts raw sockets and `Server._handle` does the TLS handshake itself through `loop.connect_accepted_socket`, building the stream reader/writer by hand, because `asyncio.start_server(ssl=...)` swallows handshake failures and a robot rejecting the certificate is the likeliest first problem. Each connection runs `Session.run` in its own task; `Server.stop` cancels them.
+**Connection path.** `Server.serve_forever` accepts raw sockets and `Server._handle` does the TLS handshake itself through `loop.connect_accepted_socket`, building the stream reader/writer by hand, because `asyncio.start_server(ssl=...)` swallows handshake failures and a robot rejecting the certificate is the likeliest first problem. `_handle` turns Nagle off (`TCP_NODELAY`) before the handshake: asyncio does that only for a socket whose `proto` is TCP, and `socket.create_server` makes the listener, and so every accepted socket, with 0. Each connection runs `Session.run` in its own task; `Server.stop` cancels them.
 
 **Session lifecycle.** `run` is the one place that maps every way a connection ends to a logged disconnect reason; internal code ends a session by raising `Disconnect(reason)`. The sequence is login → `Server.register` → heartbeat task → receive loop. `Server.sessions` holds at most one live session per robot; a newer login replaces the older through `Session.close`, which aborts the transport.
 
