@@ -3980,8 +3980,8 @@ function statusPanels(robot) {
     ])),
     panel('Robot', rows([
       ['Vendor', plain(vendorName(robot))],
-      // What the robot logs in as, and what it goes by until it is given a name.
-      ['Board serial', h('span', { class: 'mono' }, robot.serial)],
+      // What the robot logs in as, and what it goes by until it is given a name; kept in lowercase, shown in capitals (user).
+      ['Board serial', h('span', { class: 'mono' }, robot.serial.toUpperCase())],
       // Known from the login, so only while the robot is connected.
       ['Firmware version', robot.session ? plain(robot.session.firmware) : none('Not connected')],
     ])),
