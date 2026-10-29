@@ -101,6 +101,13 @@ def _payload(value: object) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
 
 
+async def _put(client: aiomqtt.Client, topic: str, payload: bytes, *, retain: bool = False,
+               timeout: float | None = None) -> None:
+    """Publish a message, as every message is published."""
+    log.debug("Home Assistant: -> %s%s, %d bytes", topic, ", retained" if retain else "", len(payload))
+    await client.publish(topic, payload, qos=_QOS, retain=retain, timeout=timeout)
+
+
 def activity(row: dict[str, object]) -> str:
     """What Home Assistant's vacuum shows of a robot, as the store reads it: cleaning, docked, idle, paused, returning or error."""
     state, action = row.get("state"), row.get("action")
@@ -199,7 +206,7 @@ class Mqtt:
         if client is not None:
             # The broker publishes the last will only for a connection that is lost, so a server that stops says it itself.
             with contextlib.suppress(aiomqtt.MqttError, TimeoutError):
-                await client.publish(self._status, b"offline", qos=_QOS, retain=True, timeout=_STOP_TIMEOUT)
+                await _put(client, self._status, b"offline", retain=True, timeout=_STOP_TIMEOUT)
         for task in self._calls:
             task.cancel()
         # Given time to say goodbye to the broker as the client is left, which waits for the broker to hear it.
@@ -243,7 +250,7 @@ class Mqtt:
     async def _connected(self, client: aiomqtt.Client) -> None:
         commands = [(f"{self._base}/+/{name}", 0) for name in ("command", "fan_speed", "clean_segments")]
         await client.subscribe([*commands, (self._birth, 0)])
-        await client.publish(self._status, b"online", qos=_QOS, retain=True)
+        await _put(client, self._status, b"online", retain=True)
         log.info("Home Assistant: connected to the MQTT broker at %s:%d", self._config.mqtt_host, self._config.mqtt_port)
         self._live, self._failure = True, None
         try:
@@ -302,7 +309,7 @@ class Mqtt:
             payload = wanted.get(topic, b"")
             if self._sent.get(topic, b"") == payload:
                 continue
-            await client.publish(topic, payload, qos=_QOS, retain=True)  # an empty one takes the retained message away
+            await _put(client, topic, payload, retain=True)  # an empty one takes the retained message away
             if payload:
                 self._sent[topic] = payload
             else:
@@ -437,12 +444,14 @@ class Mqtt:
             node = _node(RobotId(row["vendor"], row["serial"]))
             if told is not None and node in self._nodes:  # one that is not announced has no entity to tell
                 entity, event = told
-                await client.publish(f"{self._base}/{node}/{entity}", _payload(event), qos=_QOS)
+                await _put(client, f"{self._base}/{node}/{entity}", _payload(event))
 
     def _heard(self, message: aiomqtt.Message) -> None:
         topic = message.topic.value
         payload = message.payload
         text = payload.decode("utf-8", "replace") if isinstance(payload, (bytes, bytearray)) else str(payload or "")
+        log.debug("Home Assistant: <- %s%s, %d bytes", topic, ", retained" if message.retain else "",
+                  len(payload) if isinstance(payload, (bytes, bytearray)) else len(text.encode()))
         if topic == self._birth:
             if text == "online":
                 # Home Assistant has started, and is told of every robot again, as it asks to be.
@@ -537,19 +546,11 @@ class Mqtt:
         if session is None:
             log.warning("Home Assistant: [%s] %s not sent: the robot is not connected", robot, ability)
             return
-        log.info("Home Assistant: [%s] %s", robot, ability)
-        task = asyncio.create_task(self._call(robot, session, ability, params))
+        task = asyncio.create_task(self._call(session, ability, params))
         self._calls.add(task)
         task.add_done_callback(self._calls.discard)
 
-    async def _call(self, robot: RobotId, session: Session, ability: str, params: dict) -> None:
-        try:
-            answer = await session.call(ability, params, timeout=_COMMAND_TIMEOUT)
-        except TimeoutError:
-            log.warning("Home Assistant: [%s] %s: the robot did not answer within %g s", robot, ability, _COMMAND_TIMEOUT)
-        except OSError as exc:  # the session ended first
-            log.warning("Home Assistant: [%s] %s: no answer from the robot: %s", robot, ability, describe(exc))
-        else:
-            # A start that the robot accepts may still fail, which it tells as an alert.
-            if answer.get("code") != 200:
-                log.warning("Home Assistant: [%s] %s: the robot answered %r", robot, ability, answer.get("code"))
+    async def _call(self, session: Session, ability: str, params: dict) -> None:
+        # The session logs the answer, or that there was none, as it does for the web UI's calls.
+        with contextlib.suppress(OSError):  # TimeoutError among them
+            await session.call(ability, params, timeout=_COMMAND_TIMEOUT, origin="Home Assistant")

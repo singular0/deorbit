@@ -63,5 +63,8 @@ max_frame_size: 16777216  # bytes; drop a robot that sends a larger frame
 # is set. 0 turns the check off, and replay protection with it.
 max_clock_skew: 300
 
-full: false               # print signatures and map binaries in full
-verbose: false            # also print heartbeats
+# How much the log says: error, warning, info, debug or trace. info is what
+# robots do and what they are asked; debug adds every message exchanged with
+# robots, the web page and Home Assistant, heartbeats included; trace adds
+# signatures and map binaries in full, where debug gives their length.
+log_level: info

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import shutil
 import socket
 import sqlite3
@@ -20,7 +21,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from deorbit import certs
 from deorbit.auth import RobotId
-from deorbit.config import Config
+from deorbit.config import TRACE, Config
 from deorbit.server import Server
 from deorbit.session import Session
 
@@ -145,6 +146,12 @@ class ServerTestCase(unittest.IsolatedAsyncioTestCase):
         await robot.send(signed_login(self.key))
         self.assertEqual((await robot.recv())["code"], 200)
         return robot, self.server.sessions[self.ROBOT]
+
+    async def gone(self) -> None:
+        """Return once no robot has a session, by when each disconnect is in the log."""
+        async with asyncio.timeout(5):
+            while self.server.sessions:
+                await asyncio.sleep(0.01)
 
 
 class LoginTests(ServerTestCase):
@@ -449,12 +456,6 @@ class EventLogTests(ServerTestCase):
         self.assertEqual({row[:2] for row in rows} - {("n", "board1")}, set())
         return [(kind, service, body if body is None else json.loads(body)) for _, _, kind, service, body in rows]
 
-    async def gone(self) -> None:
-        """Return once no robot has a session, by when each disconnect is in the log."""
-        async with asyncio.timeout(5):
-            while self.server.sessions:
-                await asyncio.sleep(0.01)
-
     async def test_login_and_disconnect(self) -> None:
         await self.start()
         robot, _ = await self.login()
@@ -514,22 +515,24 @@ class EventLogTests(ServerTestCase):
         self.assertEqual(self.logged(), [])
 
     async def test_messages_but_not_states_or_heartbeats(self) -> None:
-        # Signatures and map binaries stay out of the log even when the console is given them.
-        await self.start(full=True)
+        await self.start()
         robot, _ = await self.login()
         error = {"code": "dustbin_missing", "severity": "warning", "created": "2026-10-06_12-34-56"}
         notice = {"message_code": "fuel_less_than_10", "payload": None}
         binary = "A" * 1000
-        await robot.send({"type": "event", "id": "e1", "to": {"service": "peer.state"},
-                          "body": {"ability": "state.show", "state": "idle"}})
-        await robot.send_bytes(HEARTBEAT)
-        await robot.send({"type": "event", "id": "e2", "to": {"service": "robots.error_codes"}, "body": error})
-        await robot.send({"type": "request", "id": "n1", "to": {"service": "robots.notify"}, "body": notice})
-        await robot.request("robots.link", {"user_id": "u1", "timezone": "Europe/London"})
-        await robot.request("maps.create", {"rank_uuid": "r1", "signature": "c2lnbmVk",
-                                            "map": {"origin": [0, 0], "rank_binary": binary, "real_binary": binary}})
-        await robot.send({"type": "request", "id": "x1", "to": {"service": "firmware.check"}})
-        self.assertEqual((await robot.recv())["id"], "x1")
+        # Signatures and map binaries stay out of the log even when the console is given them.
+        with self.assertLogs("deorbit", TRACE) as logs:
+            await robot.send({"type": "event", "id": "e1", "to": {"service": "peer.state"},
+                              "body": {"ability": "state.show", "state": "idle"}})
+            await robot.send_bytes(HEARTBEAT)
+            await robot.send({"type": "event", "id": "e2", "to": {"service": "robots.error_codes"}, "body": error})
+            await robot.send({"type": "request", "id": "n1", "to": {"service": "robots.notify"}, "body": notice})
+            await robot.request("robots.link", {"user_id": "u1", "timezone": "Europe/London"})
+            await robot.request("maps.create", {"rank_uuid": "r1", "signature": "c2lnbmVk",
+                                                "map": {"origin": [0, 0], "rank_binary": binary, "real_binary": binary}})
+            await robot.send({"type": "request", "id": "x1", "to": {"service": "firmware.check"}})
+            self.assertEqual((await robot.recv())["id"], "x1")
+        self.assertIn(f'"rank_binary":"{binary}"', "\n".join(logs.output))
         self.assertEqual(
             self.logged()[1:],
             [
@@ -601,6 +604,144 @@ class EventLogTests(ServerTestCase):
             await self.gone()
         self.assertEqual(len(logs.output), 2)
         self.assertIn("[n/board1] not saved to the database: no such table: events", logs.output[0])
+
+
+class ConsoleTests(ServerTestCase):
+    """What the console says of robots, as much of it as the log level asks for."""
+
+    async def test_what_each_level_shows(self) -> None:
+        await self.start()
+        binary = "A" * 1000
+        said, ports = {}, {}
+        for level in (logging.INFO, logging.DEBUG, TRACE):
+            with self.assertLogs("deorbit", level) as logs:
+                robot, _ = await self.login()
+                await robot.send({"type": "event", "id": "e1", "to": {"service": "peer.state"}, "body": {"state": "idle"}})
+                await robot.send_bytes(HEARTBEAT)
+                await robot.request("maps.create", {"rank_uuid": f"r{level}", "map": {"rank_binary": binary}}, "m1")
+                await robot.send_bytes(CLOSE)
+                await robot.wait_closed()
+                await self.gone()
+            ports[level] = robot.writer.get_extra_info("sockname")[1]
+            said[level] = logs.output
+            # A line to each entry, whatever it carries.
+            self.assertFalse([line for line in logs.output if "\n" in line])
+        # What is news, and nothing of any message itself.
+        self.assertEqual(said[logging.INFO], [
+            f"INFO:deorbit.session:[n/board1] logged in from 127.0.0.1:{ports[logging.INFO]}, firmware 4.5.3-189",
+            f"INFO:deorbit.services:[n/board1] map 'r{logging.INFO}' uploaded: saved",
+            "INFO:deorbit.session:[n/board1] disconnected: closed by robot",
+        ])
+        # Every message besides, with heartbeats, and signatures and binaries by their length.
+        debug, port = said[logging.DEBUG], ports[logging.DEBUG]
+        self.assertTrue(debug[0].startswith(f"DEBUG:deorbit.server:[127.0.0.1:{port}] connected, TLSv1."))
+        self.assertRegex(debug[1], rf'^DEBUG:deorbit.session:\[127.0.0.1:{port}\] <- login {{.*"signature":"<\d+ chars>"')
+        self.assertIn(f"INFO:deorbit.session:[n/board1] logged in from 127.0.0.1:{port}, firmware 4.5.3-189", debug)
+        self.assertIn('DEBUG:deorbit.session:[n/board1] <- event peer.state id=e1 '
+                      '{"type":"event","id":"e1","to":{"service":"peer.state"},"body":{"state":"idle"}}', debug)
+        self.assertIn("DEBUG:deorbit.session:[n/board1] <- heartbeat", debug)
+        self.assertIn('DEBUG:deorbit.session:[n/board1] <- request maps.create id=m1 {"type":"request","id":"m1",'
+                      '"to":{"service":"maps.create"},"body":{"rank_uuid":"r10","map":{"rank_binary":"<1000 chars>"}}}', debug)
+        self.assertIn('DEBUG:deorbit.session:[n/board1] -> response 201 id=m1 '
+                      '{"type":"response","id":"m1","code":201,"body":{"floorplan":false}}', debug)
+        # The same again, with signatures and binaries in full.
+        self.assertEqual(len(said[TRACE]), len(debug))
+        self.assertIn(f'"rank_binary":"{binary}"', "\n".join(said[TRACE]))
+        self.assertNotIn(" chars>", "\n".join(said[TRACE]))
+
+    async def test_disconnect_for_a_fault_is_a_warning(self) -> None:
+        await self.start(idle_timeout=0.2, max_frame_size=1024)
+
+        async def oversized(robot: Robot) -> None:
+            robot.writer.write(struct.pack(">I", 1025))  # the length alone, which is past the limit
+
+        cases = {
+            "INFO:deorbit.session:[n/board1] disconnected: closed by robot": lambda robot: robot.send_bytes(CLOSE),
+            "INFO:deorbit.session:[n/board1] disconnected: no frame received for 0.2s": lambda robot: asyncio.sleep(0),
+            "WARNING:deorbit.session:[n/board1] disconnected: invalid JSON in a 9 byte frame: b'{not json'":
+                lambda robot: robot.send_bytes(b"{not json"),
+            "WARNING:deorbit.session:[n/board1] disconnected: frame is not a JSON object":
+                lambda robot: robot.send_bytes(b"[1, 2]"),
+            "WARNING:deorbit.session:[n/board1] disconnected: 1025 byte frame exceeds the 1024 byte limit": oversized,
+        }
+        for expected, end in cases.items():
+            with self.subTest(expected), self.assertLogs("deorbit", "INFO") as logs:
+                robot, _ = await self.login()
+                await end(robot)
+                await robot.wait_closed()
+                await self.gone()
+            self.assertEqual(logs.output[-1], expected)
+        with self.assertLogs("deorbit", "INFO") as logs:
+            robot = await self.connect()
+            await robot.send({**signed_login(self.key), "signature": "AAAA"})
+            await robot.wait_closed()
+            async with asyncio.timeout(5):
+                while not logs.output:
+                    await asyncio.sleep(0.01)
+        port = robot.writer.get_extra_info("sockname")[1]
+        self.assertRegex(logs.output[0], rf"^WARNING:deorbit.session:\[127.0.0.1:{port}\] disconnected: login rejected: ")
+
+    async def test_answer_to_a_call(self) -> None:
+        await self.start()
+        robot, session = await self.login()
+        with self.assertLogs("deorbit", "INFO") as logs:
+            for code in (200, 422):
+                call = asyncio.create_task(session.call("cleaning.pause", origin="the web UI"))
+                request = await robot.recv()
+                await robot.send({"type": "response", "id": request["id"], "code": code, "body": {}})
+                await call
+            with self.assertRaises(TimeoutError):
+                await session.call("cleaning.pause", timeout=0.05)
+            late = await robot.recv()
+            await robot.send({"type": "response", "id": late["id"], "code": 200})
+            call = asyncio.create_task(session.call("cleaning.resume", origin="Home Assistant"))
+            await robot.recv()
+            robot.writer.transport.abort()
+            with self.assertRaises(ConnectionError):
+                await call
+            await self.gone()
+        self.assertRegex(logs.output[0], r"^INFO:deorbit.session:\[n/board1\] cleaning.pause from the web UI: 200 after \d+ ms$")
+        # Anything but 200, and no answer at all, is the robot not doing what it was asked.
+        self.assertRegex(logs.output[1], r"^WARNING:deorbit.session:\[n/board1\] cleaning.pause from the web UI: 422 after \d+ ms$")
+        self.assertEqual(logs.output[2], "WARNING:deorbit.session:[n/board1] cleaning.pause: no answer within 0.05 s")
+        self.assertEqual(logs.output[3], f"WARNING:deorbit.session:[n/board1] <- response 200 id={late['id']!r} (no such call pending)")
+        self.assertCountEqual(logs.output[4:], [
+            "WARNING:deorbit.session:[n/board1] cleaning.resume from Home Assistant: no answer: "
+            "session closed: connection closed by robot",
+            "INFO:deorbit.session:[n/board1] disconnected: connection closed by robot",
+        ])
+
+    async def test_what_the_robot_tells(self) -> None:
+        await self.start()
+        robot, _ = await self.login()
+        with self.assertLogs("deorbit", "INFO") as logs:
+            await robot.send({"type": "event", "id": "e1", "to": {"service": "robots.error_codes"},
+                              "body": {"code": "pm_load_fail", "severity": "error", "created": None}})
+            await robot.send({"type": "request", "id": "n1", "to": {"service": "robots.notify"},
+                              "body": {"message_code": "pm_load_fail", "payload": None}})
+            await robot.request("robots.link", {"user_id": "u1", "timezone": "Europe/London"})
+            await robot.request("firmware.check", {"version": "1.7.0", "only_mandatory": False})
+            await robot.request("logs.list_files", {"files": [{"path": "/a"}, {"path": "/b"}]})
+            await robot.request("logs.update_status", {"log_id": "log-1", "state": "failed", "errors": ["x"]})
+            await robot.request("maps.create", {"rank_uuid": "r1"})
+            await robot.request("maps.create", {"rank_uuid": "r1"})
+            await robot.send({"type": "event", "id": "e2", "to": {"service": "peer.state"}, "body": {"state": "idle"}})
+            await robot.request("firmware.check", "not an object")
+            await robot.request("no.such_service", {})
+        self.assertEqual(logs.output, [
+            # A warning whatever the robot's severity, an error being this server's own.
+            "WARNING:deorbit.services:[n/board1] alert 'pm_load_fail', severity 'error'",
+            "INFO:deorbit.services:[n/board1] notification 'pm_load_fail'",
+            "INFO:deorbit.services:[n/board1] linked to user 'u1'",
+            "INFO:deorbit.services:[n/board1] firmware check from version '1.7.0': no update offered",
+            "INFO:deorbit.services:[n/board1] offers 2 log file(s) to upload: none asked for",
+            "INFO:deorbit.services:[n/board1] log upload 'log-1': 'failed'",
+            "INFO:deorbit.services:[n/board1] map 'r1' uploaded: saved",
+            "INFO:deorbit.services:[n/board1] map 'r1' uploaded again: already saved",
+            # Nothing of the state, which a robot sends at every change.
+            "INFO:deorbit.services:[n/board1] firmware check from version None: no update offered",
+            "WARNING:deorbit.session:[n/board1] no such service: 'no.such_service'",
+        ])
 
 
 class DeleteTests(ServerTestCase):

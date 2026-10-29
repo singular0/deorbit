@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .certs import DEFAULT_HOSTS, generate
-from .config import DEFAULT_PATH, Config, ConfigError, load, local_address
+from .config import DEFAULT_PATH, LOG_LEVELS, Config, ConfigError, load, local_address
 from .mqtt import Mqtt
 from .server import Server
 from .store import StoreError
@@ -36,7 +36,7 @@ async def _serve(config: Config) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="deorbit",
-        description="Robot-facing Orbital protocol server. Prints every message it exchanges.",
+        description="Robot-facing Orbital protocol server. Logs what robots do, in as much detail as log_level asks.",
     )
     parser.add_argument("-c", "--config", type=Path, metavar="FILE",
                         help=f"YAML settings file (default: {DEFAULT_PATH} in the current directory; "
@@ -53,13 +53,14 @@ def main() -> None:
         parser.error(str(exc))
 
     logging.basicConfig(
-        level=logging.INFO,
+        # Libraries say only what went wrong, whatever log_level is: their debug output is MQTT packets and the like.
+        level=logging.WARNING,
         format="%(asctime)s.%(msecs)03d %(levelname)-7s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
     log = logging.getLogger("deorbit")
-    log.setLevel(logging.DEBUG if config.verbose else logging.INFO)
+    log.setLevel(LOG_LEVELS[config.log_level])
     if path is None:
         log.info("no %s in the current directory: using the default settings", DEFAULT_PATH)
     else:
@@ -77,7 +78,7 @@ def main() -> None:
             ca = generate(config.cert, config.key, DEFAULT_HOSTS)
         except OSError as exc:
             parser.error(f"cannot create a certificate at {config.cert}: {exc}")
-        log.warning("generated a development certificate at %s; robots must trust %s", config.cert, ca)
+        log.info("generated a server certificate at %s; robots must trust %s", config.cert, ca)
 
     if config.web and not config.public_address:
         # Only "Bind a robot" in the web UI uses it, and that has no other address to point a robot at.

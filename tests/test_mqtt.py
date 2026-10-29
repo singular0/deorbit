@@ -586,12 +586,22 @@ class CommandTests(RobotTestCase):
             await self.until(lambda: logs.output)
         self.assertIn("[n/board1] cleaning.pause not sent: the robot is not connected", logs.output[0])
 
-    async def test_what_the_robot_refuses_is_logged(self) -> None:
+    async def test_how_a_command_went_is_logged_once(self) -> None:
         await self.start()
-        with self.assertLogs("deorbit.mqtt", "WARNING") as logs:
+        with self.assertLogs("deorbit", "INFO") as logs:
+            await self.asked("command", b"pause")
             await self.asked("command", b"pause", {"code": 409, "body": {}})
-            await self.until(lambda: logs.output)
-        self.assertIn("[n/board1] cleaning.pause: the robot answered 409", logs.output[0])
+            await self.until(lambda: len(logs.output) == 2)
+        # By the session, as every call is, naming who asked; what the robot refuses is a warning.
+        self.assertRegex(logs.output[0], r"^INFO:deorbit.session:\[n/board1\] cleaning.pause from Home Assistant: 200 after \d+ ms$")
+        self.assertRegex(logs.output[1], r"^WARNING:deorbit.session:\[n/board1\] cleaning.pause from Home Assistant: 409 after \d+ ms$")
+
+    async def test_messages_are_logged_at_the_debug_level(self) -> None:
+        with self.assertLogs("deorbit.mqtt", "DEBUG") as logs:
+            await self.start()
+            await self.asked("command", b"pause")
+        self.assertIn("DEBUG:deorbit.mqtt:Home Assistant: -> deorbit/status, retained, 6 bytes", logs.output)
+        self.assertIn(f"DEBUG:deorbit.mqtt:Home Assistant: <- deorbit/{NODE}/command, 5 bytes", logs.output)
 
 
 class SegmentTests(RobotTestCase):

@@ -117,7 +117,7 @@ class Server:
             return
         writer = asyncio.StreamWriter(transport, protocol, reader, loop)
         tls = transport.get_extra_info("ssl_object")
-        log.info("[%s:%d] connected, %s %s", *address[:2], tls.version(), tls.cipher()[0])
+        log.debug("[%s:%d] connected, %s %s", *address[:2], tls.version(), tls.cipher()[0])
         session = Session(self, reader, writer, address)
         self._running[session] = asyncio.current_task()
         try:

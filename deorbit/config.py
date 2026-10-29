@@ -1,6 +1,7 @@
 """Server settings and the YAML file they are read from."""
 
 import ipaddress
+import logging
 import os
 import socket
 import typing
@@ -11,6 +12,12 @@ from pathlib import Path
 import yaml
 
 DEFAULT_PATH = Path("deorbit.yml")
+
+# Below DEBUG: what debug logs, with signatures and binaries in full.
+TRACE = 5
+logging.addLevelName(TRACE, "TRACE")
+# The values of ``log_level``, most quiet first, and the level each sets.
+LOG_LEVELS = {"error": logging.ERROR, "warning": logging.WARNING, "info": logging.INFO, "debug": logging.DEBUG, "trace": TRACE}
 
 # How an error message describes the value a setting of each type expects.
 _EXPECTED = {Path: "a path", str: "a string", int: "an integer", float: "a number", bool: "true or false"}
@@ -78,8 +85,7 @@ class Config:
     login_timeout: float = 30.0
     max_frame_size: int = 16 * 1024 * 1024
     max_clock_skew: float = 300.0
-    full: bool = False  # print payloads unredacted
-    verbose: bool = False  # also log heartbeats
+    log_level: str = "info"  # one of LOG_LEVELS, for the server's own loggers
 
 
 def _kind(hint: object) -> type:
@@ -125,6 +131,8 @@ def load(path: Path) -> Config:
             raise ConfigError(f"{path}: {name} must be {_EXPECTED[kind]}, not {value!r}")
 
     config = Config(**settings)
+    if config.log_level not in LOG_LEVELS:
+        raise ConfigError(f"{path}: log_level must be one of {', '.join(LOG_LEVELS)}, not {config.log_level!r}")
     if config.timezone not in zoneinfo.available_timezones():
         raise ConfigError(f"{path}: timezone must be an IANA time zone name, not {config.timezone!r}")
     for name in ("mqtt_topic", "mqtt_discovery_prefix"):

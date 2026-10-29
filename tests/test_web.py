@@ -267,6 +267,19 @@ class SetupTests(WebTestCase):
         self.assertEqual(answer[:13], b"HTTP/1.1 431 ")
         self.assertEqual((await self.fetch("/"))[0], 200)
 
+    async def test_each_request_is_logged_at_the_debug_level(self) -> None:
+        with mock.patch.object(web, "_MAX_HEAD", 256):
+            await self.start()
+        with self.assertLogs("deorbit.web", "DEBUG") as logs:
+            await self.fetch("/api/robots")
+            await self.exchange(b"GET /\nINFO forged HTTP/1.1\r\n\r\n")
+            await self.exchange(b"GET / HTTP/1.1\r\nCookie: " + b"x" * 1000 + b"\r\n\r\n")
+        self.assertRegex(logs.output[0], r"^DEBUG:deorbit.web:web UI: 127\.0\.0\.1 'GET /api/robots HTTP/1\.1': 200 in \d+ ms$")
+        # The request line as sent, on one line whatever it holds.
+        self.assertRegex(logs.output[1], r"^DEBUG:deorbit.web:web UI: 127\.0\.0\.1 'GET /\\nINFO forged HTTP/1\.1': 400 in \d+ ms$")
+        # One too long to be read has no request line to give.
+        self.assertEqual(logs.output[2:], ["DEBUG:deorbit.web:web UI: 127.0.0.1 '': 431 in 0 ms"])
+
     async def test_connection_closed_without_a_request(self) -> None:
         await self.start()
         for request in (b"", b"GET / HT"):

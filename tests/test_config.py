@@ -16,7 +16,7 @@ from cryptography import x509
 
 from deorbit import __main__ as cli
 from deorbit.certs import DEFAULT_HOSTS
-from deorbit.config import Config, ConfigError, load, local_address
+from deorbit.config import LOG_LEVELS, TRACE, Config, ConfigError, load, local_address
 
 
 class ConfigTestCase(unittest.TestCase):
@@ -70,8 +70,7 @@ class LoadTests(ConfigTestCase):
             "login_timeout: 3\n"
             "max_frame_size: 1024\n"
             "max_clock_skew: 0\n"
-            "full: true\n"
-            "verbose: true\n"
+            "log_level: debug\n"
         ))
         self.assertEqual(
             config,
@@ -99,8 +98,7 @@ class LoadTests(ConfigTestCase):
                 login_timeout=3.0,
                 max_frame_size=1024,
                 max_clock_skew=0.0,
-                full=True,
-                verbose=True,
+                log_level="debug",
             ),
         )
         self.assertIsInstance(config.heartbeat_interval, float)
@@ -122,7 +120,7 @@ class LoadTests(ConfigTestCase):
             "port: '3443'": "port must be an integer",
             "port: 34.5": "port must be an integer",
             "port: true": "port must be an integer",
-            "full: 1": "full must be true or false",
+            "web: 1": "web must be true or false",
             "host: 127": "host must be a string",
             "keys: 5": "keys must be a path",
             "heartbeat_interval: fast": "heartbeat_interval must be a number",
@@ -134,6 +132,12 @@ class LoadTests(ConfigTestCase):
             "mqtt_topic: ''": "mqtt_topic must be MQTT topic levels without wildcards, not ''",
             "mqtt_topic: home//robots": "mqtt_topic must be MQTT topic levels without wildcards",
             "mqtt_discovery_prefix: /homeassistant": "mqtt_discovery_prefix must be MQTT topic levels without wildcards",
+            "log_level: verbose": "log_level must be one of error, warning, info, debug, trace, not 'verbose'",
+            "log_level: DEBUG": "log_level must be one of error, warning, info, debug, trace, not 'DEBUG'",
+            "log_level: 10": "log_level must be a string",
+            # The settings that log_level took the place of are no more known than any other.
+            "full: true": "unknown setting 'full'",
+            "verbose: true": "unknown setting 'verbose'",
             "- port": "expected a mapping",
             "port: [3443": "not valid YAML",
         }
@@ -202,7 +206,7 @@ class CommandLineTests(ConfigTestCase):
             contextlib.chdir(self.dir),
             mock.patch("sys.argv", ["deorbit", *argv]),
             # Left in place, the console handler would print the rest of the test run.
-            mock.patch.object(logging, "basicConfig"),
+            mock.patch.object(logging, "basicConfig") as self.console,
             mock.patch.object(cli, "_serve") as serve,
             mock.patch.object(cli, "local_address", self.detect),
         ):
@@ -247,9 +251,10 @@ class CommandLineTests(ConfigTestCase):
 
     def test_missing_certificate_is_generated(self) -> None:
         self.write("cert: tls/server.crt\nkey: private/server.key\n")
-        with self.assertLogs("deorbit", "WARNING") as logs:
+        with self.assertLogs("deorbit", "INFO") as logs:
             config = self.main()
-        self.assertIn("robots must trust tls/ca.crt", logs.output[0])
+        self.assertIn("INFO:deorbit:generated a server certificate at tls/server.crt; robots must trust tls/ca.crt",
+                      logs.output)
         self.assertEqual(
             set(self.tree()),
             {"deorbit.yml", "tls/server.crt", "tls/ca.crt", "private/server.key", "private/ca.key"},
@@ -318,6 +323,19 @@ class CommandLineTests(ConfigTestCase):
             self.assertEqual(self.main().public_address, "10.0.0.5")
         self.detect.assert_not_called()
         self.assertNotIn("public_address", "".join(logs.output))
+
+    def test_log_level(self) -> None:
+        self.write("installed by hand", "certs/server.crt")
+        self.write("installed by hand", "certs/server.key")
+        cases = {"": logging.INFO, **{f"log_level: {name}\n": level for name, level in LOG_LEVELS.items()}}
+        for setting, level in cases.items():
+            with self.subTest(setting):
+                self.write(f"web: false\ngenerate_certs: false\n{setting}")
+                self.main()
+                self.assertEqual(logging.getLogger("deorbit").level, level)
+                # The libraries' own loggers say only what went wrong, whatever the server's say.
+                self.assertEqual(self.console.call_args.kwargs["level"], logging.WARNING)
+        self.assertEqual(logging.getLevelName(TRACE), "TRACE")
 
     def test_address_is_not_detected_without_the_web_ui(self) -> None:
         self.write("web: false\ngenerate_certs: false\n")

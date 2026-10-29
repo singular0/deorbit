@@ -99,8 +99,7 @@ with a message that names it. Relative paths start at the folder that holds
 | `login_timeout` | `30` | Seconds a new connection has to log in. |
 | `max_frame_size` | `16777216` | Largest message a robot may send, in bytes. |
 | `max_clock_skew` | `300` | Seconds a robot's clock may be off, when `keys` is set. |
-| `full` | `false` | Log signatures and map data in full, not just their length. |
-| `verbose` | `false` | Also log heartbeats. |
+| `log_level` | `info` | How much the log says: `error`, `warning`, `info`, `debug` or `trace`. `debug` adds every message the server sends and receives, heartbeats included; `trace` also has map data in full. |
 
 ### Server address
 

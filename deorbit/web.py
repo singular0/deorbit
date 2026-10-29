@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import socket
+import time
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -222,7 +223,8 @@ class Web:
         self._connections.add(task)
         try:
             # Not under a timeout as a whole: a command waits for its robot, which has a limit of its own.
-            answer = await self._respond(reader)
+            peer = writer.get_extra_info("peername")
+            answer = await self._respond(reader, peer[0] if peer else "?")
             async with asyncio.timeout(_TIMEOUT):
                 writer.write(answer)
                 writer.close()  # once what was just written has gone out
@@ -236,7 +238,7 @@ class Web:
             if not writer.transport.is_closing() or writer.transport.get_write_buffer_size():
                 writer.transport.abort()
 
-    async def _respond(self, reader: asyncio.StreamReader) -> bytes:
+    async def _respond(self, reader: asyncio.StreamReader, client: str) -> bytes:
         """Read one request and return the whole response to it."""
         try:
             async with asyncio.timeout(_TIMEOUT):
@@ -244,7 +246,19 @@ class Web:
         except asyncio.IncompleteReadError:
             return b""  # closed without asking, as a browser does with a connection it opened in advance
         except asyncio.LimitOverrunError:
-            return _refusal(431)
+            head, answer, took = b"", _refusal(431), 0.0
+        else:
+            started = time.monotonic()
+            answer = await self._answer(head)
+            took = time.monotonic() - started
+        if log.isEnabledFor(logging.DEBUG):
+            # The request line as given, quoted since anyone may send anything, and the status that _response wrote.
+            line = head.split(b"\r\n", 1)[0].decode("latin-1")
+            log.debug("web UI: %s %r: %s in %.0f ms", client, line, answer[9:12].decode(), took * 1000)
+        return answer
+
+    async def _answer(self, head: bytes) -> bytes:
+        """The whole response to a request of this head."""
         try:
             method, target, version = head.split(b"\r\n", 1)[0].decode("ascii").split(" ")
         except ValueError:  # not three parts, or not ASCII
@@ -514,7 +528,7 @@ class Web:
             return 409, _JSON, _json({"error": "the robot is not connected"})
         sent = now()
         try:
-            answer = await session.call(ability, params, timeout=_COMMAND_TIMEOUT)
+            answer = await session.call(ability, params, timeout=_COMMAND_TIMEOUT, origin="the web UI")
         except TimeoutError:
             return 504, _JSON, _json({"error": f"the robot did not answer within {_COMMAND_TIMEOUT:g} s"})
         except OSError as exc:  # the session ended first
