@@ -2,7 +2,7 @@
 name = "deorbit"
 version = "0.1.0"
 description = "Clean-room server for the Orbital robot protocol"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "GPL-3.0-only"
 dependencies = ["aiomqtt>=2.5", "cryptography>=42", "pyyaml>=6"]
 

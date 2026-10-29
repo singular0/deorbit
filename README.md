@@ -279,7 +279,7 @@ docker compose up -d --build    # after updating this repository
 
 To back up, copy `deorbit.yml`, `certs/` and `data/`.
 
-Without Docker, on Python 3.11 or later: run `pip install -e .`, then
+Without Docker, on Python 3.12 or later: run `pip install -e .`, then
 `python -m deorbit` in the folder with `deorbit.yml`.
 
 ## Implementation details

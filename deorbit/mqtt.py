@@ -30,8 +30,6 @@ _RETRY = 10.0
 _COMMAND_TIMEOUT = 10.0
 # How long a server that stops tries to tell the broker so.
 _STOP_TIMEOUT = 2.0
-# How often a task that is to end is cancelled again until it does (see ``_end``).
-_END_AGAIN = 0.1
 # Everything is published at least once: a state or an alert that is lost on the way would not come again.
 _QOS = 1
 
@@ -83,18 +81,6 @@ def _node(robot: RobotId) -> str:
     # Two robots whose names come to the same once made safe, "_" between them included, are told apart by what they were.
     digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
     return f"{node}_{digest[:8]}"
-
-
-async def _end(task: asyncio.Task, patience: float) -> None:
-    """Cancel ``task`` and wait for it to end, cancelling it again every ``patience`` seconds until it does.
-
-    Once is not always enough: on Python 3.11, ``asyncio.wait_for``, which
-    aiomqtt waits for the broker with, lets a cancellation go by when what it
-    waits for comes at the same time, and the task goes on.
-    """
-    while not task.done():
-        task.cancel()
-        await asyncio.wait([task], timeout=patience)
 
 
 def _payload(value: object) -> bytes:
@@ -209,8 +195,12 @@ class Mqtt:
                 await _put(client, self._status, b"offline", retain=True, timeout=_STOP_TIMEOUT)
         for task in self._calls:
             task.cancel()
-        # Given time to say goodbye to the broker as the client is left, which waits for the broker to hear it.
-        await _end(self._task, _STOP_TIMEOUT)
+        # Given time to say goodbye to the broker as the client is left, which waits for the broker to hear it, and
+        # cancelled again until it ends: a goodbye that fails raises an MqttError in place of the cancellation, which
+        # _run takes for a lost connection and tries the broker again.
+        while not self._task.done():
+            self._task.cancel()
+            await asyncio.wait([self._task], timeout=_STOP_TIMEOUT)
         await asyncio.gather(*self._calls, return_exceptions=True)
 
     def _changed(self, robot: RobotId) -> None:
@@ -259,14 +249,15 @@ class Mqtt:
         except StoreError as exc:
             log.error("Home Assistant: %s", exc)
         self._announce()
-        # Until either ends, which is when the connection does. Not in a TaskGroup, which waits for good for a
-        # task that let its cancellation go by.
+        # Until either ends, which is when the connection does, and then with its error as it is, which _run looks
+        # for, where a TaskGroup would wait for both and put the error in a group.
         tasks = (asyncio.create_task(self._publish(client)), asyncio.create_task(self._receive(client)))
         try:
             await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         finally:
             for task in tasks:
-                await _end(task, _END_AGAIN)
+                task.cancel()
+            await asyncio.wait(tasks)
         for error in [task.exception() for task in tasks if not task.cancelled()]:
             if error is not None:
                 raise error
