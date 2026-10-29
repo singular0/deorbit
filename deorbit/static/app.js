@@ -3641,24 +3641,28 @@ function shutStart(mine, back = true) {
 
 /**
  * The other half of the Start button, which opens and shuts the menu that sets
- * what a start from it is to clean, and puts the keyboard in that menu. It can
- * be pressed while Start can, and always while the menu is open, so that the
- * menu can be shut with it.
+ * what a start from it is to clean, and puts the keyboard in that menu. It is
+ * disabled and held back as Start is, `why` and `wait` being why: `show` shuts
+ * the menu once Start is disabled, and a hold begins only with a press of a
+ * command, which shuts it too, so the menu is never open while this cannot be
+ * pressed.
  */
-function startToggle(mine, why) {
+function startToggle(mine, why, wait) {
   const start = mine.start;
-  const off = why !== null && !start.open;
+  const held = why === null && wait !== null;
   return h('button', {
     class: 'command caret',
     type: 'button',
-    disabled: off,
+    disabled: why !== null,
+    'aria-disabled': held && 'true',
     'aria-expanded': String(start.open),
     'aria-controls': start.open && 'start-menu',
     'aria-label': 'Start options',
-    title: off ? `Start options: ${why}` : 'Start options',
+    title: held ? `Start options: ${wait}` : why ? `Start options: ${why}` : 'Start options',
     'data-focus': 'start-options',
     'data-start': '',
     onclick: () => {
+      if (held) return;
       if (start.open) {
         shutStart(mine);
         return;
@@ -3778,7 +3782,7 @@ function commands(mine, robot) {
       'data-focus': `can_${name}`,
       onclick: () => send(mine, name, label),
     }, icon(glyph), label);
-    return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why)) : button;
+    return name === 'start' ? h('div', { class: 'split' }, button, startToggle(mine, why, wait)) : button;
   }),
   mine.start.open && startMenu(mine, plansOf(mine.body), barred(robot, 'start'), hold,
     isOn(robot.is_docked) ? null : 'the robot is not docked'));
@@ -4236,6 +4240,9 @@ function show(mine, status, body) {
       // A floor plan or a zone that is kept no more, as after a Demote, is one the robot does not have to start on either.
       // A robot off its base starts on none, and on none a run has no no-go lines to mind.
       const start = mine.start;
+      // A start the robot would not take has no menu, its arrow being disabled with Start. A menu the keyboard is in stays
+      // on screen, the page being held, until the keyboard leaves it.
+      if (barred(body.robot, 'start') !== null) start.open = false;
       const kept = isOn(body.robot.is_docked) ? plansOf(body).find((plan) => plan.rank_uuid === start.floor) : null;
       if (!kept) start.floor = '';
       if (!kept?.zones.some((zone) => zone.track_uuid === start.zone)) start.zone = '';
