@@ -283,6 +283,26 @@ class SetupTests(WebTestCase):
         with mock.patch.object(web, "_TIMEOUT", 0.1):
             self.assertEqual(await self.exchange(b"GET / HTTP/1.1\r\n"), b"")
 
+    async def test_answer_that_goes_out_after_close(self) -> None:
+        await self.start()
+        # Buffers too small for the script, so the most of it is sent once the connection is closing.
+        self.web._listener.sockets[0].setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        sock.setblocking(False)
+        await asyncio.get_running_loop().sock_connect(sock, ("127.0.0.1", self.web.port))
+        reader, writer = await asyncio.open_connection(sock=sock)
+        self.addCleanup(writer.close)
+        with self.assertNoLogs("asyncio", "ERROR"):
+            writer.write(b"GET /app.js HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            async with asyncio.timeout(5):
+                head = await reader.readuntil(b"\r\n\r\n")
+                answering = set(self.web._connections)
+                body = await reader.read()
+                await asyncio.wait(answering)
+        self.assertEqual(len(body), int(re.search(rb"Content-Length: (\d+)", head)[1]))
+        self.assertGreater(len(body), 100_000)
+
     async def test_stop_drops_open_connections(self) -> None:
         await self.start()
         reader, writer = await asyncio.open_connection("127.0.0.1", self.web.port)

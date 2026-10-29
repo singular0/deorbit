@@ -231,7 +231,10 @@ class Web:
             pass  # a browser that stalls or goes away is nothing to report
         finally:
             self._connections.discard(task)
-            writer.transport.abort()
+            # Not a connection closing with nothing left to send, which ends by itself. Where the last of an answer
+            # went out after close(), asyncio has ended it already, and in a way that makes abort fail.
+            if not writer.transport.is_closing() or writer.transport.get_write_buffer_size():
+                writer.transport.abort()
 
     async def _respond(self, reader: asyncio.StreamReader) -> bytes:
         """Read one request and return the whole response to it."""
