@@ -1624,21 +1624,22 @@ async function loadMap(mine, id, pictured, which, editable) {
  * Maps tab, in the row of its map or the block of its floor plan, as that of a
  * floor plan is in the schedule, is kept by that `place` as well, and is
  * fetched once for it. The zones and the no-go lines of a floor plan are drawn
- * over its picture, and are drawn on only in its block. Elsewhere `chosen` is
- * the zone that is shown as chosen.
+ * over its picture, and are drawn on only in its block. Elsewhere `shown` says
+ * which of them are: the zones by what the robot knows them by, and whether
+ * the lines are.
  */
-function drawing(mine, id, place = null, chosen = null) {
+function drawing(mine, id, place = null, shown = null) {
   const key = place === null ? id : `${place} ${id}`;
   let pictured = mine.drawings.get(key);
   if (!pictured) {
-    // With what draws the picture anew once there is one, what does so in the colours of another scheme, and the zone
-    // it shows as chosen.
-    pictured = { id, node: h('div', { class: 'map-drawing' }), repaint: null, recolour: null, chosen };
+    // With what draws the picture anew once there is one, what does so in the colours of another scheme, and which of
+    // the zones and lines it shows, where it does not show them all.
+    pictured = { id, node: h('div', { class: 'map-drawing' }), repaint: null, recolour: null, shown };
     mine.drawings.set(key, pictured);
     loadMap(mine, id, pictured, key, place === null);
   }
-  if (pictured.chosen !== chosen) {
-    pictured.chosen = chosen;
+  if (JSON.stringify(pictured.shown) !== JSON.stringify(shown)) {
+    pictured.shown = shown;
     pictured.repaint?.();
   }
   return pictured.node;
@@ -2067,15 +2068,11 @@ function boxed([x0, y0, x1, y1]) {
   return [[left, top], [right, top], [right, bottom], [left, bottom]];
 }
 
-// How a zone is drawn on a map: its fill, how opaque it is all told and the
-// width of its edge, in pixels of the page. A zone that is chosen is drawn
-// bolder and the others fainter, since each has a colour of its own, and the
-// one that is being drawn has a dashed edge.
+// How a zone is drawn on a map: its fill and the width of its edge, in pixels
+// of the page. The one that is being drawn has a dashed edge.
 const ZONE_LOOKS = {
-  plain: { fill: 0.22, alpha: 1, edge: 1.5 },
-  drawn: { fill: 0.22, alpha: 1, edge: 1.5, dashed: true },
-  chosen: { fill: 0.4, alpha: 1, edge: 3 },
-  aside: { fill: 0.12, alpha: 0.55, edge: 1 },
+  plain: { fill: 0.22, edge: 1.5 },
+  drawn: { fill: 0.22, edge: 1.5, dashed: true },
 };
 
 /**
@@ -2095,7 +2092,7 @@ function zoneColour(palette, n) {
  * corners so far, which are a line or a point and have no name.
  */
 function paintZone(pen, at, corners, name, colour, palette, ratio, look = 'plain') {
-  const { fill, alpha, edge, dashed = false } = ZONE_LOOKS[look];
+  const { fill, edge, dashed = false } = ZONE_LOOKS[look];
   const points = corners.map(([x, y]) => at(x, y));
   const outline = () => {
     pen.beginPath();
@@ -2103,7 +2100,6 @@ function paintZone(pen, at, corners, name, colour, palette, ratio, look = 'plain
     if (points.length > 2) pen.closePath();
   };
   pen.save();
-  pen.globalAlpha = alpha;
   outline();
   pen.fillStyle = `rgba(${colour}, ${fill})`;
   pen.fill();
@@ -2211,9 +2207,9 @@ function paintLine(pen, at, [x0, y0, x1, y1], colour, size, ratio) {
  * it is on, and takes out a corner it is on; a drag moves the corner it starts
  * on, or puts one where it ends on the side whose middle it starts on; and a
  * drag that starts elsewhere draws a rectangle of cells in place of the zone.
- * Elsewhere the zone `pictured.chosen` is shown as chosen. All of it is read
- * from the view as it is drawn, since the picture outlives every page it is
- * put on.
+ * Elsewhere only the zones and lines that `pictured.shown` names are drawn.
+ * All of it is read from the view as it is drawn, since the picture outlives
+ * every page it is put on.
  */
 function trackLayer(mine, id, pictured, editable, { left, top, width, height, palette }) {
   let stroke = null; // the line being drawn: the cell the pointer went down on, and the one it is on
@@ -2310,16 +2306,17 @@ function trackLayer(mine, id, pictured, editable, { left, top, width, height, pa
       if (!plan) return;
       const edit = editing();
       const at = (x, y) => plot(x - left, y - top);
-      // Each zone in the colour of its place. Where one is chosen, it stands out and the others stand back.
-      const chosen = plan.zones.some((zone) => zone.track_uuid === pictured.chosen) ? pictured.chosen : null;
+      // Each zone in the colour of its place, all of them or those shown.
+      const { shown } = pictured;
       plan.zones.forEach((zone, n) => {
         const corners = polygonOf(zone);
         // The zone that is being drawn is where it is drawn now.
         if (!corners || (edit?.kind === 'zone' && zone.track_uuid === edit.track)) return;
-        const look = chosen === null ? 'plain' : zone.track_uuid === chosen ? 'chosen' : 'aside';
-        paintZone(pen, at, corners, zone.name, zoneColour(palette, n), palette, ratio, look);
+        if (shown && !shown.zones.includes(zone.track_uuid)) return;
+        paintZone(pen, at, corners, zone.name, zoneColour(palette, n), palette, ratio);
       });
-      const lines = edit?.kind === 'nogo' ? [...edit.lines, ...(stroke ? [stroke] : [])] : linesOf(plan.nogo);
+      const lines = edit?.kind === 'nogo' ? [...edit.lines, ...(stroke ? [stroke] : [])]
+        : shown && !shown.nogo ? [] : linesOf(plan.nogo);
       for (const line of lines) paintLine(pen, at, line, palette.nogo, size, ratio);
       if (edit?.kind === 'zone') {
         // In the colour it has, or a new one in that of the place it is to have, the last.
@@ -3045,7 +3042,8 @@ function placeField(focus, floors, floor, zone, choose) {
  * that opens the form on its draft, which Cancel returns the keyboard to.
  * Beside the lines is the picture of the floor plan the event is on, where the
  * server had the robot keep that one and so knows the map it was made of, with
- * the zone the event cleans shown as chosen.
+ * only the zones the event cleans over it, and the no-go lines where it minds
+ * them.
  */
 function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
   const plan = mine.schedule;
@@ -3074,12 +3072,18 @@ function scheduleForm(mine, robot, plans, event, draft = null, back = null) {
   const picture = h('div', { class: 'slot-picture' });
   const depict = () => {
     const uuid = set ? draft.floor : runs.length > 0 ? floorOf(runs[0]) : null;
-    const chosen = set ? draft.zone || null : single ? zoneOf(runs[0]) : null;
+    // Of more runs than one, the zones of each on that floor plan, and its lines where one of them minds them.
+    const runsOn = runs.filter((run) => floorOf(run) === uuid);
+    const shown = set ? { zones: draft.zone ? [draft.zone] : [], nogo: draft.nogo }
+      : { zones: runsOn.map(zoneOf).filter(Boolean), nogo: runsOn.some((run) => record(run.map).nogo_enabled === true) };
     const made = plans.find((known) => known.rank_uuid === uuid);
-    picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back, chosen)] : []));
+    picture.replaceChildren(...(made ? [drawing(mine, made.map_id, back, shown)] : []));
   };
   depict();
-  const nogoField = set && yesNo('No-go lines', 'plan-nogo', draft.nogo, (on) => { draft.nogo = on; });
+  const nogoField = set && yesNo('No-go lines', 'plan-nogo', draft.nogo, (on) => {
+    draft.nogo = on;
+    depict();
+  });
   // On no floor plan, a run has no no-go lines to mind.
   if (set) nogoField.disabled = draft.floor === '';
   // On the floor plan the run is on, its no-go lines are as the robot gave them, and on another they are minded where
